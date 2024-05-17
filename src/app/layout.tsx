@@ -2,7 +2,7 @@ import "~/styles/globals.css";
 
 import { GeistSans } from "geist/font/sans";
 
-import Providers from "~/components/providers";
+import Providers from "~/components/Providers";
 
 export const metadata = {
   title: "Create T3 App",
