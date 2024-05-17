@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { api } from "~/trpc/react";
 import { Loader2Icon, X } from "lucide-react";
 import Image from "next/image";
@@ -19,15 +19,6 @@ export default function Page() {
     const [url, setUrl] = useState("");
     const findUniqueAnime = api.anime.findUnique.useMutation();
     const findManyAnimes = api.anime.findMany.useQuery();
-
-    const test = api.post.create.useMutation();
-
-    useEffect(() => {
-        async function main() {
-            test.mutate({ driveId: "0APVAfn6lc68JUk9PVA", anime: selected!, episode: 1, url: "" });
-        }
-        void main();
-    }, []);
 
     async function search() {
         try {

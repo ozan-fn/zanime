@@ -233,3 +233,7 @@ model Episode {
     Anime   Anime  @relation(fields: [animeId], references: [id])
     animeId String @db.ObjectId
 }
+
+model Progress {
+    id String @id @default(auto()) @map("_id") @db.ObjectId
+}

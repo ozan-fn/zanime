@@ -5,9 +5,14 @@ import { createTRPCRouter, protectedProcedure, publicProcedure } from "~/server/
 import { db } from "~/server/db";
 
 export const animeRouter = createTRPCRouter({
-    findmany: publicProcedure.query(async ({ ctx }) => {
+    findMany: publicProcedure.query(async ({ ctx }) => {
         const animes = await ctx.db.anime.findMany();
         return animes;
+    }),
+
+    findUnique: protectedProcedure.input(z.custom<Prisma.AnimeFindUniqueArgs>()).mutation(async ({ input }) => {
+        const anime = await db.anime.findUnique(input);
+        return anime as Prisma.AnimeGetPayload<{ include: { Episode: true } }>;
     }),
 
     update: protectedProcedure.input(z.custom<Prisma.AnimeUpdateArgs>()).mutation(async ({ input }) => {
@@ -18,10 +23,5 @@ export const animeRouter = createTRPCRouter({
     upsert: protectedProcedure.input(z.custom<Prisma.AnimeUpsertArgs>()).mutation(async ({ input }) => {
         const anime = await db.anime.upsert(input);
         return anime;
-    }),
-
-    findUnique: protectedProcedure.input(z.custom<Prisma.AnimeFindUniqueArgs>()).mutation(async ({ input }) => {
-        const anime = await db.anime.findUnique(input);
-        return anime as Prisma.AnimeGetPayload<{ include: { Episode: true } }>;
     }),
 });
