@@ -5,7 +5,7 @@ import axios from "axios";
 
 export default function Anime() {
     const { title } = useParams();
-    const [loading, setLoading] = useState(true);
+    const [loading, setLoading] = useState(false);
     const [episode, setEpisode] = useState("");
     const [episodes, setEpisodes] = useState<{ title: string; url: string }[]>();
     const [server, setServer] = useState("");
@@ -16,7 +16,6 @@ export default function Anime() {
         (async () => {
             const { data } = await axios.get(`/api/kuronime/episode/${title}`);
             setEpisodes(data.data);
-            setEpisode(data.data[data.data.length - 1].title);
         })();
     }, []);
 
@@ -40,8 +39,8 @@ export default function Anime() {
                 </p>
             </div>
 
-            <div className="container relative mx-auto mt-4 flex aspect-video w-full max-w-md justify-center border border-zinc-700 md:max-w-lg xl:max-w-xl 2xl:max-w-2xl">
-                <iframe src={server} allowFullScreen className="inset-0"></iframe>
+            <div className="container relative mx-auto mt-4 flex justify-center">
+                <iframe src={server} allowFullScreen frameBorder={0} className="aspect-video w-full max-w-md border border-zinc-700 bg-white/10 md:max-w-2xl xl:max-w-3xl 2xl:max-w-4xl"></iframe>
                 {loading && <motion.div animate={{ x: [-50, 50, -50] }} transition={{ repeat: Infinity, duration: 2 }} className="absolute left-1/2 top-1/2 h-2 w-12 -translate-x-1/2 -translate-y-1/2 rounded-lg bg-teal-500" />}
             </div>
 
@@ -60,7 +59,7 @@ export default function Anime() {
                         return (
                             <>
                                 <div key={i} className="flex flex-col gap-2">
-                                    <button onClick={() => setListServer(v[0])} className="flex h-10 items-center justify-center rounded-lg border border-zinc-700" key={i}>
+                                    <button onClick={() => setListServer(v[0])} className={`flex h-10 items-center justify-center rounded-lg ${isSelected ? "bg-teal-500 text-white" : "border border-zinc-700"}`} key={i}>
                                         <p className="">{v[0]}</p>
                                     </button>
                                     {isSelected && (
@@ -74,8 +73,9 @@ export default function Anime() {
                                                             setLoading(true);
                                                             setServer(v[1] ?? "");
                                                             setLoading(false);
+                                                            setListServer("");
                                                         }}
-                                                        className="h-8 w-full"
+                                                        className="h-10 w-full rounded-lg border border-white/10"
                                                     >
                                                         {v[0]}
                                                     </button>
@@ -96,19 +96,19 @@ export default function Anime() {
                 </p>
             </div>
 
-            <div className="container mx-auto mt-4 grid grid-flow-row-dense grid-cols-4 gap-2 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8">
+            <div className="container mx-auto mb-8 mt-4 grid grid-flow-row-dense grid-cols-3 gap-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7">
                 {episodes?.map((v, i) => {
                     const selected = v.url == episode;
                     return (
                         <>
                             {selected ? (
-                                <div className="flex h-10 items-center justify-center rounded-lg bg-teal-500 text-white" key={i}>
-                                    <p className="">{v.title}</p>
-                                </div>
+                                <button className="flex h-10 items-center justify-center rounded-lg bg-teal-500 text-white" key={i}>
+                                    <p className="line-clamp-1">{v.title}</p>
+                                </button>
                             ) : (
-                                <div onClick={() => setEpisode(v.url)} className="flex h-10 items-center justify-center rounded-lg border border-zinc-700" key={i}>
-                                    <p className="">{v.title}</p>
-                                </div>
+                                <button onClick={() => setEpisode(v.url)} className="flex h-10 items-center justify-center rounded-lg border border-white/10" key={i}>
+                                    <p className="line-clamp-1">{v.title}</p>
+                                </button>
                             )}
                         </>
                     );

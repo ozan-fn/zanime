@@ -1,3 +1,3 @@
 export default function Genre() {
-    return <></>;
+    return <>Coming Soon</>;
 }

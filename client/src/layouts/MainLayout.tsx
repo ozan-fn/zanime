@@ -2,12 +2,13 @@ import { useRef, useState } from "react";
 import bg from "../assets/pexels-elijahsad-3473569.jpg";
 import { SearchIcon } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Link, useLocation, Outlet } from "react-router-dom";
+import { Link, useLocation, Outlet, useNavigate } from "react-router-dom";
 
 export default function MainLayout() {
     const pathname = useLocation().pathname;
     const [search, setSearch] = useState({ enable: false, value: "" });
     const searchInputRef = useRef<HTMLInputElement>(null);
+    const navigate = useNavigate();
 
     const handleSearchClick = () => {
         setSearch((prevState) => ({ ...prevState, enable: !prevState.enable }));
@@ -20,6 +21,13 @@ export default function MainLayout() {
 
     const handleBlur = () => {
         setSearch((prevState) => ({ ...prevState, enable: false }));
+    };
+
+    const handleKeyPress = (event: { key: string }) => {
+        if (event.key === "Enter") {
+            if (!search.value) return;
+            navigate("/search/" + search.value);
+        }
     };
 
     return (
@@ -58,7 +66,7 @@ export default function MainLayout() {
                                     <SearchIcon className="mx-auto" />
                                 </motion.div>
                                 <motion.div animate={{ opacity: [0, 1] }} transition={{ delay: 0.3 }}>
-                                    <input onBlur={handleBlur} ref={searchInputRef} type="text" value={search.value} onChange={(e) => setSearch({ ...search, value: e.target.value })} className="bg-transparent outline-none" />
+                                    <input onKeyPress={handleKeyPress} onBlur={handleBlur} ref={searchInputRef} type="text" value={search.value} onChange={(e) => setSearch({ ...search, value: e.target.value })} className="bg-transparent outline-none" />
                                 </motion.div>
                             </div>
                         )}

@@ -4,6 +4,7 @@ import Genre from "./pages/Genre";
 import Ongoing from "./pages/Ongoing";
 import MainLayout from "./layouts/MainLayout";
 import Anime from "./pages/Anime";
+import Search from "./pages/Search";
 
 export default function App() {
     return (
@@ -14,6 +15,7 @@ export default function App() {
                     <Route path="/genre" element={<Genre />} />
                     <Route path="/ongoing" element={<Ongoing />} />
                     <Route path="/anime/:title" element={<Anime />} />
+                    <Route path="/search/:query" element={<Search />} />
                 </Route>
             </Routes>
         </BrowserRouter>
