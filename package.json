@@ -9,13 +9,17 @@
 		"cheerio": "^1.0.0",
 		"cors": "^2.8.5",
 		"crypto-js": "^4.2.0",
-		"express": "^4.20.0"
+		"express": "^4.20.0",
+		"string-similarity": "^4.0.4",
+		"user-agents": "^1.1.323"
 	},
 	"devDependencies": {
 		"@types/cors": "^2.8.17",
 		"@types/crypto-js": "^4.2.2",
 		"@types/express": "^4.17.21",
 		"@types/node": "^22.5.4",
+		"@types/string-similarity": "^4.0.2",
+		"@types/user-agents": "^1.0.4",
 		"ts-node": "^10.9.2",
 		"typescript": "^5.6.2"
 	}
