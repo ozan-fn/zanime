@@ -9,8 +9,10 @@ export async function kuronimeSearch(req: Request, res: Response) {
 		const json = await kuronimeParser.search(query);
 		res.json(json);
 	} catch (error) {
-		res.sendStatus(500);
-		console.error(error);
+		if (error instanceof Error) {
+			res.status(500).json({ status: 500, error: error.message });
+			console.error(error.message);
+		}
 	}
 }
 
@@ -21,8 +23,10 @@ export async function kuronimeOngoing(req: Request, res: Response) {
 		const json = await kuronimeParser.ongoing(+page);
 		res.json(json);
 	} catch (error) {
-		res.sendStatus(500);
-		console.error(error);
+		if (error instanceof Error) {
+			res.status(500).json({ status: 500, error: error.message });
+			console.error(error.message);
+		}
 	}
 }
 
@@ -33,8 +37,10 @@ export async function kuronimeCompleted(req: Request, res: Response) {
 		const json = await kuronimeParser.completed(+page);
 		res.json(json);
 	} catch (error) {
-		res.sendStatus(500);
-		console.error(error);
+		if (error instanceof Error) {
+			res.status(500).json({ status: 500, error: error.message });
+			console.error(error.message);
+		}
 	}
 }
 
@@ -45,8 +51,10 @@ export async function kuronimeEpisode(req: Request, res: Response) {
 		const json = await kuronimeParser.episode(title);
 		res.json(json);
 	} catch (error) {
-		res.sendStatus(500);
-		console.error(error);
+		if (error instanceof Error) {
+			res.status(500).json({ status: 500, error: error.message });
+			console.error(error.message);
+		}
 	}
 }
 
@@ -56,7 +64,9 @@ export async function kuronimeEmbed(req: Request, res: Response) {
 		const json = await kuronimeParser.embed(episode);
 		res.json(json);
 	} catch (error) {
-		res.sendStatus(500);
-		console.error(error);
+		if (error instanceof Error) {
+			res.status(500).json({ status: 500, error: error.message });
+			console.error(error.message);
+		}
 	}
 }

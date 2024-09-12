@@ -8,8 +8,10 @@ export async function otakudesuSearch(req: Request, res: Response) {
 		const json = await otakudesuParser.search(query);
 		res.json(json);
 	} catch (error) {
-		res.sendStatus(500);
-		console.error(error);
+		if (error instanceof Error) {
+			res.status(500).json({ status: 500, error: error.message });
+			console.error(error.message);
+		}
 	}
 }
 
@@ -19,8 +21,10 @@ export async function otakudesuOngoing(req: Request, res: Response) {
 		const json = await otakudesuParser.ongoing(page > 1 ? page : 1);
 		res.json(json);
 	} catch (error) {
-		res.sendStatus(500);
-		console.error(error);
+		if (error instanceof Error) {
+			res.status(500).json({ status: 500, error: error.message });
+			console.error(error.message);
+		}
 	}
 }
 
@@ -30,8 +34,10 @@ export async function otakudesuCompleted(req: Request, res: Response) {
 		const json = await otakudesuParser.completed(page > 1 ? page : 1);
 		res.json(json);
 	} catch (error) {
-		res.sendStatus(500);
-		console.error(error);
+		if (error instanceof Error) {
+			res.status(500).json({ status: 500, error: error.message });
+			console.error(error.message);
+		}
 	}
 }
 
@@ -41,8 +47,10 @@ export async function otakudesuEpisode(req: Request, res: Response) {
 		const json = await otakudesuParser.episode(title);
 		res.json(json);
 	} catch (error) {
-		res.sendStatus(500);
-		console.error(error);
+		if (error instanceof Error) {
+			res.status(500).json({ status: 500, error: error.message });
+			console.error(error.message);
+		}
 	}
 }
 
@@ -52,7 +60,9 @@ export async function otakudesuEmbed(req: Request, res: Response) {
 		const json = await otakudesuParser.embed(episode);
 		res.json(json);
 	} catch (error) {
-		res.sendStatus(500);
-		console.error(error);
+		if (error instanceof Error) {
+			res.status(500).json({ status: 500, error: error.message });
+			console.error(error.message);
+		}
 	}
 }
