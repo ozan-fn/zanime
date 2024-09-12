@@ -36,7 +36,9 @@ export default function Anime() {
             <div className="container mx-auto mt-4 flex flex-row items-center rounded-lg border border-white/10">
                 <div className="mr-4 h-10 w-1 rounded-lg bg-teal-500" />
                 <p className="text-lg font-medium">
-                    <span className="line-clamp-1">{anime?.title}</span>
+                    <span className="line-clamp-1">
+                        {anime?.title} ({anime?.status})
+                    </span>
                 </p>
             </div>
 
