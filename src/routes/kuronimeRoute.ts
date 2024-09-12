@@ -7,6 +7,6 @@ kuronimeRoute.get("/search", kuronimeSearch);
 kuronimeRoute.get("/ongoing", kuronimeOngoing);
 kuronimeRoute.get("/completed", kuronimeCompleted);
 kuronimeRoute.get("/episode/:title", kuronimeEpisode);
-kuronimeRoute.get("/episode/embed/:title", kuronimeEmbed);
+kuronimeRoute.get("/episode/embed/:episode", kuronimeEmbed);
 
 export default kuronimeRoute;

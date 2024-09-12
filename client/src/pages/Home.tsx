@@ -2,18 +2,23 @@ import axios from "axios";
 import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { useProvider } from "../layouts/MainLayout";
 
 export default function Home() {
-    const [ongoings, setOngoings] = useState<{ loading?: boolean; data?: { title: string; url: string; type: string; imageUrl: string }[]; total?: number; error?: string }>();
+    const [ongoings, setOngoings] = useState<{ loading?: boolean; data?: { title: string; url: string; type: string; image: string }[]; total?: number; error?: string }>();
     const [page, setPage] = useState(2);
     const [loadMoreLoading, setLoadMoreLoading] = useState(false);
     const [dataBefore, setDataBefore] = useState(0);
+    const { provider } = useProvider();
+
+    // if (!provider) return;
 
     useEffect(() => {
+        if (!provider) return;
         (async () => {
             try {
                 setOngoings((p) => ({ ...p, loading: true }));
-                const { data } = await axios.get("/api/kuronime/ongoing");
+                const { data } = await axios.get(`/api/${provider}/ongoing`);
                 setOngoings((p) => ({ ...p, data: data.data, total: data.total }));
             } catch (error) {
                 if (error instanceof Error) {
@@ -23,13 +28,13 @@ export default function Home() {
                 setOngoings((p) => ({ ...p, loading: false }));
             }
         })();
-    }, []);
+    }, [provider]);
 
     async function loadMore() {
         try {
             setDataBefore(ongoings?.data?.length ?? 0);
             setLoadMoreLoading(true);
-            const { data } = await axios.get("/api/kuronime/ongoing?page=" + page);
+            const { data } = await axios.get(`/api/${provider}/ongoing?page=` + page);
             setOngoings((p) => ({ ...p, data: [...(p?.data ?? []), ...data.data] }));
             setPage((p) => p + 1);
         } catch (error) {
@@ -86,7 +91,7 @@ export default function Home() {
                                 return (
                                     <Link to={"/anime/" + v.url}>
                                         <motion.div initial={{ opacity: 0 }} animate={{ opacity: [0, 1], y: [20, 0] }} transition={{ delay: 0.1 * Math.abs(dataBefore - i) }} key={i} className="relative flex flex-col rounded-lg">
-                                            <img src={v.imageUrl} alt="" className="rounded-lg" />
+                                            <img src={v.image} alt="" className="rounded-lg" />
                                             <p className="line-clamp-1 break-words">{v.title}</p>
                                             <p className="font-xs absolute left-2 top-2 rounded-lg bg-teal-500 px-2 py-0 font-medium text-white">{v.type}</p>
                                         </motion.div>
