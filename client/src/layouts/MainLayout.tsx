@@ -48,7 +48,7 @@ export default function MainLayout() {
         if (provider) {
             localStorage.setItem("provider", provider);
         }
-        if (pathname != "/") {
+        if (pathname != "/" || pathname.includes("/search")) {
             navigate("/");
         }
         // const ttt = setTimeout(() => setModal(false), 3000);
