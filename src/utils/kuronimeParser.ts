@@ -78,20 +78,20 @@ async function completed(page: number = 2) {
 	return data2;
 }
 
-async function episode(title: string) {
+async function episode(title: string = "isekai-yururi-kikou-kosodateshinagara-boukensha-shimasu") {
 	const html = (await api.get(`/anime/${title}`)).data;
 	const $ = cheerio.load(html);
 
 	const data: AnimeDetail = {
-		title: $(".entry-content li:contains('Judul')").text().split(": ")[1].split(",")[0],
-		japaneseTitle: $(".entry-content li:contains('Judul')").text().split(": ")[1].split(",")[1].trim(),
+		title: $(`h1[class="entry-title"]`).text(),
+		japaneseTitle: "",
 		score: parseFloat($(".entry-content meta[itemprop='ratingValue']").attr("content") ?? ""),
 		producer: "", // Tidak ada informasi produser dalam data
 		type: $(".entry-content li:contains('Tipe')").text().split(": ")[1],
 		status: $(".entry-content li:contains('Status')").text().split(": ")[1],
 		totalEpisodes: $(".entry-content ul li:contains('Episode')").length, // Menghitung jumlah episode
 		duration: $(".entry-content li:contains('Durasi')").text().split(": ")[1],
-		releaseDate: $(".entry-content li:contains('Tayang')").text().split(": ")[1].split(" to")[0].trim(),
+		releaseDate: $(".entry-content li:contains('Tayang')").text(),
 		studio: $(".entry-content li:contains('Studio') a").text(),
 		genres: $(".entry-content li:contains('Genre') a")
 			.map((i, el) => $(el).text())
@@ -110,6 +110,7 @@ async function episode(title: string) {
 			.get(),
 	};
 
+	console.log(data);
 	return data;
 }
 

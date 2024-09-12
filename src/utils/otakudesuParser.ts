@@ -6,7 +6,7 @@ import { AnimeCompleted, AnimeDetail, AnimeOngoing, AnimeSearch, CompletedData, 
 import UserAgent from "user-agents";
 
 const baseURL = "https://otakudesu.cloud";
-const api = axios.create({ baseURL });
+const api = axios.create({ baseURL, proxy: { protocol: "http:", host: "172.67.176.55", port: 80 } });
 // const animes: { data: { title: string; animeSeason?: { year?: number }; type?: string; episodes?: number; picture?: string; synonyms?: string[] }[] } = JSON.parse(fs.readFileSync(path.join(__dirname, "../assets/anime-offline-database-minified_2.json"), "utf-8"));
 
 async function search(query: string) {
@@ -137,7 +137,7 @@ async function embed(episode: string = "tbrd-episode-1-sub-indo") {
 	const data: { [key: string]: { server: string; token: string; nonce: string; action: string }[] } = {};
 	const action1 = (html as string).match(/action:"(.*?)"/g)?.[1]?.match(/action:"(.*?)"/)?.[1];
 	const action2 = (html as string).match(/action:"(.*?)"/g)?.[0]?.match(/action:"(.*?)"/)?.[1] ?? "";
-	const nonce: string = (await axios.post("https://otakudesu.cloud/wp-admin/admin-ajax.php", `action=${action1}`)).data.data;
+	const nonce: string = (await api.post("https://otakudesu.cloud/wp-admin/admin-ajax.php", `action=${action1}`)).data.data;
 
 	cheerio
 		.load(html)("div.mirrorstream ul")
@@ -158,7 +158,7 @@ async function embed(episode: string = "tbrd-episode-1-sub-indo") {
 
 	async function fetchUrl(entry: { token: string; server: string; nonce: string; action: string }): Promise<{ server: string; url: string }> {
 		const { id, i, q }: { id: number; i: number; q: string } = JSON.parse(atob(entry.token));
-		const response = await axios.post("https://otakudesu.cloud/wp-admin/admin-ajax.php", `id=${id}&i=${i}&q=${q}&nonce=${entry.nonce}&action=${entry.action}`);
+		const response = await api.post("https://otakudesu.cloud/wp-admin/admin-ajax.php", `id=${id}&i=${i}&q=${q}&nonce=${entry.nonce}&action=${entry.action}`);
 		const $ = cheerio.load(atob(response.data.data));
 		const url = $("iframe").attr("src") || "";
 		return { server: entry.server, url };
