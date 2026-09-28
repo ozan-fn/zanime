@@ -1,0 +1,23 @@
+# Hasil build Go
+main
+main.exe
+*.test
+*.out
+
+# Cache subtitle terjemahan & runtime
+.cache/
+
+# Referensi porting (kode pihak ketiga, bukan bagian dari app)
+ref/
+
+# Frontend
+web/node_modules/
+web/dist/
+web/.rspack-profile-*/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.local
+*.log*
