@@ -1,4 +1,4 @@
-module main
+module zanime
 
 go 1.25.1
 

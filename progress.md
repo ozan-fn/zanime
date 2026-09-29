@@ -12,8 +12,8 @@ sekali: remux `-c copy` sudah dibuang.
 
 | Bagian | Status |
 |---|---|
-| `go mod init main` + `go get chi/v5` | done |
-| Port logika scraping (search / episodes / servers / blob XOR) | done |
+| `go mod init zanime` + `go get chi/v5` | done |
+| Port logika scraping (search / episodes / servers / resolve megaplay AES) | done |
 | Parse master playlist + pilih kualitas | done |
 | Terjemahan subtitle ID via kenari.id | done |
 | Model `deepseek-v4-1-flash` (bukan route gratis) | done |
@@ -27,7 +27,7 @@ sekali: remux `-c copy` sudah dibuang.
 | Status konversi subtitle (job latar + progress) | done |
 | Proxy HLS (kualitas di path) | done |
 | shaka.ui.Overlay: kontrol + menu kualitas & subtitle | done |
-| `go vet` + `go test` | pass (`check.sh`) |
+| `go vet` + `go test` | pass (`go test ./...`) |
 | `tsc --noEmit` (web) | pass |
 
 ## Endpoint — semua API di bawah `/api/`
@@ -50,8 +50,8 @@ semua endpoint.
 | GET | `/api/subtitle/{id}?lang=id&mode=` | `.vtt` kalau siap, `202` + progress kalau masih dikonversi |
 | GET | `/api/subtitle/{id}/status` | `{state,done,total,eta_seconds}` |
 | GET | `/api/hls/{id}/master.m3u8?mode=` | master upstream, varian ditulis ulang ke `/api/hls/{id}/{mode}/{label}/index.m3u8` |
-| GET | `/api/hls/{id}/{mode}/{quality}/index.m3u8` | playlist media |
-| GET | `/api/hls/{id}/{mode}/{quality}/{file}` | segmen, di-stream apa adanya |
+| GET | `/api/hls/{id}/{mode}/{quality}/index.m3u8` | playlist media, semua URI segmen ditulis ulang ke `/s/{base64url}` |
+| GET | `/api/hls/{id}/{mode}/{quality}/s/{seg}` | segmen absolut (base64url), content-type di-sniff dari byte |
 
 ## Frontend
 
@@ -82,11 +82,20 @@ mendarat di halaman yang sama. `mode=dub` ada di query watch; sisanya di path.
 | `/w/{animeId}/{epId}?mode=dub` | player |
 
 `animeId` ikut di URL watch supaya halaman itu memuat daftar episodenya sendiri
-— tombol Sebelumnya/Berikutnya jalan tanpa mampir ke halaman lain. Judul
-diturunkan dulu dari slug (`one-piece-100` → `One Piece`) lalu diganti judul
-asli begitu katalog/hasil pencarian memberinya (`catalog.ts`, Map in-memory
-yang diisi `rememberTitles`). Halaman `/w/` juga memuat detail anime
-(`/api/anime/{id}`): poster, meta, genre, dan sinopsis tampil di bawah player.
+— tombol Sebelumnya/Berikutnya jalan tanpa mampir ke halaman lain. Pindah
+episode wajib bongkar total: preact-router tidak me-remount komponen ketika
+hanya param route berubah, dan `useEffect [src]` di Player tidak cukup — video
+element lama tetap memegang stream episode sebelumnya. Dua lapis:
+`KeyedPage` (`App.tsx`) membungkus halaman dengan `<div key={useUrl()}>` dari
+`useRouter()` supaya subtree remount tiap URL berubah, dan link episode
+(prev/next/daftar) di `Watch.tsx` pakai **`data-native`** — atribut bawaan
+preact-router yang melepas link ke browser, jadi klik = navigasi penuh ke URL
+episode baru (MSE/shaka lama ikut lenyap; pindah episode memang harus muat
+ulang). Judul diturunkan dulu dari slug (`one-piece-100` → `One Piece`)
+lalu diganti judul asli begitu katalog/hasil pencarian memberinya (`catalog.ts`,
+Map in-memory yang diisi `rememberTitles`). Halaman `/w/` juga memuat detail
+anime (`/api/anime/{id}`): poster, meta, genre, dan sinopsis tampil di bawah
+player.
 
 ### Player
 
@@ -137,12 +146,35 @@ penerjemahan yang berjalan. Progress ditampilkan sebagai teks
 
 | ani-cli (bash) | Go |
 |---|---|
-| `deobfuscate_blob` (:185) | `deobfuscateBlob` — base64 lalu XOR `otaku-embed-v1` |
 | `hianime_search` (:199) | `search` — potong `id="main-sidebar"`, split `film-detail` |
 | `hianime_episodes` (:213) | `episodes` — route pakai id angka di ujung slug |
-| `hianime_m3u8` (:222) | `resolve` — cari `data-server-name="ZokoAnime"`, ambil `window.__P` |
-| pick `subtitles[]` `"default":true` (:238) | `pickSubtitle` |
+| `hianime_m3u8` (:222) | `resolve` — pilih server pertama per mode, lalu resolve embed megaplay |
 | parse `#EXT-X-STREAM-INF` (:240) | `parseMaster` — skip `I-FRAME`, sort tinggi |
+
+### Resolve upstream (2026-09): ZokoAnime → megaplay
+
+Upstream tidak lagi menyajikan server `ZokoAnime` (yang dulu pakai blob
+`window.__P` XOR `otaku-embed-v1`). Sekarang hanya `HD-2`/`Vidstream-2`,
+keduanya menunjuk embed **megaplay.buzz**. Alur `resolve` yang baru:
+1. `serverHash` — ambil `data-hash` server pertama dengan `data-type`
+   sub/dub yang diminta (nama server tidak difilter; mode pemisahnya).
+2. Decode base64 → URL embed `megaplay.buzz/stream/s-2/{realid}/{sub|dub}?s=...`.
+3. Scrap halaman embed → `data-id`, `data-realid`, `data-mediaid` dari
+   `#megaplay-player`.
+4. GET `megaplay.buzz/stream/getSources?id=&cid=&cidu=` dengan header
+   `X-Requested-With: XMLHttpRequest` + referer embed (endpoint menolak
+   non-AJAX: 403 "accepts only AJAX requests").
+5. Respons JSON: `enc` (token) + `tracks[]` (subtitle .vtt, `label` = bahasa).
+6. `megaDecrypt` — AES-256-CBC (`cipher.NewCBCDecrypter`, bukan ECB per-blok);
+   key `i?LMTAx0Q6,:}50U` zero-padded ke 32 byte, IV `W0;27ToaUpl_P%'c`
+   (keduanya dari `newclient.min.js` embed), base64url, PKCS#7 dibuang manual
+   → plaintext `{"file":".../master.m3u8"}`.
+7. Master diparse `parseMaster` seperti sebelumnya; subtitle dari `tracks[]`
+   `getSources` (label = bahasa, semuanya `default`).
+
+Catatan `go.mod`: modul diganti `module zanime` (dulu `module main`) — `go test`
+tidak bisa meng-import package bernama `main` di toolchain baru, jadi trik
+swap-modul `check.sh` tidak lagi perlu.
 
 Yang **tidak** dipindah: history/logview, jadwal animeschedule, mpv, syncplay,
 IINA, android_mpv, yt-dlp, curl-impersonate failover, dan `download` (:346)
@@ -168,6 +200,13 @@ me-resolve URI segmen relatif terhadap URL playlist dan membuang query
 
 Aplikasi **tanpa ffmpeg sama sekali**: remux `-c copy` dan endpoint stream
 dibuang, jadi tidak ada `os/exec`.
+
+Segmen upstream berkamuflase: MPEG-TS dipakaikan nama `.jpg`/`.html` dan
+ disimpan di host CDN lain dari playlist-nya (`79qle.hiddenvertex.top` dkk).
+ Karena itu playlist varian ditulis ulang penuh — setiap URI segmen (absolut
+ maupun relatif) menjadi `/api/hls/.../s/{base64url URL absolut}`, dan
+ content-type segmen di-sniff dari magic byte (`0x47` → TS, `ftyp` → MP4),
+ bukan dari ekstensi nama file.
 
 ## Subtitle Indonesia
 
@@ -255,12 +294,12 @@ dikirim untuk model berbayar).
 go run . -addr :8080        # API + SPA di :8080 (web/dist hasil build, di-embed)
 cd web && npm run dev       # dev server rsbuild + proxy /api → :8080
 cd web && npm run build     # hasil ke web/dist (di-embed oleh go:embed)
-./check.sh                  # go mod tidy + vet + test (swap module main sementara)
+go test ./...               # vet + test
 ```
 
-`check.sh` menukar `module main` → `module zanimetest` sementara, karena
-`go test` tidak bisa meng-import modul yang namanya persis `main`. `go.mod`
-yang diserahkan tetap `module main`.
+`go:embed` mengunci `web/dist` saat kompilasi: ubah frontend → `npm run build`
+dulu, lalu **compile ulang + restart** binary — mengganti dist saja tidak
+mengubah apa yang disajikan `:8080`.
 
 ## Dilewati
 

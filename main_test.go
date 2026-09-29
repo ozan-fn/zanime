@@ -83,29 +83,23 @@ func TestPickQuality(t *testing.T) {
 	}
 }
 
-func TestZokoHashPicksMode(t *testing.T) {
+func TestServerHashPicksMode(t *testing.T) {
 	page := `<div class="ps__-list">
 	<div class="item server-item" data-type="sub"
-		data-server-name="ZokoAnime" data-hash="c3ViLWhhc2g=">
-		<a href="javascript:;" class="btn">ZokoAnime</a></div>
-	<div class="item server-item" data-type="sub"
-		data-server-name="HD-1" data-hash="aGQx">
-		<a href="javascript:;" class="btn">HD-1</a></div>
+		data-server-name="HD-2" data-hash="c3ViLWhhc2g=">
+		<a href="javascript:;" class="btn">HD-2</a></div>
 	<div class="item server-item" data-type="dub"
-		data-server-name="ZokoAnime" data-hash="ZHViLWhhc2g=">
-		<a href="javascript:;" class="btn">ZokoAnime</a></div>
-	<div class="item server-item" data-type="dub"
-		data-server-name="HD-1" data-hash="aGQy">
-		<a href="javascript:;" class="btn">HD-1</a></div>`
+		data-server-name="Vidstream-2" data-hash="ZHViLWhhc2g=">
+		<a href="javascript:;" class="btn">Vidstream-2</a></div>`
 
-	if got := zokoHash(page, "sub"); got != "c3ViLWhhc2g=" {
+	if got := serverHash(page, "sub"); got != "c3ViLWhhc2g=" {
 		t.Errorf("sub: got %q", got)
 	}
-	if got := zokoHash(page, "dub"); got != "ZHViLWhhc2g=" {
+	if got := serverHash(page, "dub"); got != "ZHViLWhhc2g=" {
 		t.Errorf("dub must not fall back to the sub embed, got %q", got)
 	}
-	if got := zokoHash(`<div class="item server-item" data-type="sub" data-server-name="HD-1" data-hash="eA==">`, "sub"); got != "" {
-		t.Errorf("no ZokoAnime server should yield nothing, got %q", got)
+	if got := serverHash(`<div class="item server-item" data-type="dub" data-server-name="HD-1" data-hash="eA==">`, "sub"); got != "" {
+		t.Errorf("no sub server should yield nothing, got %q", got)
 	}
 }
 
@@ -122,12 +116,12 @@ func TestStreamMasterRewritesVariants(t *testing.T) {
 	src := &Source{Master: master, Referer: "https://stream.example/",
 		Qualities: parseMaster(sampleMaster, master)}
 
-	req := httptest.NewRequest(http.MethodGet, "/hls/42/master.m3u8?mode=dub", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/hls/42/master.m3u8?mode=dub", nil)
 	rec := httptest.NewRecorder()
 	streamMaster(rec, req, "42", src, "dub")
 
 	body := rec.Body.String()
-	for _, want := range []string{"/hls/42/dub/360p/index.m3u8", "/hls/42/dub/1080p/index.m3u8", "/hls/42/dub/480p/index.m3u8"} {
+	for _, want := range []string{"/api/hls/42/dub/360p/index.m3u8", "/api/hls/42/dub/1080p/index.m3u8", "/api/hls/42/dub/480p/index.m3u8"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %s in:\n%s", want, body)
 		}

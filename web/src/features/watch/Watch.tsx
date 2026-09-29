@@ -105,6 +105,7 @@ export function Watch({
             {prev ? (
               <a
                 href={watchHref(animeId, prev.id, mode)}
+                data-native=""
                 class="rounded-lg border border-border bg-card px-3 py-2 text-sm hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground"
               >
                 <Icon name="chevron-left" class="mr-1 inline size-3.5" /> Ep {prev.number}
@@ -113,6 +114,7 @@ export function Watch({
             {next ? (
               <a
                 href={watchHref(animeId, next.id, mode)}
+                data-native=""
                 class="rounded-lg border border-border bg-card px-3 py-2 text-sm hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground"
               >
                 Ep {next.number} <Icon name="chevron-right" class="ml-1 inline size-3.5" />
@@ -175,6 +177,7 @@ export function Watch({
               <a
                 key={e.id}
                 href={watchHref(animeId, e.id, mode)}
+                data-native=""
                 aria-current={e.id === epId ? 'true' : 'false'}
                 class={`rounded-lg px-2 py-1.5 text-center text-sm ${
                   e.id === epId

@@ -6,6 +6,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/sha256"
 	"embed"
 	"encoding/base64"
@@ -189,7 +191,7 @@ func streamUpstream(w http.ResponseWriter, r *http.Request, rawURL, referer, con
 // streamMaster proxies the upstream master playlist with every variant URI
 // repointed at this proxy. Only the master needs rewriting: the variant
 // playlists keep their relative segment names, which then resolve back into
-// /hls/{id}/{mode}/{quality}/ — the identity the segment handler reads.
+// /api/hls/{id}/{mode}/{quality}/ — the identity the segment handler reads.
 // A relative URI resolved against a query-string base drops that query
 // (RFC 3986), which is why segments used to come from the default variant
 // whatever quality was picked.
@@ -238,6 +240,80 @@ func streamMaster(w http.ResponseWriter, r *http.Request, id string, src *Source
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-cache")
 	io.WriteString(w, strings.Join(out, "\n")+"\n")
+}
+
+// streamVariant proxies a media playlist, repointing every segment URI —
+// relative or absolute, whatever host — at this proxy. The upstream CDN hosts
+// segments on separate hosts under camouflaged names (seg-1....jpg), so the
+// segment is passed as its base64url'd absolute URL.
+func streamVariant(w http.ResponseWriter, r *http.Request, id, mode, quality, variant, referer string) {
+	resp, err := fetchUpstream(r.Context(), variant, referer)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	base, _ := url.Parse(variant)
+	out := make([]string, 0, 1024)
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			out = append(out, line)
+			continue
+		}
+		ref, err := url.Parse(line)
+		if err != nil {
+			continue
+		}
+		seg := base.ResolveReference(ref).String()
+		out = append(out, "/api/hls/"+id+"/"+mode+"/"+quality+"/s/"+base64.RawURLEncoding.EncodeToString([]byte(seg)))
+	}
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "no-cache")
+	io.WriteString(w, strings.Join(out, "\n")+"\n")
+}
+
+// megaSegmentType sniffs a segment's real content type from its bytes: the
+// upstream camouflages TS segments as image/document filenames. Magic bytes:
+// MPEG-TS sync 0x47 at 0 and 188-byte stride, MP4 `ftyp` box at offset 4.
+func megaSegmentType(head []byte) string {
+	if len(head) >= 1 && head[0] == 0x47 {
+		return "video/mp2t"
+	}
+	if len(head) >= 12 && string(head[4:8]) == "ftyp" {
+		return "video/mp4"
+	}
+	return "application/octet-stream"
+}
+
+// probeSegment peeks the first bytes of the upstream segment to sniff its
+// content type, closing the probe body before the caller re-fetches.
+func probeSegment(ctx context.Context, rawURL, referer string) (string, bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", false
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Referer", referer)
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return "", false
+	}
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(resp.Body, head)
+	return megaSegmentType(head[:n]), true
 }
 
 func deobfuscateBlob(blob string) (string, error) {
@@ -289,7 +365,7 @@ func proxiedImg(raw string) string {
 	if !reImgHost.MatchString(raw) {
 		return raw
 	}
-	return "/img?u=" + base64.RawURLEncoding.EncodeToString([]byte(raw))
+	return "/api/img?u=" + base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
 // animeDetails scrapes the anime page for everything the poster and the
@@ -422,13 +498,13 @@ func epNumber(s string) float64 {
 
 var reDataHash = regexp.MustCompile(`data-hash="([^"]*)"`)
 
-// zokoHash picks the ZokoAnime server of the wanted audio mode. Sub and dub are
-// separate embeds (…/sub vs …/dub); taking the first ZokoAnime hit, as a bare
-// FindStringSubmatch did, always resolved dub to the sub stream.
-func zokoHash(page, mode string) string {
+// serverHash picks the first server of the wanted audio mode. Sub and dub are
+// separate embeds; upstream names its servers HD-2, Vidstream-2 and the like
+// (the old ZokoAnime server is gone), so the name is not filtered — the mode
+// is what separates the streams.
+func serverHash(page, mode string) string {
 	for _, item := range strings.Split(page, "server-item")[1:] {
-		if !strings.Contains(item, `data-type="`+mode+`"`) ||
-			!strings.Contains(item, `data-server-name="ZokoAnime"`) {
+		if !strings.Contains(item, `data-type="`+mode+`"`) {
 			continue
 		}
 		if m := reDataHash.FindStringSubmatch(item); m != nil {
@@ -447,8 +523,63 @@ type embedConfig struct {
 	} `json:"subtitles"`
 }
 
-// resolve finds the ZokoAnime embed for episodeID/mode and returns its master
-// playlist, subtitle list and the referer the stream host demands.
+// The megaplay embed answers a same-origin XHR (stream/getSources) with an
+// AES-256-CBC token whose plaintext is the master playlist URL. Key and IV
+// ship in the embed's newclient.min.js; the key is zero-padded to 32 bytes.
+var (
+	megaKey = append([]byte("i?LMTAx0Q6,:}50U"), make([]byte, 16)...)
+	megaIV  = []byte("W0;27ToaUpl_P%'c")
+)
+
+// megaSources is the getSources payload: media ids and the encrypted token.
+type megaSources struct {
+	ID     string `json:"id"`
+	RealID string `json:"realid"`
+	MediaID string `json:"mediaid"`
+	Tracks []struct {
+		File  string `json:"file"`
+		Label string `json:"label"`
+	} `json:"tracks"`
+	Enc string `json:"enc"`
+}
+
+// megaDecrypt decrypts the base64url token into the master playlist URL.
+func megaDecrypt(enc string) (string, error) {
+	b64 := strings.NewReplacer("-", "+", "_", "/").Replace(enc)
+	if pad := len(b64) % 4; pad != 0 {
+		b64 += strings.Repeat("=", 4-pad)
+	}
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return "", fmt.Errorf("enc token: %w", err)
+	}
+	block, err := aes.NewCipher(megaKey)
+	if err != nil {
+		return "", err
+	}
+	if len(raw)%aes.BlockSize != 0 {
+		return "", errors.New("enc token: bad length")
+	}
+	// CBC, bukan ECB per-blok: tiap blok ciphertext didekrip lalu di-XOR dengan
+	// blok sebelumnya; blok pertama pakai IV.
+	plain := make([]byte, len(raw))
+	cipher.NewCBCDecrypter(block, megaIV).CryptBlocks(plain, raw)
+	// Remove PKCS#7 padding.
+	n := len(plain)
+	p := int(plain[n-1])
+	if p == 0 || p > aes.BlockSize || p > n {
+		return "", errors.New("enc token: bad padding")
+	}
+	for _, b := range plain[n-p:] {
+		if int(b) != p {
+			return "", errors.New("enc token: bad padding")
+		}
+	}
+	return string(plain[:n-p]), nil
+}
+
+// resolve finds the stream server of the wanted audio mode and returns its
+// master playlist, subtitle list and the referer the stream host demands.
 func resolve(ctx context.Context, episodeID, mode string) (*Source, error) {
 	if mode != "sub" && mode != "dub" {
 		mode = "sub"
@@ -458,9 +589,9 @@ func resolve(ctx context.Context, episodeID, mode string) (*Source, error) {
 		return nil, err
 	}
 	page = strings.ReplaceAll(page, `\"`, `"`)
-	hash := zokoHash(page, mode)
+	hash := serverHash(page, mode)
 	if hash == "" {
-		return nil, fmt.Errorf("no ZokoAnime source for episode %s (%s)", episodeID, mode)
+		return nil, fmt.Errorf("no stream source for episode %s (%s)", episodeID, mode)
 	}
 	embedURL, err := base64.StdEncoding.DecodeString(hash)
 	if err != nil {
@@ -476,30 +607,99 @@ func resolve(ctx context.Context, episodeID, mode string) (*Source, error) {
 	if err != nil {
 		return nil, err
 	}
-	pm := regexp.MustCompile(`window\.__P="([^"]*)"`).FindStringSubmatch(embedPage)
-	if pm == nil {
-		return nil, errors.New("embed page carried no window.__P blob")
+	// The megaplay embed page exposes the ids it needs as data attributes on
+	// #megaplay-player; getSources answers only XHRs with the page URL as referer.
+	var gs megaSources
+	attr := func(name string) string {
+		m := regexp.MustCompile(`data-` + name + `="([0-9]+)"`).FindStringSubmatch(embedPage)
+		if m == nil {
+			return ""
+		}
+		return m[1]
 	}
-	plain, err := deobfuscateBlob(pm[1])
+	gs.ID = attr("id")
+	gs.RealID = attr("realid")
+	gs.MediaID = attr("mediaid")
+	if gs.ID == "" {
+		return nil, errors.New("embed page is not a megaplay player")
+	}
+	master, err := megaResolve(ctx, embed, &gs)
 	if err != nil {
 		return nil, err
 	}
-	var cfg embedConfig
-	if err := json.Unmarshal([]byte(plain), &cfg); err != nil {
-		return nil, fmt.Errorf("embed blob is not json: %w", err)
-	}
-	if cfg.Src == "" {
-		return nil, errors.New("embed blob had no playlist")
-	}
-	qualities, err := qualities(ctx, cfg.Src, referer)
+	qualities, err := qualities(ctx, master, referer)
 	if err != nil {
 		return nil, err
 	}
-	src := &Source{Master: cfg.Src, Referer: referer, Qualities: qualities}
-	for _, s := range cfg.Subtitles {
-		src.Subtitles = append(src.Subtitles, Subtitle{Lang: s.Lang, URL: s.Src, Default: s.Default})
+	src := &Source{Master: master, Referer: referer, Qualities: qualities}
+	for _, t := range gs.Tracks {
+		src.Subtitles = append(src.Subtitles, Subtitle{Lang: t.Label, URL: t.File, Default: true})
 	}
 	return src, nil
+}
+
+// megaResolve calls the embed's getSources AJAX endpoint and decrypts the enc
+// token into the master playlist URL.
+func megaResolve(ctx context.Context, embed string, gs *megaSources) (string, error) {
+	u, err := url.Parse(embed)
+	if err != nil {
+		return "", err
+	}
+	u.Path = "/stream/getSources"
+	q := url.Values{}
+	if gs.ID != "" {
+		q.Set("id", gs.ID)
+	}
+	q.Set("cid", gs.RealID)
+	q.Set("cidu", gs.MediaID)
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.Header.Set("Referer", embed)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("getSources HTTP %d", resp.StatusCode)
+	}
+	var payload struct {
+		Enc    string `json:"enc"`
+		Tracks []struct {
+			File  string `json:"file"`
+			Label string `json:"label"`
+		} `json:"tracks"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", fmt.Errorf("getSources is not json: %w", err)
+	}
+	if payload.Enc == "" {
+		return "", errors.New("getSources had no enc token")
+	}
+	plain, err := megaDecrypt(payload.Enc)
+	if err != nil {
+		return "", err
+	}
+	var file struct {
+		File string `json:"file"`
+	}
+	if err := json.Unmarshal([]byte(plain), &file); err != nil {
+		return "", fmt.Errorf("enc token is not json: %w", err)
+	}
+	if file.File == "" {
+		return "", errors.New("enc token had no playlist")
+	}
+	gs.Tracks = payload.Tracks
+	return file.File, nil
 }
 
 func originOf(raw string) (string, error) {
@@ -1314,30 +1514,30 @@ func newServer(cache *subtitleCache) http.Handler {
 				writeErr(w, err)
 				return
 			}
-			streamUpstream(w, req, variant, referer, "application/vnd.apple.mpegurl", "no-cache")
+			streamVariant(w, req, chi.URLParam(req, "id"), chi.URLParam(req, "mode"), chi.URLParam(req, "quality"), variant, referer)
 		})
-		api.Get("/hls/{id}/{mode}/{quality}/{file}", func(w http.ResponseWriter, req *http.Request) {
-			file := chi.URLParam(req, "file")
-			if !reSegment.MatchString(file) {
-				http.NotFound(w, req)
-				return
-			}
-			variant, referer, err := variantFor(req, chi.URLParam(req, "id"), chi.URLParam(req, "mode"), chi.URLParam(req, "quality"))
+		// Segmen ditulis sebagai base64url URL absolutnya: upstream menyimpannya
+		// di host lain dengan nama berkamuflase (seg-N....jpg), jadi handler tidak
+		// bisa merekonstruksi URL dari nama file.
+		api.Get("/hls/{id}/{mode}/{quality}/s/{seg}", func(w http.ResponseWriter, req *http.Request) {		dec, err := base64.RawURLEncoding.DecodeString(chi.URLParam(req, "seg"))
+		if err != nil || !strings.HasPrefix(string(dec), "https://") {
+			http.NotFound(w, req)
+			return
+		}
+
+			_, referer, err := variantFor(req, chi.URLParam(req, "id"), chi.URLParam(req, "mode"), chi.URLParam(req, "quality"))
 			if err != nil {
 				writeErr(w, err)
 				return
 			}
-			ct := "video/mp4"
-			switch {
-			case strings.HasSuffix(file, ".ts"):
-				ct = "video/mp2t"
-			case strings.HasSuffix(file, ".m4s"):
-				ct = "video/iso.segment"
+			// Content type di-sniff dari byte pertama: TS berkamuflase .jpg/.html,
+			// MP4 berkamuflase .js. Segmen immutable → cache panjang.
+			ct, ok := probeSegment(req.Context(), string(dec), referer)
+			if !ok {
+				writeErr(w, errors.New("segment probe failed"))
+				return
 			}
-			base := variant[:strings.LastIndex(variant, "/")+1]
-			// A segment is immutable for this episode+quality URL, so seeking and
-			// replaying cost upstream nothing.
-			streamUpstream(w, req, base+file, referer, ct, "public, max-age=3600")
+			streamUpstream(w, req, string(dec), referer, ct, "public, max-age=3600")
 		})
 		// The detail page carries what the search card does not: full synopsis,
 		// japanese title, airing window, score, studios. Fetched once per browse.
