@@ -105,8 +105,9 @@ func TestServersParsesEmbeds(t *testing.T) {
 	}
 }
 
-// Try order: sub before dub, ZokoAnime before megaplay, upstream order kept.
-func TestOrderedRanksSubThenZoko(t *testing.T) {
+// Try order: sub before dub, Vidstream-2 (megaplay) before ZokoAnime,
+// upstream order kept.
+func TestOrderedRanksSubThenMega(t *testing.T) {
 	in := []Embed{
 		{Type: typeDub, URL: "https://megaplay.buzz/stream/s-2/2/dub"},
 		{Type: typeDub, URL: "https://zokoanime.video/stream/mal/1/1/dub"},
@@ -115,10 +116,10 @@ func TestOrderedRanksSubThenZoko(t *testing.T) {
 	}
 	got := ordered(in)
 	for i, want := range []string{
-		"https://zokoanime.video/stream/mal/1/1/sub",
 		"https://megaplay.buzz/stream/s-2/2/sub",
-		"https://zokoanime.video/stream/mal/1/1/dub",
+		"https://zokoanime.video/stream/mal/1/1/sub",
 		"https://megaplay.buzz/stream/s-2/2/dub",
+		"https://zokoanime.video/stream/mal/1/1/dub",
 	} {
 		if got[i].URL != want {
 			t.Fatalf("position %d: got %s want %s (%+v)", i, got[i].URL, want, got)

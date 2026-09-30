@@ -11,8 +11,8 @@
 //   - MegaPlay: the embed exposes data-id; /stream/getSources answers an
 //     AES-256-CBC token whose plaintext is the master playlist URL.
 //
-// ZokoAnime is tried first — it is the player upstream serves by default — and
-// the megaplay embeds are the fallback (see Resolve).
+// Vidstream-2 (megaplay) is tried first and the ZokoAnime embeds are the
+// fallback (see Resolve).
 package stream
 
 import (
@@ -203,7 +203,8 @@ type megaSources struct {
 var serversURL = hianime.ServersAPI
 
 // Resolve finds a playable stream for an episode: every embed is tried, the sub
-// ZokoAnime one first, then the sub megaplay one, then the same pair for dub.
+// Vidstream-2 (megaplay) one first, then the sub ZokoAnime one, then the same
+// pair for dub.
 // index.js lets a human pick between providers; here the choice is made for
 // them, which is the same order, just without the prompt.
 //
@@ -247,21 +248,21 @@ func Resolve(ctx context.Context, episodeID string) (*hianime.Source, error) {
 }
 
 // ordered returns the embeds in the order Resolve should try them: sub before
-// dub, ZokoAnime before megaplay, upstream order inside each group. Kept stable
-// so the same episode always resolves the same way.
+// dub, Vidstream-2 (megaplay) before ZokoAnime, upstream order inside each
+// group. Kept stable so the same episode always resolves the same way.
 func ordered(embeds []Embed) []Embed {
 	out := append([]Embed(nil), embeds...)
 	sort.SliceStable(out, func(i, j int) bool { return rank(out[i]) < rank(out[j]) })
 	return out
 }
 
-// rank scores one embed: 0 sub+zoko, 1 sub+megaplay, 2 dub+zoko, 3 dub+megaplay.
+// rank scores one embed: 0 sub+megaplay, 1 sub+zoko, 2 dub+megaplay, 3 dub+zoko.
 func rank(e Embed) int {
 	n := 0
 	if e.Type != typeSub {
 		n += 2
 	}
-	if !IsZoko(e.URL) {
+	if IsZoko(e.URL) {
 		n++
 	}
 	return n

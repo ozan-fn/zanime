@@ -35,7 +35,7 @@ hanya bootstrap. Test yang unik di `main_test.go` dipindah, bukan dibuang:
 |---|---|
 | `go mod init zanime` + `go get chi/v5` | done |
 | Scraping katalog (search / detail / episodes) | done |
-| Resolve embed ala `index.js`: ZokoAnime + MegaPlay, fallback Zoko → Vidstream | done |
+| Resolve embed ala `index.js`: ZokoAnime + MegaPlay, fallback Vidstream → Zoko | done |
 | Sub default (dub fallback) + pilih track dialog (bahasa lalu cue) + fallback server bila <10 cue | done |
 | Prompt anti-aksara non-Latin + validasi berkas sebelum job `ready` | done |
 | Parse master playlist + pilih kualitas | done |
@@ -94,8 +94,8 @@ Karena audio bukan pilihan pengguna, tidak ada tombol Subtitle/Dub di UI.
    varian), ia dipakai sebagai satu kualitas `auto` — `index.js` juga
    memperlakukannya sebagai playlist yang bisa diputar. Kalau benar-benar tidak
    ada yang bisa diputar, resolve **gagal** supaya jatuh ke server berikutnya.
-4. **fallback otomatis** — `ordered()` mengurutkan embed: sub+zoko, sub+megaplay,
-   dub+zoko, dub+megaplay (urutan upstream dipertahankan di dalam grup), lalu
+4. **fallback otomatis** — `ordered()` mengurutkan embed: sub+megaplay, sub+zoko,
+   dub+megaplay, dub+zoko (urutan upstream dipertahankan di dalam grup), lalu
    `Resolve` mencoba satu per satu. Embed mati / getSources gagal / master mati =
    server berikutnya, bukan episode yang gagal. `index.js` menyerahkan pilihan
    ini ke manusia; di sini urutannya sama, cuma tanpa prompt.
