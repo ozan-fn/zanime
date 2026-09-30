@@ -1,8 +1,13 @@
 # Hasil build Go
 main
 main.exe
+zanime
+zanime.exe
 *.test
 *.out
+
+# Secrets
+.env
 
 # Cache subtitle terjemahan & runtime
 .cache/
