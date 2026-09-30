@@ -1,32 +1,38 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useState } from 'react';
+import { Link, useParams } from 'react-router';
 import { animeDetails, animeEpisodes, type AnimeDetails } from './api';
 import { knownTitle } from './catalog';
-import { slugTitle, watchHref } from '../../lib/urls';
+import { animeHref, slugTitle, watchHref } from '../../lib/urls';
 import type { Episode } from '../../lib/types';
 import { Icon } from '../../components/ui/Icon';
 
 // Katalog: /a/{id}. Judul dari cache pencarian dipakai sebelum detail pulang,
 // jadi heading tidak melompat.
-export function Anime({ animeId }: { animeId?: string }) {
+export function Anime() {
+  const { animeId = '' } = useParams();
   const [detail, setDetail] = useState<AnimeDetails | null>(null);
   const [episodes, setEpisodes] = useState<Episode[] | null>(null);
   const [error, setError] = useState('');
-  const title = (animeId && knownTitle(animeId)) || slugTitle(animeId || '');
+  const title = knownTitle(animeId) || slugTitle(animeId);
 
   useEffect(() => {
     if (!animeId) return;
     document.title = `${title} · zanime`;
     let alive = true;
-    animeDetails(animeId).then((d) => alive && setDetail(d)).catch((e) => alive && setError(e.message));
-    animeEpisodes(animeId).then((e) => alive && setEpisodes(e)).catch(() => {});
+    animeDetails(animeId)
+      .then((d) => alive && setDetail(d))
+      .catch((e: Error) => alive && setError(e.message));
+    animeEpisodes(animeId)
+      .then((e) => alive && setEpisodes(e))
+      .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [animeId]);
+  }, [animeId, title]);
 
   if (!animeId || error) {
     return (
-      <p class="text-sm text-destructive">
+      <p className="text-sm text-destructive">
         {error ? `Katalog gagal dimuat: ${error}.` : 'Anime tidak ditemukan.'}
       </p>
     );
@@ -40,80 +46,99 @@ export function Anime({ animeId }: { animeId?: string }) {
 
   return (
     <>
-      <a
-        href="/"
-        class="inline-flex h-10 w-fit items-center gap-2 rounded-lg border border-border bg-card px-3 text-sm hover:border-border-strong hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground"
+      <Link
+        to="/"
+        className="inline-flex h-10 w-fit items-center gap-2 rounded-lg border border-border bg-card px-3 text-sm hover:border-border-strong hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground"
       >
-        <Icon name="arrow-left" class="size-4" /> Cari judul lain
-      </a>
-      <h1 class="mt-3 text-xl font-semibold tracking-tight sm:text-2xl">{title}</h1>
+        <Icon name="arrow-left" className="size-4" /> Cari judul lain
+      </Link>
+      <h1 className="mt-3 text-xl font-semibold tracking-tight sm:text-2xl">{title}</h1>
 
-      <div class="mt-6 flex flex-col gap-5 sm:flex-row">
+      <div className="mt-6 flex flex-col gap-5 sm:flex-row">
         {detail?.poster && (
           <img
             src={detail.poster}
             alt={`Poster ${title}`}
             loading="lazy"
-            class="w-44 shrink-0 self-start rounded-lg border border-border object-cover"
+            className="w-44 shrink-0 self-start rounded-lg border border-border object-cover"
           />
         )}
-        <div class="min-w-0 flex-1">
-          <h2 class="text-lg font-semibold tracking-tight">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-lg font-semibold tracking-tight">
             {detail ? (detail.japanese ? `${detail.name} (${detail.japanese})` : detail.name) : title}
           </h2>
-          {meta && <p class="mt-1 text-sm text-subtle">{meta}</p>}
+          {meta && <p className="mt-1 text-sm text-subtle">{meta}</p>}
           {detail?.genres?.length ? (
-            <div class="mt-3 flex flex-wrap gap-1.5">
+            <div className="mt-3 flex flex-wrap gap-1.5">
               {detail.genres.map((g) => (
-                <span key={g} class="rounded-lg border border-border bg-card px-2.5 py-0.5 text-xs text-subtle">
+                <span key={g} className="rounded-lg border border-border bg-card px-2.5 py-0.5 text-xs text-subtle">
                   {g}
                 </span>
               ))}
             </div>
           ) : null}
-          {detail?.synopsis && <p class="mt-4 text-sm leading-relaxed text-subtle">{detail.synopsis}</p>}
+          {detail?.synopsis && <p className="mt-4 text-sm leading-relaxed text-subtle">{detail.synopsis}</p>}
         </div>
       </div>
 
-      <section class="mt-8">
-        <h2 class="text-sm font-medium text-subtle">Episode</h2>
+      <section className="mt-8">
+        <h2 className="text-sm font-medium text-subtle">Episode</h2>
         {!episodes && (
-          <div class="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5">
+          <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5">
             {Array.from({ length: 12 }, (_, i) => (
-              <div key={i} class="h-9 animate-pulse rounded-lg bg-raised" />
+              <div key={i} className="h-9 animate-pulse rounded-lg bg-raised" />
             ))}
           </div>
         )}
         {episodes && !episodes.length && (
-          <p class="mt-2 text-sm text-subtle">Judul ini belum punya episode yang bisa diputar.</p>
+          <p className="mt-2 text-sm text-subtle">Judul ini belum punya episode yang bisa diputar.</p>
         )}
         {episodes?.length ? (
-          <div class="mt-2 grid max-h-96 grid-cols-3 gap-2 overflow-y-auto rounded-lg border border-border bg-card p-2 sm:grid-cols-4 md:grid-cols-5">
+          <div className="mt-2 grid max-h-96 grid-cols-3 gap-2 overflow-y-auto rounded-lg border border-border bg-card p-2 sm:grid-cols-4 md:grid-cols-5">
             {episodes.map((e) => (
-              <a
+              <Link
                 key={e.id}
-                href={watchHref(animeId, e.id, 'sub')}
-                class="rounded-lg px-2 py-1.5 text-center text-sm text-subtle hover:bg-raised hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground"
+                to={watchHref(animeId, e.id)}
+                className="rounded-lg px-2 py-1.5 text-center text-sm text-subtle hover:bg-raised hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground"
               >
                 {e.number}
-              </a>
+              </Link>
             ))}
           </div>
         ) : null}
       </section>
 
       {detail?.related?.length ? (
-        <section class="mt-8">
-          <h3 class="text-sm font-medium text-subtle">Anime terkait</h3>
-          <div class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+        <section className="mt-8">
+          <h3 className="text-sm font-medium text-subtle">Anime terkait</h3>
+          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
             {detail.related.map((r) => (
-              <a
+              <Link
                 key={r.id}
-                href={`/a/${encodeURIComponent(r.id)}`}
-                class="rounded-lg border border-border bg-card p-3 text-xs transition-colors hover:border-border-strong hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground"
+                to={animeHref(r.id)}
+                className="rounded-lg border border-border bg-card p-3 text-xs transition-colors hover:border-border-strong hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground"
               >
                 {r.name}
-              </a>
+              </Link>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {/* Kolom "Rekomendasi" dari halaman upstream selama ini discrape lalu
+          dibuang: tidak ada yang menampilkannya. */}
+      {detail?.recommended?.length ? (
+        <section className="mt-8">
+          <h3 className="text-sm font-medium text-subtle">Rekomendasi</h3>
+          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+            {detail.recommended.map((r) => (
+              <Link
+                key={r.id}
+                to={animeHref(r.id)}
+                className="rounded-lg border border-border bg-card p-3 text-xs transition-colors hover:border-border-strong hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground"
+              >
+                {r.name}
+              </Link>
             ))}
           </div>
         </section>

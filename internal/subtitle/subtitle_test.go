@@ -302,3 +302,49 @@ func TestSubtitleCache(t *testing.T) {
 		t.Fatalf("disk cache miss: %q", got)
 	}
 }
+
+// A cached file in the wrong script is not a translation: it has to read as a
+// miss so the episode is converted again instead of being served forever.
+func TestSubtitleCacheRejectsWrongScript(t *testing.T) {
+	c := NewSubtitleCache(t.TempDir())
+	c.Put("k", "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\nمرحبا بالعالم\n")
+	if got, ok := c.Get("k"); ok {
+		t.Fatalf("expected a miss, got %q", got)
+	}
+}
+
+// A track labelled "Indonesian" is already the target language: translating it
+// would burn quota to mangle a human translation. The alias table lives in
+// hianime because the resolver ranks tracks by the same names.
+func TestMatchesLang(t *testing.T) {
+	for _, label := range []string{"id", "id-ID", "ind", "Indonesian", "Bahasa Indonesia"} {
+		if !hianime.MatchesLang(label, "id") {
+			t.Errorf("%q should match id", label)
+		}
+	}
+	for _, label := range []string{"en", "English", "Japanese", "Chinese (Chinese - (Simplified))", ""} {
+		if hianime.MatchesLang(label, "id") {
+			t.Errorf("%q should not match id", label)
+		}
+	}
+	if !hianime.MatchesLang("English", "en") || hianime.MatchesLang("Indonesian", "en") {
+		t.Error("en matching is wrong")
+	}
+	// Unknown language: prefix test, so a code the provider invents still works.
+	if !hianime.MatchesLang("jpn", "jpn") || !hianime.MatchesLang("jpn-JP", "jpn") || hianime.MatchesLang("jpn", "en") {
+		t.Error("unknown-language prefix test is wrong")
+	}
+}
+
+func TestMostlyNonLatin(t *testing.T) {
+	for _, s := range []string{"مرحبا بالعالم", "Привет мир", "こんにちは世界"} {
+		if !mostlyNonLatin(s) {
+			t.Errorf("%q should flag", s)
+		}
+	}
+	for _, s := range []string{"Halo dunia", "♪", "...", "Dia bilang: \"Hei!\""} {
+		if mostlyNonLatin(s) {
+			t.Errorf("%q should not flag", s)
+		}
+	}
+}

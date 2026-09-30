@@ -6,7 +6,6 @@
     "noEmit": true,
     "skipLibCheck": true,
     "types": ["@rsbuild/core/types", "node"],
-    "jsxImportSource": "preact",
     "useDefineForClassFields": true,
 
     /* modules */
@@ -15,10 +14,6 @@
     "verbatimModuleSyntax": true,
     "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
-    "paths": {
-      "react": ["./node_modules/preact/compat/"],
-      "react-dom": ["./node_modules/preact/compat/"]
-    },
 
     /* type checking */
     "noUnusedLocals": true,

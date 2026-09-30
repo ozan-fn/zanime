@@ -2,14 +2,12 @@ import { api } from '../../lib/api';
 import type { SubtitleStatus } from '../../lib/types';
 
 // Semua URL media berada di bawah /api/ agar proxy dev cukup satu entri dan
-// Go satu subtree. Mode naik di query, bukan path: browser membuang query
-// saat me-resolve URI segmen relatif, jadi URI varian yang ditulis Go tetap
-// benar tanpa perlu tahu query apa pun.
-export const masterUrl = (epId: string, mode: 'sub' | 'dub') =>
-  `/api/hls/${encodeURIComponent(epId)}/master.m3u8?mode=${mode}`;
+// Go satu subtree. Tidak ada parameter audio: alurnya sama dengan index.js,
+// yang selalu memutar server dub, jadi kualitas saja yang ada di path.
+export const masterUrl = (epId: string) => `/api/hls/${encodeURIComponent(epId)}/master.m3u8`;
 
-export const subtitleFileUrl = (epId: string, mode: 'sub' | 'dub') =>
-  `/api/subtitle/${encodeURIComponent(epId)}?mode=${mode}&lang=id`;
+export const subtitleFileUrl = (epId: string) =>
+  `/api/subtitle/${encodeURIComponent(epId)}?lang=id`;
 
-export const subtitleStatus = (epId: string, mode: 'sub' | 'dub') =>
-  api<SubtitleStatus>(`/subtitle/${encodeURIComponent(epId)}/status?mode=${mode}&lang=id`);
+export const subtitleStatus = (epId: string) =>
+  api<SubtitleStatus>(`/subtitle/${encodeURIComponent(epId)}/status?lang=id`);

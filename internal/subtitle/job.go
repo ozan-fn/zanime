@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -86,10 +85,11 @@ func (j *SubJob) Finish(err error) {
 	j.mu.Unlock()
 }
 
-// SubKey names one finished conversion: an episode, one audio mode, one target
-// language. It is both the cache key and the job key.
-func SubKey(episodeID, mode, lang string) string {
-	return episodeID + "|" + mode + "|" + lang
+// SubKey names one finished conversion: an episode and a target language. It is
+// both the cache key and the job key. Only the dub stream is played, so the
+// audio type is not part of the key.
+func SubKey(episodeID, lang string) string {
+	return episodeID + "|" + lang
 }
 
 var subJobs sync.Map // SubKey -> *SubJob
@@ -107,8 +107,8 @@ func EtaSeconds(done, total int, elapsed time.Duration) int {
 
 // Status returns this request's conversion, starting it on first ask. A source
 // already in the target language is cached verbatim: no job, no quota.
-func Status(req *http.Request, cache *SubtitleCache, episodeID, mode, lang string) (*SubJob, error) {
-	key := SubKey(episodeID, mode, lang)
+func Status(req *http.Request, cache *SubtitleCache, episodeID, lang string) (*SubJob, error) {
+	key := SubKey(episodeID, lang)
 	if _, ok := cache.Get(key); ok {
 		return &SubJob{ready: true}, nil
 	}
@@ -120,7 +120,7 @@ func Status(req *http.Request, cache *SubtitleCache, episodeID, mode, lang strin
 	if v, ok := subJobs.Load(key); ok {
 		return v.(*SubJob), nil
 	}
-	src, err := stream.CachedResolve(req.Context(), episodeID, mode)
+	src, err := stream.CachedResolve(req.Context(), episodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +128,7 @@ func Status(req *http.Request, cache *SubtitleCache, episodeID, mode, lang strin
 	if pick == nil {
 		return nil, errors.New("episode has no subtitles")
 	}
-	if strings.HasPrefix(strings.ToLower(pick.Lang), lang) {
+	if hianime.MatchesLang(pick.Lang, lang) {
 		raw, err := hianime.Get(req.Context(), pick.URL, src.Referer)
 		if err != nil {
 			return nil, err
@@ -141,11 +141,11 @@ func Status(req *http.Request, cache *SubtitleCache, episodeID, mode, lang strin
 	if loaded {
 		return actual.(*SubJob), nil
 	}
-	go RunSubtitleJob(cache, key, episodeID, mode, lang, job)
+	go RunSubtitleJob(cache, key, episodeID, lang, job)
 	return job, nil
 }
 
-func RunSubtitleJob(cache *SubtitleCache, key, episodeID, mode, lang string, job *SubJob) {
+func RunSubtitleJob(cache *SubtitleCache, key, episodeID, lang string, job *SubJob) {
 	// Deliberately not the request context: this job outlives the request that
 	// started it, which is the whole reason it runs in a goroutine.
 	ctx := context.Background()
@@ -156,7 +156,7 @@ func RunSubtitleJob(cache *SubtitleCache, key, episodeID, mode, lang string, job
 		// only burn calls to hear the same answer.
 		job.Finish(err)
 	}
-	src, err := stream.Resolve(ctx, episodeID, mode)
+	src, err := stream.Resolve(ctx, episodeID)
 	if err != nil {
 		fail(err)
 		return
@@ -185,6 +185,14 @@ func RunSubtitleJob(cache *SubtitleCache, key, episodeID, mode, lang string, job
 		fail(err)
 		return
 	}
+	// Validated before the job is called ready: the cache refuses a file whose
+	// script is not the target's, so a job marked ready with such a file left
+	// /subtitle/{id} answering "finished subtitle is missing from the cache"
+	// forever. Failing here reports the real cause instead.
+	if _, ok := usable(done); !ok {
+		fail(errors.New("model returned the subtitle in a non-Latin script"))
+		return
+	}
 	cache.Put(key, done)
 	job.Finish(nil)
 }
@@ -207,12 +215,15 @@ func WriteJob(w http.ResponseWriter, writeJSON func(w http.ResponseWriter, statu
 	writeJSON(w, code, body)
 }
 
+// PickSubtitle chooses the track to convert: the wanted language when the
+// provider already has it (that file is served verbatim), otherwise the track
+// the resolver marked as the episode's dialogue.
 func PickSubtitle(subs []hianime.Subtitle, lang string) *hianime.Subtitle {
 	if len(subs) == 0 {
 		return nil
 	}
 	for i := range subs {
-		if strings.EqualFold(subs[i].Lang, lang) {
+		if hianime.MatchesLang(subs[i].Lang, lang) {
 			return &subs[i]
 		}
 	}

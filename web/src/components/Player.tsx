@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'react';
 import shaka from 'shaka-player/dist/shaka-player.ui';
 import 'shaka-player/dist/controls.css';
 import type { SubtitleStatus } from '../lib/types';
@@ -40,7 +40,7 @@ interface ShakaPlayerLike {
 // Player: shaka.ui.Overlay (docs resmi "Programmatic UI setup") — player + kontrol
 // dibuat dari satu container, jadi menu resolusi (quality) dan subtitle on/off
 // (captions) bawaan shaka ikut terpasang. Overlay menaruh kontrol di dalam box;
-// video elemen dibuat sendiri supaya preact punya ref-nya.
+// video elemen dibuat sendiri supaya React punya ref-nya.
 // addTextTrackAsync hanya boleh dipanggil SETELAH load() selesai — docs shaka:
 // tanpa konten yang sudah dimuat ia melempar CONTENT_NOT_LOADED (7004). Karena itu
 // mount subtitle dibelokan lewat state `loaded`, bukan hanya status subtitle.
@@ -49,6 +49,7 @@ export function Player({ src, subtitle, status }: PlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<ShakaPlayerLike | null>(null);
   const [failed, setFailed] = useState('');
+  const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [badge, setBadge] = useState(false);
   const [pseudoCapable, setPseudoCapable] = useState(false);
@@ -56,8 +57,9 @@ export function Player({ src, subtitle, status }: PlayerProps) {
   const [uiVisible, setUiVisible] = useState(true);
 
   useEffect(() => {
-    const video = videoRef.current!;
-    const box = boxRef.current!;
+    const video = videoRef.current;
+    const box = boxRef.current;
+    if (!video || !box) return;
     let alive = true;
 
     shaka.polyfill.installAll();
@@ -108,8 +110,9 @@ export function Player({ src, subtitle, status }: PlayerProps) {
     controls.addEventListener('hidingui', () => {
       if (alive) setUiVisible(false);
     });
-    const p = ui.getControls().getPlayer();
+    const p = controls.getPlayer();
     setLoaded(false);
+    setFailed('');
     p.attach(video)
       .then(() => {
         if (alive) return p.load(src, 0, 'application/vnd.apple.mpegurl');
@@ -129,7 +132,7 @@ export function Player({ src, subtitle, status }: PlayerProps) {
       p.destroy().catch(() => {});
       playerRef.current = null;
     };
-  }, [src]);
+  }, [src, attempt]);
 
   // Halaman di belakang tidak boleh bergulir saat pseudo-fullscreen aktif.
   useEffect(() => {
@@ -157,7 +160,7 @@ export function Player({ src, subtitle, status }: PlayerProps) {
   }, [subtitle, loaded, status?.state]);
 
   return (
-    <div class="overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-black/50">
+    <div className="overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-black/50">
       <div
         ref={boxRef}
         style={
@@ -165,36 +168,46 @@ export function Player({ src, subtitle, status }: PlayerProps) {
             ? { position: 'fixed', inset: 0, zIndex: 60, aspectRatio: 'auto', width: '100vw', height: '100dvh' }
             : undefined
         }
-        class="relative aspect-video w-full bg-black"
+        className="relative aspect-video w-full bg-black"
       >
-        <video ref={videoRef} playsinline preload="auto" class="h-full w-full object-contain" />
+        <video ref={videoRef} playsInline preload="auto" className="h-full w-full object-contain" />
         {pseudoCapable && (
           <button
             type="button"
             aria-label={pseudoFs ? 'Keluar dari layar penuh' : 'Layar penuh'}
             onClick={() => setPseudoFs((v) => !v)}
-            class={`absolute right-3 top-3 z-30 flex size-9 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur transition-opacity duration-300 hover:bg-black/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground ${
+            className={`absolute right-3 top-3 z-30 flex size-9 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur transition-opacity duration-300 hover:bg-black/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground ${
               uiVisible ? 'opacity-100' : 'pointer-events-none opacity-0'
             }`}
           >
-            <Icon name={pseudoFs ? 'minimize' : 'maximize'} class="size-5" />
+            <Icon name={pseudoFs ? 'minimize' : 'maximize'} className="size-5" />
           </button>
         )}
         <div
           role="status"
           style={{ opacity: badge ? 1 : 0 }}
-          class={`pointer-events-none absolute right-3 z-30 flex size-9 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur transition-opacity duration-300 ${
+          className={`pointer-events-none absolute right-3 z-30 flex size-9 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur transition-opacity duration-300 ${
             pseudoCapable ? 'top-14' : 'top-3'
           }`}
         >
-          <Icon name="cc" class="size-5" />
-          <span class="sr-only">Subtitle Indonesia aktif</span>
+          <Icon name="cc" className="size-5" />
+          <span className="sr-only">Subtitle Indonesia aktif</span>
         </div>
       </div>
       {failed && (
-        <p class="border-t border-border p-3 text-sm text-destructive" role="alert">
-          {failed}
-        </p>
+        <div
+          className="flex flex-wrap items-center gap-3 border-t border-border p-3 text-sm text-destructive"
+          role="alert"
+        >
+          <span>{failed}</span>
+          <button
+            type="button"
+            onClick={() => setAttempt((n) => n + 1)}
+            className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-foreground hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground"
+          >
+            <Icon name="rotate-cw" className="size-3.5" /> Coba lagi
+          </button>
+        </div>
       )}
     </div>
   );

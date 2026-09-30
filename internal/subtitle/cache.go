@@ -30,11 +30,11 @@ func (c *SubtitleCache) path(key string) string {
 
 func (c *SubtitleCache) Get(key string) (string, bool) {
 	c.mu.Lock()
-	if v, ok := c.mem[key]; ok {
-		c.mu.Unlock()
-		return v, true
-	}
+	v, ok := c.mem[key]
 	c.mu.Unlock()
+	if ok {
+		return usable(v)
+	}
 	b, err := os.ReadFile(c.path(key))
 	if err != nil {
 		return "", false
@@ -42,7 +42,19 @@ func (c *SubtitleCache) Get(key string) (string, bool) {
 	c.mu.Lock()
 	c.mem[key] = string(b)
 	c.mu.Unlock()
-	return string(b), true
+	return usable(string(b))
+}
+
+// usable reports a cached file as a hit only when its script is the one the
+// translation is written in. A file that came back in Arabic, Cyrillic or Han is
+// not a usable translation, so it counts as a miss and /status starts the
+// conversion again — a bad file left in the cache would otherwise be served
+// forever, and a prompt fix would never show.
+func usable(vtt string) (string, bool) {
+	if mostlyNonLatin(vtt) {
+		return "", false
+	}
+	return vtt, true
 }
 
 func (c *SubtitleCache) Put(key, vtt string) {

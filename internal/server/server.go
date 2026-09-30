@@ -53,51 +53,43 @@ func New(cache *subtitle.SubtitleCache, webRoot fs.FS) http.Handler {
 			writeJSON(w, http.StatusOK, results)
 		})
 		// The player loads the master playlist, and the browser cannot send the
-		// Referer the stream host wants, so all three levels are proxied. Mode and
-		// quality live in the path: the browser resolves the playlist's relative
-		// segment URIs against its own URL and drops that URL's query, so segments
-		// asked for without them always came back from the default variant.
+		// Referer the stream host wants, so all three levels are proxied. Quality
+		// lives in the path: the browser resolves the playlist's relative segment
+		// URIs against its own URL and drops that URL's query, so segments asked
+		// for without it always came back from the default variant.
 		api.Get("/hls/{id}/master.m3u8", func(w http.ResponseWriter, req *http.Request) {
 			id := chi.URLParam(req, "id")
-			mode := stream.NormMode(req.URL.Query().Get("mode"))
-			src, err := stream.CachedResolve(req.Context(), id, mode)
-			if err != nil {
-				writeErr(w, err)
-				return
-			}
-			stream.StreamMaster(w, req, id, src, mode)
+			servePlaylist(w, req, id, func(src *hianime.Source) error {
+				return stream.StreamMaster(w, req, id, src)
+			})
 		})
-		api.Get("/hls/{id}/{mode}/{quality}/index.m3u8", func(w http.ResponseWriter, req *http.Request) {
-			variant, referer, err := variantFor(req, chi.URLParam(req, "id"), chi.URLParam(req, "mode"), chi.URLParam(req, "quality"))
-			if err != nil {
-				writeErr(w, err)
-				return
-			}
-			stream.StreamVariant(w, req, chi.URLParam(req, "id"), chi.URLParam(req, "mode"), chi.URLParam(req, "quality"), variant, referer)
+		api.Get("/hls/{id}/{quality}/index.m3u8", func(w http.ResponseWriter, req *http.Request) {
+			id, quality := chi.URLParam(req, "id"), chi.URLParam(req, "quality")
+			servePlaylist(w, req, id, func(src *hianime.Source) error {
+				variant, err := stream.PickQuality(src, quality)
+				if err != nil {
+					return err
+				}
+				return stream.StreamVariant(w, req, id, quality, variant, src.Referer)
+			})
 		})
 		// Segmen ditulis sebagai base64url URL absolutnya: upstream menyimpannya
 		// di host lain dengan nama berkamuflase (seg-N....jpg), jadi handler tidak
 		// bisa merekonstruksi URL dari nama file.
-		api.Get("/hls/{id}/{mode}/{quality}/s/{seg}", func(w http.ResponseWriter, req *http.Request) {
+		api.Get("/hls/{id}/{quality}/s/{seg}", func(w http.ResponseWriter, req *http.Request) {
 			dec, err := base64.RawURLEncoding.DecodeString(chi.URLParam(req, "seg"))
 			if err != nil || !strings.HasPrefix(string(dec), "https://") {
 				http.NotFound(w, req)
 				return
 			}
-
-			_, referer, err := variantFor(req, chi.URLParam(req, "id"), chi.URLParam(req, "mode"), chi.URLParam(req, "quality"))
+			src, err := stream.CachedResolve(req.Context(), chi.URLParam(req, "id"))
 			if err != nil {
 				writeErr(w, err)
 				return
 			}
 			// Content type di-sniff dari byte pertama: TS berkamuflase .jpg/.html,
 			// MP4 berkamuflase .js. Segmen immutable → cache panjang.
-			ct, ok := stream.ProbeSegment(req.Context(), string(dec), referer)
-			if !ok {
-				writeErr(w, errors.New("segment probe failed"))
-				return
-			}
-			stream.StreamUpstream(w, req, string(dec), referer, ct, "public, max-age=3600")
+			stream.StreamSegment(w, req, string(dec), src.Referer, "public, max-age=3600")
 		})
 		// The detail page carries what the search card does not: full synopsis,
 		// japanese title, airing window, score, studios. Fetched once per browse.
@@ -130,7 +122,7 @@ func New(cache *subtitle.SubtitleCache, webRoot fs.FS) http.Handler {
 			writeJSON(w, http.StatusOK, eps)
 		})
 		api.Get("/episode/{id}", func(w http.ResponseWriter, req *http.Request) {
-			src, err := stream.CachedResolve(req.Context(), chi.URLParam(req, "id"), req.URL.Query().Get("mode"))
+			src, err := stream.CachedResolve(req.Context(), chi.URLParam(req, "id"))
 			if err != nil {
 				writeErr(w, err)
 				return
@@ -141,20 +133,19 @@ func New(cache *subtitle.SubtitleCache, webRoot fs.FS) http.Handler {
 		// 202 + progress until then. A <track> cannot show progress, so the player
 		// polls /status and mounts the track only when the file is ready.
 		api.Get("/subtitle/{id}", func(w http.ResponseWriter, req *http.Request) {
-			id, mode := chi.URLParam(req, "id"), req.URL.Query().Get("mode")
-			lang := subtitle.WantedLang(req)
-			job, err := subtitle.Status(req, cache, id, mode, lang)
-			if err != nil {
-				writeErr(w, err)
-				return
-			}
-			if state, _, _, _ := job.Snapshot(); state != "ready" {
-				subtitle.WriteJob(w, writeJSON, http.StatusAccepted, job)
-				return
-			}
-			vtt, ok := cache.Get(subtitle.SubKey(id, mode, lang))
+			id, lang := chi.URLParam(req, "id"), subtitle.WantedLang(req)
+			// Cache first: it is the only thing that can be served. A job that is
+			// not in there — still converting, failed, or a file the cache refuses —
+			// is progress, not an error: 502 was the answer before, for a job that
+			// was ready with a file the cache would not take.
+			vtt, ok := cache.Get(subtitle.SubKey(id, lang))
 			if !ok {
-				writeErr(w, errors.New("finished subtitle is missing from the cache"))
+				job, err := subtitle.Status(req, cache, id, lang)
+				if err != nil {
+					writeErr(w, err)
+					return
+				}
+				subtitle.WriteJob(w, writeJSON, http.StatusAccepted, job)
 				return
 			}
 			w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
@@ -168,7 +159,7 @@ func New(cache *subtitle.SubtitleCache, webRoot fs.FS) http.Handler {
 			io.WriteString(w, vtt)
 		})
 		api.Get("/subtitle/{id}/status", func(w http.ResponseWriter, req *http.Request) {
-			job, err := subtitle.Status(req, cache, chi.URLParam(req, "id"), req.URL.Query().Get("mode"), subtitle.WantedLang(req))
+			job, err := subtitle.Status(req, cache, chi.URLParam(req, "id"), subtitle.WantedLang(req))
 			if err != nil {
 				writeErr(w, err)
 				return
@@ -199,21 +190,29 @@ func New(cache *subtitle.SubtitleCache, webRoot fs.FS) http.Handler {
 	return r
 }
 
-// variantFor returns the chosen variant playlist URL plus the referer the
-// stream host insists on. Mode and quality come from the path, not the query:
-// the browser resolves relative segment URIs against the playlist URL and
-// drops its query string (RFC 3986), which sent every segment to the default
-// variant no matter which quality was picked.
-func variantFor(req *http.Request, id, mode, quality string) (variant, referer string, err error) {
-	src, err := stream.CachedResolve(req.Context(), id, stream.NormMode(mode))
+// servePlaylist resolves the episode, runs fn against the resolved source, and —
+// when upstream rejects the cached URLs because their token expired — drops the
+// cache entry, re-resolves and retries once. Without the retry the player kept
+// hitting the dead URL until the cache TTL happened to lapse, which is exactly
+// the recurring "Stream gagal dimuat: kode 1001".
+func servePlaylist(w http.ResponseWriter, req *http.Request, id string, fn func(src *hianime.Source) error) {
+	src, err := stream.CachedResolve(req.Context(), id)
 	if err != nil {
-		return "", "", err
+		writeErr(w, err)
+		return
 	}
-	variant, err = stream.PickQuality(src, quality)
+	if err := fn(src); err == nil {
+		return
+	}
+	stream.Invalidate(id)
+	src, err = stream.CachedResolve(req.Context(), id)
 	if err != nil {
-		return "", "", err
+		writeErr(w, err)
+		return
 	}
-	return variant, src.Referer, nil
+	if err := fn(src); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

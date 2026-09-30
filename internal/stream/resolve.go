@@ -1,6 +1,18 @@
-// Package stream resolves megaplay embeds and proxies the HLS playlists and
+// Package stream resolves stream embeds and proxies the HLS playlists and
 // segments the browser cannot fetch itself (the stream host demands a Referer
 // the player cannot send).
+//
+// The flow is index.js, hop for hop: servers -> pick embed -> embed page ->
+// player config -> master playlist. Two players exist behind those embeds and
+// both are understood here:
+//
+//   - ZokoAnime: the embed page ships window.__P, a base64 blob XOR'd with
+//     "otaku-embed-v1"; its JSON holds the master playlist and subtitle URLs.
+//   - MegaPlay: the embed exposes data-id; /stream/getSources answers an
+//     AES-256-CBC token whose plaintext is the master playlist URL.
+//
+// ZokoAnime is tried first — it is the player upstream serves by default — and
+// the megaplay embeds are the fallback (see Resolve).
 package stream
 
 import (
@@ -24,34 +36,87 @@ import (
 	"zanime/internal/hianime"
 )
 
-var reDataHash = regexp.MustCompile(`data-hash="([^"]*)"`)
+// Embed is one server row of the servers API: its display name, its audio type
+// and the decoded embed URL.
+type Embed struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	URL  string `json:"url"`
+}
 
-// ServerHashes lists every server of the wanted audio mode whose embed the
-// resolver understands, in upstream order — resolveOne tries them in turn, so
-// a dead embed falls over to the next instead of failing the episode. Sub and
-// dub are separate embeds; upstream names its servers HD-2, Vidstream-2 and
-// the like, so the name is not filtered — the mode is what separates streams.
-// ZokoAnime embeds use a different player (blob __P, not megaplay) and are
-// skipped: resolve would die on data-id there.
-func ServerHashes(page, mode string) []string {
-	var out []string
-	for _, item := range strings.Split(page, "server-item")[1:] {
-		if !strings.Contains(item, `data-type="`+mode+`"`) {
+// The servers API answers an escaped JSON blob whose html field carries rows
+// like data-type="dub" data-server-name="HD-2" ... data-hash="<base64 url>".
+// The hash is the embed URL, base64'd.
+var (
+	reServer = regexp.MustCompile(`data-type="([^"]+)"\s*data-server-name="([^"]+)"[\s\S]*?data-hash="([A-Za-z0-9+/=]+)"`)
+	// ZokoAnime's player config, and megaplay's player id.
+	reWindowP = regexp.MustCompile(`window\.__P="([^"]+)"`)
+	reDataID  = regexp.MustCompile(`data-id="(\d+)"`)
+)
+
+// Audio types, and why sub is preferred and dub still matters.
+//
+// Measured on episode 6647 (Sep 2026): the dub embeds of both providers carry a
+// single subtitle track of 7 cues — title cards and place names. The dialogue,
+// 363 cues, exists only on the sub embed. A dub-first resolve therefore hands
+// the translator a file with a handful of lines, which is exactly what the
+// player showed. Sub is still not the only option: licensed dubs sometimes ship
+// without a sub stream, so dub rows stay in the list as the fallback.
+const (
+	typeSub = "sub"
+	typeDub = "dub"
+)
+
+// Servers lists every embed the episode offers, in upstream order, deduplicated
+// by URL. Neither audio type nor host is filtered here: Resolve orders them.
+func Servers(page string) []Embed {
+	// The API answers {"status":true,"html":"…"}; the html is a JSON string, so
+	// it is decoded as one. Scrubbing the escapes by hand left the row separators
+	// as a literal backslash and "n", which no whitespace class matches.
+	var env struct {
+		HTML string `json:"html"`
+	}
+	if json.Unmarshal([]byte(page), &env) == nil && env.HTML != "" {
+		page = env.HTML
+	}
+	var out []Embed
+	for _, m := range reServer.FindAllStringSubmatch(page, -1) {
+		if m[1] != typeSub && m[1] != typeDub {
 			continue
 		}
-		m := reDataHash.FindStringSubmatch(item)
-		if m == nil {
+		raw, err := base64.StdEncoding.DecodeString(m[3])
+		if err != nil {
 			continue
 		}
-		if embed, err := base64.StdEncoding.DecodeString(m[1]); err != nil ||
-			!strings.Contains(string(embed), "megaplay.buzz") {
+		embed := string(raw)
+		if !strings.HasPrefix(embed, "http://") && !strings.HasPrefix(embed, "https://") {
 			continue
 		}
-		out = append(out, m[1])
+		if slicesContainsURL(out, embed) {
+			continue
+		}
+		out = append(out, Embed{Name: m[2] + " [" + m[1] + "]", Type: m[1], URL: embed})
 	}
 	return out
 }
 
+func slicesContainsURL(embeds []Embed, raw string) bool {
+	for _, e := range embeds {
+		if e.URL == raw {
+			return true
+		}
+	}
+	return false
+}
+
+// IsZoko reports whether an embed is served by the ZokoAnime player, which is
+// the one to try first.
+func IsZoko(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && strings.Contains(u.Host, "zoko")
+}
+
+// embedConfig is the ZokoAnime player config behind window.__P.
 type embedConfig struct {
 	Src       string `json:"src"`
 	Subtitles []struct {
@@ -61,7 +126,7 @@ type embedConfig struct {
 	} `json:"subtitles"`
 }
 
-// DeobfuscateBlob decodes the old zokoanime embed's base64(json XOR key) blob.
+// DeobfuscateBlob decodes the zokoanime embed's base64(json XOR key) blob.
 func DeobfuscateBlob(blob string) (string, error) {
 	trimmed := strings.TrimSpace(blob)
 	raw, err := base64.StdEncoding.DecodeString(trimmed)
@@ -86,20 +151,8 @@ var (
 	megaIV  = []byte("W0;27ToaUpl_P%'c")
 )
 
-// megaSources is the getSources payload: media ids and the encrypted token.
-type megaSources struct {
-	ID      string `json:"id"`
-	RealID  string `json:"realid"`
-	MediaID string `json:"mediaid"`
-	Tracks  []struct {
-		File  string `json:"file"`
-		Label string `json:"label"`
-	} `json:"tracks"`
-	Enc string `json:"enc"`
-}
-
-// MegaDecrypt decrypts the base64url token into the master playlist URL.
-func MegaDecrypt(enc string) (string, error) {
+// DecryptEnc decrypts the base64url token into the master playlist URL.
+func DecryptEnc(enc string) (string, error) {
 	b64 := strings.NewReplacer("-", "+", "_", "/").Replace(enc)
 	if pad := len(b64) % 4; pad != 0 {
 		b64 += strings.Repeat("=", 4-pad)
@@ -133,158 +186,313 @@ func MegaDecrypt(enc string) (string, error) {
 	return string(plain[:n-p]), nil
 }
 
-// Resolve finds the stream server of the wanted audio mode and returns its
-// master playlist, subtitle list and the referer the stream host demands.
-func Resolve(ctx context.Context, episodeID, mode string) (*hianime.Source, error) {
-	if mode != "sub" && mode != "dub" {
-		mode = "sub"
-	}
-	page, err := hianime.Get(ctx, fmt.Sprintf(hianime.ServersAPI, url.QueryEscape(episodeID)), hianime.BaseAPI+"/")
+// megaSources is the getSources payload index.js reads: the encrypted token,
+// the track list and the plain sources it falls back to.
+type megaSources struct {
+	Tracks []struct {
+		File  string `json:"file"`
+		Label string `json:"label"`
+	} `json:"tracks"`
+	Enc     string          `json:"enc"`
+	Sources json.RawMessage `json:"sources"`
+	File    string          `json:"file"`
+}
+
+// serversURL is the servers endpoint Resolve reads. Injectable so a test can
+// exercise the failover without reaching upstream.
+var serversURL = hianime.ServersAPI
+
+// Resolve finds a playable stream for an episode: every embed is tried, the sub
+// ZokoAnime one first, then the sub megaplay one, then the same pair for dub.
+// index.js lets a human pick between providers; here the choice is made for
+// them, which is the same order, just without the prompt.
+//
+// A server is only returned once it looks like the whole episode: its best
+// subtitle track has to reach hianime.DenseCues. Playing the first server that
+// answers is what showed a 7-cue track for an episode whose dialogue lives on
+// another server — same episode, another provider or another audio type. A
+// server whose track is thin is kept aside and used only when no other server
+// is better: its video is fine, so a missing translation must not lose the
+// episode.
+func Resolve(ctx context.Context, episodeID string) (*hianime.Source, error) {
+	page, err := hianime.GetTiny(ctx, fmt.Sprintf(serversURL, url.QueryEscape(episodeID)), hianime.BaseAPI+"/")
 	if err != nil {
 		return nil, err
 	}
-	page = strings.ReplaceAll(strings.ReplaceAll(page, `\"`, `"`), `\\`, "")
-	hashes := ServerHashes(page, mode)
-	if len(hashes) == 0 {
-		return nil, fmt.Errorf("no stream source for episode %s (%s)", episodeID, mode)
+	embeds := Servers(page)
+	if len(embeds) == 0 {
+		return nil, fmt.Errorf("no stream source for episode %s", episodeID)
 	}
-	// Failover: try each megaplay server in order; a dead embed (error page,
-	// getSources failure, dead master) falls over to the next.
+	// Failover: a dead embed (error page, getSources failure, dead master)
+	// falls over to the next server instead of failing the episode.
+	var fallback *hianime.Source
 	var lastErr error
-	for _, hash := range hashes {
-		src, err := ResolveOne(ctx, hash, mode)
-		if err == nil {
+	for _, embed := range ordered(embeds) {
+		src, err := ResolveOne(ctx, embed.URL)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if src.DialogueCues >= hianime.DenseCues {
 			return src, nil
 		}
-		lastErr = err
+		if fallback == nil {
+			fallback = src
+		}
+	}
+	if fallback != nil {
+		return fallback, nil
 	}
 	return nil, lastErr
 }
 
-// ResolveOne turns one embed hash into a Source.
-func ResolveOne(ctx context.Context, hash, mode string) (*hianime.Source, error) {
-	embedURL, err := base64.StdEncoding.DecodeString(hash)
-	if err != nil {
-		return nil, fmt.Errorf("embed hash: %w", err)
+// ordered returns the embeds in the order Resolve should try them: sub before
+// dub, ZokoAnime before megaplay, upstream order inside each group. Kept stable
+// so the same episode always resolves the same way.
+func ordered(embeds []Embed) []Embed {
+	out := append([]Embed(nil), embeds...)
+	sort.SliceStable(out, func(i, j int) bool { return rank(out[i]) < rank(out[j]) })
+	return out
+}
+
+// rank scores one embed: 0 sub+zoko, 1 sub+megaplay, 2 dub+zoko, 3 dub+megaplay.
+func rank(e Embed) int {
+	n := 0
+	if e.Type != typeSub {
+		n += 2
 	}
-	embed := string(embedURL)
+	if !IsZoko(e.URL) {
+		n++
+	}
+	return n
+}
+
+// ResolveOne turns one embed URL into a Source by reading its player config.
+func ResolveOne(ctx context.Context, embed string) (*hianime.Source, error) {
 	// The stream host wants the embed site as referer.
 	referer, err := hianime.OriginOf(embed)
 	if err != nil {
 		return nil, err
 	}
-	embedPage, err := hianime.Get(ctx, embed, hianime.BaseAPI+"/")
+	embedPage, err := hianime.GetTiny(ctx, embed, hianime.BaseAPI+"/")
 	if err != nil {
 		return nil, err
 	}
-	// The megaplay embed page exposes the ids it needs as data attributes on
-	// #megaplay-player; getSources answers only XHRs with the page URL as referer.
-	var gs megaSources
-	attr := func(name string) string {
-		m := regexp.MustCompile(`data-` + name + `="([0-9]+)"`).FindStringSubmatch(embedPage)
-		if m == nil {
-			return ""
+	// ZokoAnime: window.__P = xor(base64(json)). The JSON carries the playlist
+	// and the subtitle tracks, so no second request is needed for either.
+	if m := reWindowP.FindStringSubmatch(embedPage); m != nil {
+		plain, err := DeobfuscateBlob(m[1])
+		if err != nil {
+			return nil, err
 		}
-		return m[1]
+		var cfg embedConfig
+		if err := json.Unmarshal([]byte(plain), &cfg); err != nil {
+			return nil, fmt.Errorf("zoko player config is not json: %w", err)
+		}
+		if cfg.Src == "" {
+			return nil, errors.New("zoko player config had no src")
+		}
+		src := &hianime.Source{Master: cfg.Src, Referer: referer}
+		for _, sub := range cfg.Subtitles {
+			if sub.Src == "" {
+				continue
+			}
+			src.Subtitles = append(src.Subtitles, hianime.Subtitle{Lang: sub.Lang, URL: sub.Src})
+		}
+		pickDialogue(ctx, src, referer)
+		return finish(ctx, src, referer)
 	}
-	gs.ID = attr("id")
-	gs.RealID = attr("realid")
-	gs.MediaID = attr("mediaid")
-	if gs.ID == "" {
-		// megaplay answers an expired/absent Referer with a 200 "Error Code: 410"
-		// page — no player attributes. Say which hop broke instead of a generic
-		// "not a megaplay player".
-		return nil, fmt.Errorf("embed page has no player ids (upstream error page?) for %s", embed)
+
+	// MegaPlay: data-id -> getSources -> enc (AES-CBC) -> master playlist.
+	m := reDataID.FindStringSubmatch(embedPage)
+	if m == nil {
+		return nil, fmt.Errorf("embed page is not a known player (no __P / data-id) for %s", embed)
 	}
-	master, err := megaResolve(ctx, embed, &gs)
+	payload, err := getSources(ctx, embed, m[1])
 	if err != nil {
 		return nil, err
 	}
-	// Master and variant playlists accept the embed origin as referer, but the
-	// segment CDN demands megaplay.buzz specifically — the playlist host's
-	// origin gets a 403 Cloudflare block on every segment.
-	qualities, err := Qualities(ctx, master, referer)
+	master, err := masterFrom(payload)
 	if err != nil {
 		return nil, err
 	}
-	src := &hianime.Source{Master: master, Referer: referer, Qualities: qualities}
-	for _, t := range gs.Tracks {
-		src.Subtitles = append(src.Subtitles, hianime.Subtitle{Lang: t.Label, URL: t.File, Default: true})
+	src := &hianime.Source{Master: master, Referer: referer}
+	for _, t := range payload.Tracks {
+		if t.File == "" {
+			continue
+		}
+		src.Subtitles = append(src.Subtitles, hianime.Subtitle{Lang: t.Label, URL: t.File})
 	}
+	pickDialogue(ctx, src, referer)
+	return finish(ctx, src, referer)
+}
+
+// pickDialogue marks the default subtitle track, in two steps.
+//
+// Language first: among the tracks in the best language available (Indonesian,
+// else English — hianime.LangRank), the densest one wins. Language cannot be
+// skipped in favour of "most cues": every dialogue track is dense, so a
+// Chinese-first list (megaplay ships Simplified, Traditional, English,
+// Indonesian, Japanese...) would hand the translator Han text, and Han text is
+// what ends up in the .vtt.
+//
+// Density is the tie-breaker, and the fallback when no preferred language exists:
+// both players list a sparse "signs & songs" track — the one index.js would
+// take, since it reads subtitles[0] or the first captions track and only prints
+// the URL for a human. Conversion cannot work from that track (title cards and
+// place names: 8 cues against 553 for the dialogue), so the head of each
+// candidate decides: 64 KB is enough to tell dense from sparse, costs one small
+// request, and is cached with the rest of the resolve for 30 minutes. A track
+// that cannot be fetched counts as empty.
+//
+// The winner's cue count is recorded on the source: Resolve uses it to tell a
+// server that carries the episode from one that only carries its signs.
+func pickDialogue(ctx context.Context, src *hianime.Source, referer string) {
+	if len(src.Subtitles) == 0 {
+		return
+	}
+	const candidates = 3
+	rank := hianime.LangRank(src.Subtitles[0].Lang)
+	for _, s := range src.Subtitles {
+		if r := hianime.LangRank(s.Lang); r < rank {
+			rank = r
+		}
+	}
+	best, bestCues := 0, -1
+	probed := 0
+	for i := range src.Subtitles {
+		src.Subtitles[i].Default = false
+		if probed >= candidates {
+			continue
+		}
+		// With a preferred language present, only its tracks are compared; the
+		// others are not even fetched.
+		if hianime.LangRank(src.Subtitles[i].Lang) > rank {
+			continue
+		}
+		probed++
+		if n := probeCues(ctx, src.Subtitles[i].URL, referer); n > bestCues {
+			best, bestCues = i, n
+		}
+	}
+	src.Subtitles[best].Default = true
+	src.DialogueCues = bestCues
+}
+
+// probeCues counts cue timings in the head of a subtitle track.
+func probeCues(ctx context.Context, rawURL, referer string) int {
+	head, err := hianime.GetPart(ctx, rawURL, referer, 64<<10, cueProbeTimeout)
+	if err != nil {
+		return 0
+	}
+	return strings.Count(head, "-->")
+}
+
+// cueProbeTimeout bounds one track peek. Generous next to the other small hops:
+// 64 KB is nothing, but the subtitle CDNs answer the first byte slowly.
+const cueProbeTimeout = 8 * time.Second
+
+// finish parses the master playlist into variants, which is what the proxy and
+// the quality menu index by.
+func finish(ctx context.Context, src *hianime.Source, referer string) (*hianime.Source, error) {
+	qualities, err := Qualities(ctx, src.Master, referer)
+	if err != nil {
+		return nil, err
+	}
+	src.Qualities = qualities
 	return src, nil
 }
 
-// megaResolve calls the embed's getSources AJAX endpoint and decrypts the enc
-// token into the master playlist URL.
-func megaResolve(ctx context.Context, embed string, gs *megaSources) (string, error) {
+// getSources calls the embed's AJAX endpoint. Only id is sent: upstream started
+// answering 403 to the cid/cidu pair it used to require (verified Sep 2026 —
+// with them it 403s, with id alone it answers the token).
+func getSources(ctx context.Context, embed, id string) (*megaSources, error) {
 	u, err := url.Parse(embed)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	u.Path = "/stream/getSources"
-	q := url.Values{}
-	if gs.ID != "" {
-		q.Set("id", gs.ID)
-	}
-	q.Set("cid", gs.RealID)
-	q.Set("cidu", gs.MediaID)
-	u.RawQuery = q.Encode()
+	u.RawQuery = url.Values{"id": {id}}.Encode()
+	ctx, cancel := context.WithTimeout(ctx, hianime.TinyTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("User-Agent", hianime.UserAgent)
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	req.Header.Set("Referer", embed)
 	resp, err := hianime.HTTPClient.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("getSources HTTP %d", resp.StatusCode)
-	}
-	var payload struct {
-		Enc    string `json:"enc"`
-		Tracks []struct {
-			File  string `json:"file"`
-			Label string `json:"label"`
-		} `json:"tracks"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", fmt.Errorf("getSources is not json: %w", err)
-	}
-	if payload.Enc == "" {
-		return "", errors.New("getSources had no enc token")
-	}
-	plain, err := MegaDecrypt(payload.Enc)
-	if err != nil {
-		return "", err
-	}
-	var file struct {
-		File string `json:"file"`
-	}
-	if err := json.Unmarshal([]byte(plain), &file); err != nil {
-		return "", fmt.Errorf("enc token is not json: %w", err)
-	}
-	if file.File == "" {
-		return "", errors.New("enc token had no playlist")
-	}
-	gs.Tracks = payload.Tracks
-	return file.File, nil
-}
-
-// Qualities fetches the master playlist and parses its variants.
-func Qualities(ctx context.Context, master, referer string) ([]hianime.Quality, error) {
-	playlist, err := hianime.Get(ctx, master, referer)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, hianime.MaxTinyBytes))
 	if err != nil {
 		return nil, err
 	}
-	return ParseMaster(playlist, master), nil
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("getSources HTTP %d", resp.StatusCode)
+	}
+	var payload megaSources
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("getSources is not json: %w", err)
+	}
+	return &payload, nil
+}
+
+// masterFrom picks the playlist URL out of a getSources payload: the encrypted
+// token first, then the plain sources index.js falls back to.
+func masterFrom(payload *megaSources) (string, error) {
+	if payload.Enc != "" {
+		plain, err := DecryptEnc(payload.Enc)
+		if err != nil {
+			return "", err
+		}
+		var file struct {
+			File string `json:"file"`
+		}
+		if err := json.Unmarshal([]byte(plain), &file); err != nil {
+			return "", fmt.Errorf("enc token is not json: %w", err)
+		}
+		if file.File == "" {
+			return "", errors.New("enc token had no playlist")
+		}
+		return file.File, nil
+	}
+	// sources is either a plain string or [{file: ...}].
+	var s string
+	if json.Unmarshal(payload.Sources, &s) == nil && s != "" {
+		return s, nil
+	}
+	var list []struct {
+		File string `json:"file"`
+	}
+	if json.Unmarshal(payload.Sources, &list) == nil && len(list) > 0 && list[0].File != "" {
+		return list[0].File, nil
+	}
+	if payload.File != "" {
+		return payload.File, nil
+	}
+	return "", errors.New("getSources had no playlist")
+}
+
+// Qualities fetches the master playlist and parses its variants. A URL that
+// turns out to be a media playlist (segments, no variants) is still playable —
+// index.js reads it the same way — so it becomes the single quality instead of
+// a source with nothing to play.
+func Qualities(ctx context.Context, master, referer string) ([]hianime.Quality, error) {
+	playlist, err := hianime.GetTiny(ctx, master, referer)
+	if err != nil {
+		return nil, err
+	}
+	if qs := ParseMaster(playlist, master); len(qs) > 0 {
+		return qs, nil
+	}
+	if strings.Contains(playlist, "#EXTINF") {
+		return []hianime.Quality{{Label: "auto", URL: master}}, nil
+	}
+	return nil, errors.New("playlist has no playable variants")
 }
 
 // ParseMaster turns an HLS master playlist into height-sorted variant URLs.
@@ -300,7 +508,7 @@ func ParseMaster(playlist, masterURL string) []hianime.Quality {
 			continue
 		}
 		height := 0
-		if m := regexp.MustCompile(`RESOLUTION=(\d+)x(\d+)`).FindStringSubmatch(line); m != nil {
+		if m := reResolution.FindStringSubmatch(line); m != nil {
 			height, _ = strconv.Atoi(m[2])
 		}
 		if height == 0 || i+1 >= len(lines) {
@@ -320,6 +528,8 @@ func ParseMaster(playlist, masterURL string) []hianime.Quality {
 	sort.Slice(out, func(i, j int) bool { return out[i].Height > out[j].Height })
 	return out
 }
+
+var reResolution = regexp.MustCompile(`RESOLUTION=(\d+)x(\d+)`)
 
 // PickQuality returns the variant URL for want ("best", "worst", "720p"...).
 func PickQuality(src *hianime.Source, want string) (string, error) {
@@ -343,49 +553,42 @@ func PickQuality(src *hianime.Source, want string) (string, error) {
 
 // ------------------------------------------------------------- resolve cache
 
-// resolvedKey identifies one episode in one audio mode.
-type resolvedKey struct{ id, mode string }
-
 type resolvedEntry struct {
 	src     *hianime.Source
 	expires time.Time
 }
 
-var resolvedCache sync.Map
+var resolvedCache sync.Map // episode id -> resolvedEntry
 
-// ResolveTTL is how long a resolved Source stays fresh. The upstream enc token
-// inside the master playlist URL expires after a while; once it does, an old
-// entry makes every proxied playlist request fail (player: "Stream gagal
-// dimuat: kode 1001") on a long-running app. The player reloads its stream
-// every 30 m, so the cache is cycled on the same cadence: after the TTL, the
-// next resolve fetches a fresh token.
+// Invalidate drops one episode's resolve cache entry. Called when the upstream
+// rejects a cached master/variant URL: the token inside it expired, and the
+// next resolve must fetch a fresh one instead of waiting for the TTL.
+func Invalidate(id string) {
+	resolvedCache.Delete(id)
+}
+
+// ResolveTTL is how long a resolved Source stays fresh. Both players hand out
+// URLs with a short-lived token inside them; once it expires, an old entry makes
+// every proxied playlist request fail (player: "Stream gagal dimuat: kode 1001")
+// on a long-running app. The player reloads its stream every 30 m, so the cache
+// is cycled on the same cadence.
 const ResolveTTL = 30 * time.Minute
 
 // CachedResolve memoises Resolve: one playlist plus every segment the browser
 // asks for would otherwise re-walk the servers API and the embed page on each
 // request.
-func CachedResolve(ctx context.Context, id, mode string) (*hianime.Source, error) {
-	key := resolvedKey{id, mode}
-	if v, ok := resolvedCache.Load(key); ok {
+func CachedResolve(ctx context.Context, id string) (*hianime.Source, error) {
+	if v, ok := resolvedCache.Load(id); ok {
 		if e, ok := v.(resolvedEntry); ok && time.Now().Before(e.expires) {
 			return e.src, nil
 		}
 		// Expired: drop it so the re-resolve below stores a fresh token.
-		resolvedCache.Delete(key)
+		resolvedCache.Delete(id)
 	}
-	src, err := Resolve(ctx, id, mode)
+	src, err := Resolve(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	resolvedCache.Store(key, resolvedEntry{src, time.Now().Add(ResolveTTL)})
+	resolvedCache.Store(id, resolvedEntry{src, time.Now().Add(ResolveTTL)})
 	return src, nil
-}
-
-// NormMode collapses anything that is not a known mode onto sub, so the cache
-// key, the resolve and the rewritten playlist URLs all agree on two values.
-func NormMode(mode string) string {
-	if mode == "dub" {
-		return "dub"
-	}
-	return "sub"
 }

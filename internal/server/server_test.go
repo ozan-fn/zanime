@@ -36,12 +36,14 @@ func TestStreamMasterRewritesVariants(t *testing.T) {
 	src := &hianime.Source{Master: master, Referer: "https://stream.example/",
 		Qualities: stream.ParseMaster(sampleMaster, master)}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/hls/42/master.m3u8?mode=dub", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/hls/42/master.m3u8", nil)
 	rec := httptest.NewRecorder()
-	stream.StreamMaster(rec, req, "42", src, "dub")
+	if err := stream.StreamMaster(rec, req, "42", src); err != nil {
+		t.Fatal(err)
+	}
 
 	body := rec.Body.String()
-	for _, want := range []string{"/api/hls/42/dub/360p/index.m3u8", "/api/hls/42/dub/1080p/index.m3u8", "/api/hls/42/dub/480p/index.m3u8"} {
+	for _, want := range []string{"/api/hls/42/360p/index.m3u8", "/api/hls/42/1080p/index.m3u8", "/api/hls/42/480p/index.m3u8"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %s in:\n%s", want, body)
 		}

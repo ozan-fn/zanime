@@ -5,7 +5,8 @@ API + SPA di atas satu binary Go, di-port dari
 [ani-cli](https://github.com/pystardust/ani-cli) (`ref/ani-cli`, bash).
 
 - **Backend** Go 1.25 + chi: scraping, proxy HLS, konversi subtitle, SPA embed.
-- **Frontend** Preact + preact-router, dibundel rsbuild + Tailwind 4, player
+- **Frontend** React 19 + React Router 8 (React Compiler aktif), dibundel
+  rsbuild + Tailwind 4, player
   shaka.ui.Overlay (menu kualitas & subtitle on/off).
 - **Subtitle** diterjemahkan ke Indonesia via kenari.id `deepseek-v4-1-flash`
   (job latar + progress, hasil di-cache ke disk).

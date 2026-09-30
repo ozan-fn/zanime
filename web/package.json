@@ -10,16 +10,19 @@
     "preview": "rsbuild preview"
   },
   "dependencies": {
-    "preact": "^10.29.8",
-    "preact-router": "^4.1.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router": "^8.4.0",
     "shaka-player": "^5.2.12"
   },
   "devDependencies": {
     "@rsbuild/core": "^2.2.10",
-    "@rsbuild/plugin-preact": "^2.1.0",
+    "@rsbuild/plugin-react": "^2.1.1",
     "@rsbuild/plugin-tailwindcss": "^2.0.3",
     "@rslint/core": "^0.9.0",
     "@types/node": "^24.13.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3"
   }

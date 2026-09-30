@@ -12,8 +12,6 @@ export interface Episode {
   number: string;
 }
 
-export type Mode = 'sub' | 'dub';
-
 export interface SubtitleStatus {
   state: 'converting' | 'ready' | 'error';
   done: number;

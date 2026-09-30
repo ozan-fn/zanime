@@ -1,12 +1,18 @@
 // URL helpers shared across features.
 
-export const watchHref = (animeId: string, epId: string, mode: 'sub' | 'dub') =>
-  `/w/${encodeURIComponent(animeId)}/${encodeURIComponent(epId)}${mode === 'dub' ? '?mode=dub' : ''}`;
+export const watchHref = (animeId: string, epId: string) =>
+  `/w/${encodeURIComponent(animeId)}/${encodeURIComponent(epId)}`;
 
 export const animeHref = (id: string) => `/a/${encodeURIComponent(id)}`;
 
-export function normMode(m: string | null | undefined): 'sub' | 'dub' {
-  return m === 'dub' ? 'dub' : 'sub';
+// safeDecode never throws: a hand-typed URL like /s/100% would make
+// decodeURIComponent raise URIError and blank the whole page.
+export function safeDecode(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
 }
 
 // slugTitle turns "one-piece-123" into "One Piece" for the heading shown
