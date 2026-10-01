@@ -28,17 +28,10 @@ var distFS embed.FS
 // webRoot is the built SPA served at /: index.html plus hashed assets.
 var webRoot, _ = fs.Sub(distFS, "web/dist")
 
-// kenariKeyPlaceholder is the sample value in .env; it counts as "not filled in"
-// so running without a key warns instead of failing with a 401 later.
-const kenariKeyPlaceholder = "isi-key-kenari-di-sini"
-
 func main() {
-	// .env di root proyek (gitignored) mengisi KENARI_API_KEY/ADDR/CACHE_DIR
+	// .env di root proyek (gitignored) mengisi ADDR/CACHE_DIR
 	// untuk `go run .`; environment yang sudah diset tidak ditimpa.
 	_ = godotenv.Load()
-	if k := subtitle.LLMKey(); k == "" || k == kenariKeyPlaceholder {
-		log.Println("peringatan: KENARI_API_KEY belum diisi — terjemahan subtitle akan gagal 401")
-	}
 
 	addr := flag.String("addr", envOr("ADDR", ":8080"), "listen address")
 	cacheDir := flag.String("cache", envOr("CACHE_DIR", ".cache/subtitles"), "subtitle cache directory")

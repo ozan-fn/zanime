@@ -8,8 +8,9 @@ API + SPA di atas satu binary Go, di-port dari
 - **Frontend** React 19 + React Router 8 (React Compiler aktif), dibundel
   rsbuild + Tailwind 4, player
   shaka.ui.Overlay (menu kualitas & subtitle on/off).
-- **Subtitle** diterjemahkan ke Indonesia via kenari.id `deepseek-v4-1-flash`
-  (job latar + progress, hasil di-cache ke disk).
+- **Subtitle** diterjemahkan ke Indonesia via Google Translate tanpa API key
+  (job latar + progress, hasil di-cache ke disk). Pakai endpoint gratis yang tidak
+  terdokumentasi, jadi bisa rate-limited / berubah tanpa notice.
 - **Tanpa ffmpeg sama sekali** — video diputar lewat proxy HLS; remux dibuang.
 
 ## Menjalankan
@@ -41,7 +42,7 @@ cd web && npx tsc --noEmit && npx rslint
 |---|---|---|
 | GET | `/` | SPA (index.html + aset hashed, embed) |
 | GET | `/api/healthz` | status + sisa kuota |
-| GET | `/api/limits` | pemakaian kuota kenari |
+| GET | `/api/limits` | pacing request translate gratis |
 | GET | `/api/search?q=` | cari judul (poster + sinopsis per kartu) |
 | GET | `/api/img?u=` | proxy gambar CDN (base64url, allow-list host) |
 | GET | `/api/anime/{id}` | detail anime: meta, genre, studio, related |
@@ -111,7 +112,7 @@ UITextDisplayer + gap tetap berlaku. Desktop/iPad tetap fullscreen asli.
 
 Kuota & laju: pace 30 panggilan/menit, 429 dibedakan (rate limit dipecah +
 `Retry-After`, penolakan upstream gagal segera), `eta_seconds` dari laju
-nyata. Key kenari di-hardcode di `main.go` — kalau dipakai serius, pindah ke
+nyata. Pakai Google Translate gratis tanpa API key — kalau dipakai serius,
 env var.
 
 ## Proxy HLS

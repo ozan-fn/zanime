@@ -2,8 +2,8 @@
 
 HTTP API + SPA web player di atas hianime.at. Backend Go 1.25 + chi; frontend
 React 19 + React Router 8, dibundel rsbuild dengan Tailwind 4 (plugin resmi,
-bukan CDN browser) dan **React Compiler** aktif (`reactCompiler: true`). Subtitle diterjemahkan ke Indonesia lewat kenari.id
-`deepseek-v4-1-flash` (job latar + progress), video diputar lewat proxy HLS
+bukan CDN browser) dan **React Compiler** aktif (`reactCompiler: true`). Subtitle diterjemahkan ke Indonesia lewat RPC web Google Translate
+tanpa API key (job latar + progress, fallback gtx via proxy), video diputar lewat proxy HLS
 dengan shaka-player (paket npm, dibundel — bukan skrip CDN). Tanpa ffmpeg sama
 sekali: remux `-c copy` sudah dibuang.
 
@@ -39,8 +39,8 @@ hanya bootstrap. Test yang unik di `main_test.go` dipindah, bukan dibuang:
 | Sub default (dub fallback) + pilih track dialog (bahasa lalu cue) + fallback server bila <10 cue | done |
 | Prompt anti-aksara non-Latin + validasi berkas sebelum job `ready` | done |
 | Parse master playlist + pilih kualitas | done |
-| Terjemahan subtitle ID via kenari.id | done |
-| Batch beranggaran token, 1 panggilan/episode | done |
+| Terjemahan subtitle ID via RPC web Google Translate (tanpa API key) + fallback gtx via proxy | done |
+| Batch ≤4500 char/RPC, baris bernomor `N\|`, mapping by prefix | done |
 | Cache subtitle ke disk + job latar ber-progress | done |
 | Proxy HLS hemat memori (buffer pool, 1 request/segmen) | done |
 | SPA React 19 + React Router 8 (rsbuild, React Compiler) | done |
@@ -57,7 +57,7 @@ Karena audio bukan pilihan pengguna, tidak ada tombol Subtitle/Dub di UI.
 |---|---|---|
 | GET | `/` | SPA (index.html + aset hashed, embed) |
 | GET | `/api/healthz` | status + sisa kuota |
-| GET | `/api/limits` | pemakaian kuota kenari |
+| GET | `/api/limits` | pacing request translate gratis |
 | GET | `/api/search?q=` | cari judul (poster + sinopsis per kartu, poster di-proxy) |
 | GET | `/api/img?u=` | proxy gambar CDN (base64url, allow-list host) |
 | GET | `/api/anime/{id}` | detail anime: meta, genre, studio, related, recommended |
@@ -214,18 +214,20 @@ Aplikasi tanpa ffmpeg: remux `-c copy` tidak ada, jadi tidak ada `os/exec`.
 
 1. Ambil `.vtt` asli (hampir selalu Inggris) pakai referer yang sama.
 2. Kalau sumbernya belum `id`, parse blok cue WebVTT.
-3. Pack cue dalam satu panggilan sampai ~`BatchTokens`, kirim `<index>|<teks>`,
-   minta balik `<index>|<terjemahan>`, stream SSE. Satu episode nyata
-   (285–394 cue) jadi **satu panggilan** — penting bukan cuma soal kecepatan:
-   model yang menjawab dipilih acak per panggilan, jadi dua panggilan berarti
-   dua kosakata.
+3. Pack cue sampai ~4500 char per panggilan RPC `MkEWBc` (batchexecute web,
+   bentuk disalin dari traffic browser): baris bernomor `N|teks`, jawaban
+   dipetakan balik by prefix (terbukti 60/60 utuh). Multiline/`N|` gagal di
+   `AVdN8`, satu teks per call di `gtx`, multiplex RPC di-drop server — jadi
+   satu batch = satu RPC multiline.
 4. Deduplikasi: cue dengan teks identik dikirim sekali, hasilnya disalin ke
-   semua kemunculannya. Prompt mengecil dan konsistensi jadi gratis.
-5. Cue yang tidak dijawab (atau dijawab dalam aksara non-Latin) diulang sekali.
+   semua kemunculannya. Payload mengecil dan konsistensi jadi gratis.
+5. Cue yang tidak dijawab (atau dijawab dalam aksara non-Latin) diulang sekali
+   (retry pass); mismatch jumlah baris → batch dipecah (retryable), bukan
+   ditebak — cue tak pernah nyasar.
 
 Track yang dipakai adalah track dialog hasil `pickDialogue` (lihat "Mengapa bukan
 track pertama"); kalau track itu sudah berlabel Indonesia, berkasnya dipakai apa
-adanya tanpa memanggil kenari.
+adanya tanpa memanggil Google Translate.
 
 ### Job latar + progress
 
@@ -236,21 +238,12 @@ adanya tanpa memanggil kenari.
   dengan `no-store` setelah `ready`.
 - `MaxConcurrentJobs = 4` (semaphore `jobSlots`); kelebihannya menunggu.
 - Hasil akhir masuk cache disk `.cache/subtitles`, jadi pemutaran kedua instan.
-- `LLMKey()` membaca `KENARI_API_KEY` **saat dipakai**, bukan saat init: `main`
-  memuat `.env` dengan `godotenv` setelah variabel paket sudah ada.
+- Log live: `translating` saat mulai, `cue N: <teks ID>` per cue, progress
+  `done/total` tiap 5 dtk + saat selesai.
 
-### Prompt dan konsistensi
+### Konsistensi (tanpa prompt — RPC web, bukan model)
 
-`TranslateSystem` mengunci bahasa keluaran di **aturan pertama**: keluaran
-selalu Indonesia beraksara Latin, apa pun bahasa sumbernya, dan **tidak boleh
-menyalin baris sumber** — baris Cina harus pulang sebagai Indonesia, bukan
-sebagai hanzi, kana, hangul, atau aksara non-Latin lainnya. Aturan itu dibarengi
-contoh sumber Cina → Indonesia, karena prompt lama hanya mengasumsikan sumber
-Inggris dan model mengembalikan hanzi apa adanya untuk sumber Han.
-Sisanya: satu baris per baris masukan, nomor tidak berubah, tag/honorifik/romaji
-dipertahankan, register mengikuti karakter. `temperature` 0.2.
-
-Penjaga di kode, bukan cuma di prompt:
+Penjaga di kode:
 
 - `mostlyNonLatin` menolak jawaban beraksara salah; baris itu diperlakukan
   seperti baris yang dijatuhkan (masuk pass retry) dan `SubtitleCache.Get`
@@ -262,26 +255,31 @@ Penjaga di kode, bukan cuma di prompt:
 - `/api/subtitle/{id}` sekarang melihat cache lebih dulu: tidak ada di cache =
   progress (`202` + `{state,done,total,eta_seconds}`), bukan `502`.
 
-### Klien, timeout, dan 429
+### Sesi, fallback, dan 429
 
-- `TranslateBatch` memakai `StreamClient` (tanpa `Timeout`); batasnya
-  `TranslateCallTimeout` (5 menit) yang mulai **setelah** `WaitForBudget`.
-- `limiter.Take()` per panggilan model, bukan per request HTTP.
-- 429 dibedakan: batas laju → batch dipecah + `Retry-After` dipakai; penolakan
-  upstream → gagal segera. `Retry-After` > 1 menit (jatah harian/plan) → job
-  berhenti dan dilaporkan.
-- `finish_reason=length` dengan baris belum terjawab → `ErrTruncated`: batch
-  dipecah tanpa jeda.
+- RPC web butuh `f.sid` + `bl` dari halaman Translate (`FdrFJe`/`cfb2h`);
+  `refreshGoogleSession` mengambilnya otomatis saat jawaban kosong, sekali
+  per kegagalan. Tanpa `at` (yang basi justru ditolak); override manual via
+  env `GOOGLE_FSID`/`GOOGLE_BL`/`GOOGLE_AT`.
+- Primer web gagal (retryable/token) → fallback `gtx` via proxy
+  `minky.anistream.one/fetch` (IP egress diblokir di googleapis langsung,
+  IP proxy bersih): teks polos, mapping posisional, di-chunk ≤1200 char/GET
+  (proxy menjawab 431 kalau URL kepanjangan).
+- Paralel `MaxTranslateWorkers = 4`, pacing `WaitForBudget` per batch +
+  jeda 500 ms; `requestsPerMinute = 120`.
+- 429/5xx/sorry-block → `APIError` retryable: split batch + backoff (`Retry-After`
+  dipakai). 5×429 beruntun = IP kena sorry-block → circuit breaker: cooldown
+  10 mnt fail-fast (`errCooling`, proxy tetap dicoba), bukan hammer.
+- 302 ke `/sorry` (Google mem-follow redirect jadi 200) dideteksi dari body
+  dan diperlakukan sama dengan 429.
 
 ## Kuota
 
-Key kenari **tidak ada di sumber kode**: `KENARI_API_KEY` dari environment,
-`.env` root dimuat `godotenv.Load()` (gitignored, env yang sudah diset tidak
-ditimpa). Tanpa key (atau masih placeholder) hanya ada peringatan di log.
-`https://kenari.id/v1/chat/completions`, model `deepseek-v4-1-flash` — berbayar,
-konteks 1M. Harga 20 IDR/1M token masuk dan 50 IDR/1M keluar, jadi satu episode
-≈ Rp 0,2. `LimitRequestsPerMinute = 30` angka sendiri (model berbayar tidak
-mengirim `x-ratelimit-limit`).
+RPC web + gtx pakai endpoint publik tanpa API key, jadi tidak ada secret yang
+perlu disembunyikan. Keduanya tidak terdokumentasi dan bisa rate-limit /
+berubah tanpa peringatan; pakai sebagai terjemahan gratis best-effort.
+IP yang kena sorry-block pulih sendiri (menit–jam); selama diblokir jangan
+tembak request — tiap hit berpotensi memperpanjangnya.
 
 ## Frontend
 

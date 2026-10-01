@@ -180,7 +180,19 @@ func RunSubtitleJob(cache *SubtitleCache, key, episodeID, lang string, job *SubJ
 		fail(ctx.Err())
 		return
 	}
-	done, err := TranslateFn(ctx, raw, job.SetProgress)
+	log.Printf("subtitle %s: translating", key)
+	var progMu sync.Mutex
+	lastLog := time.Now()
+	prog := func(done, total int) {
+		job.SetProgress(done, total)
+		progMu.Lock()
+		defer progMu.Unlock()
+		if now := time.Now(); done >= total || now.Sub(lastLog) >= 5*time.Second {
+			lastLog = now
+			log.Printf("subtitle %s: %d/%d", key, done, total)
+		}
+	}
+	done, err := TranslateFn(ctx, raw, prog)
 	if err != nil {
 		fail(err)
 		return

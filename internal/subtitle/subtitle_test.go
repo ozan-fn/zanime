@@ -192,7 +192,7 @@ func TestPickSubtitle(t *testing.T) {
 
 func TestLimiterEnforcesPerMinuteCap(t *testing.T) {
 	l := NewLimiter()
-	for i := 0; i < LimitRequestsPerMinute; i++ {
+	for i := 0; i < requestsPerMinute; i++ {
 		if _, ok := l.Take(); !ok {
 			t.Fatalf("call %d rejected early", i+1)
 		}
@@ -208,40 +208,12 @@ func TestLimiterEnforcesPerMinuteCap(t *testing.T) {
 	}
 }
 
-func TestRateLimitsSplitButRejectionsDoNot(t *testing.T) {
-	if err := (APIError{Code: "free_quota_rpm", Message: "slow down"}); !errors.Is(err, ErrRetryable) {
-		t.Errorf("free_quota_rpm should be retryable, got %v", err)
-	}
-	if err := (APIError{Code: "all_providers_failed", Message: "upstream unavailable"}); !errors.Is(err, ErrRetryable) {
-		t.Errorf("a 503 across the whole route is worth a retry, got %v", err)
-	}
-	// kenari answers 429 for upstream rejections too; retrying one would burn
-	// the whole budget splitting a request that can never pass.
-	if err := (APIError{Code: "upstream_rejected", Message: "bad field"}); errors.Is(err, ErrRetryable) {
-		t.Errorf("upstream rejection must not be treated as retryable, got %v", err)
-	}
-
-	// A daily window is hours away, so one call has to be enough to surface it
-	// instead of recursing the batch down to single lines.
+func TestTranslateSplitReducesBatchOnRetryable(t *testing.T) {
 	calls := 0
-	stubBatch(t, func(context.Context, []string) (map[int]string, error) {
-		calls++
-		return nil, APIError{Code: "free_quota_daily", Message: "resets tomorrow", Retry: 6 * time.Hour}
-	})
-	if _, err := TranslateSplit(context.Background(), []string{"1|a", "2|b"}); !errors.Is(err, ErrRetryable) {
-		t.Fatalf("want the rate limit surfaced, got %v", err)
-	}
-	if calls != 1 {
-		t.Errorf("want the daily limit reported without splitting, got %d calls", calls)
-	}
-}
-
-func TestTruncatedAnswerSplitsUntilItFits(t *testing.T) {
-	// Play a reasoning model that answers only the first two lines of whatever
-	// it is handed, the way a thinking model that burns the reply budget does.
 	stubBatch(t, func(_ context.Context, lines []string) (map[int]string, error) {
-		if len(lines) > 2 {
-			return nil, ErrTruncated
+		calls++
+		if len(lines) > 1 {
+			return nil, ErrRetryable
 		}
 		out := map[int]string{}
 		for _, line := range lines {
@@ -258,33 +230,17 @@ func TestTruncatedAnswerSplitsUntilItFits(t *testing.T) {
 		return out, nil
 	})
 
-	lines := []string{"1|one", "2|two", "3|three", "4|four"}
-	got, err := TranslateSplit(context.Background(), lines)
+	got, err := TranslateSplit(context.Background(), []string{"1|a", "2|b", "3|c"})
 	if err != nil {
-		t.Fatalf("truncation should split, not fail: %v", err)
+		t.Fatalf("split should eventually succeed: %v", err)
 	}
-	for i := 1; i <= len(lines); i++ {
+	if calls < 2 {
+		t.Errorf("expected more than one batch call during split, got %d", calls)
+	}
+	for i := 1; i <= 3; i++ {
 		if got[i] == "" {
-			t.Errorf("cue %d lost to the split", i)
+			t.Errorf("cue %d lost during split", i)
 		}
-	}
-}
-
-func TestBatchEndPacksByTokenBudget(t *testing.T) {
-	cue := func(text string) []string {
-		return []string{"00:00:01.000 --> 00:00:02.000", text}
-	}
-	blocks := [][]string{cue("short"), cue(strings.Repeat("x", 4*BatchTokens)), cue("tail")}
-	idx := []int{0, 1, 2}
-
-	if end := batchEnd(blocks, idx, 0); end != 1 {
-		t.Errorf("the budget should stop the batch before the oversized cue, got end=%d", end)
-	}
-	if end := batchEnd(blocks, idx, 1); end != 2 {
-		t.Errorf("the oversized cue should not drag the next one in, got end=%d", end)
-	}
-	if end := batchEnd(blocks, idx, 2); end != 3 {
-		t.Errorf("the last cue should be taken, got end=%d", end)
 	}
 }
 
