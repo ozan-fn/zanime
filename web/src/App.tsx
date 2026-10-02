@@ -6,11 +6,10 @@ import { Search } from './features/search/Search';
 import { Anime } from './features/watch/Anime';
 import { Watch } from './features/watch/Watch';
 
-// Halaman /w/ harus remount penuh ketika episode berganti: shaka memegang MSE
-// SourceBuffer dari stream lama di video element, dan sekadar mengganti props
-// tidak membongkarnya — player tampak blank. `key` dari pathname memaksa React
-// membongkar & memasang ulang subtree halaman (docs React: "Resetting state
-// with a key"). Query tidak ikut jadi kunci: hanya path yang menentukan halaman.
+// Halaman /w/ harus remount penuh ketika episode berganti: player memegang
+// stream lama di video element, dan sekadar mengganti props tidak membongkar
+// & memasang ulang subtree halaman (docs React: "Resetting state with a key").
+// Query tidak ikut jadi kunci: hanya path yang menentukan halaman.
 function KeyedPage({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
   return <div key={pathname}>{children}</div>;

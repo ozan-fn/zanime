@@ -117,9 +117,7 @@ export function Watch() {
       {epId ? (
         idx >= 0 ? (
           <section className="mt-4">
-            {/* key={src}: ganti episode harus memasang shaka baru — video
-                element lama menyimpan SourceBuffer stream sebelumnya. */}
-            <Player key={masterUrl(epId)} src={masterUrl(epId)} subtitle={subtitleFileUrl(epId)} status={status} />
+            <Player src={masterUrl(epId)} subtitle={subtitleFileUrl(epId)} status={status} />
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {prev ? (
                 <Link

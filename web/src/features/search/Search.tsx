@@ -13,10 +13,18 @@ export function Search() {
   const [list, setList] = useState<Anime[] | null>(null);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    document.title = query ? `${query} · zanime` : 'zanime';
+  // Reset saat query ganti, di fase render (docs React "storing information
+  // from previous renders"): effect jalan setelah paint, jadi hasil pencarian
+  // lama sempat tampil dulu di halaman hasil yang baru.
+  const [prevQuery, setPrevQuery] = useState(query);
+  if (prevQuery !== query) {
+    setPrevQuery(query);
     setList(null);
     setError('');
+  }
+
+  useEffect(() => {
+    document.title = query ? `${query} · zanime` : 'zanime';
     if (!query) return;
 
     let alive = true;

@@ -372,21 +372,28 @@ func pickDialogue(ctx context.Context, src *hianime.Source, referer string) {
 			continue
 		}
 		probed++
-		if n := probeCues(ctx, src.Subtitles[i].URL, referer); n > bestCues {
+		n, err := probeCues(ctx, src.Subtitles[i].URL, referer)
+		if n > bestCues {
 			best, bestCues = i, n
+		}
+		// Berhenti saat kena challenge: melanjutkan probing hanya menambah
+		// hit ke host yang sama dan memperpanjang burst CF sebelum fetch final.
+		if errors.Is(err, hianime.ErrCloudflare) {
+			break
 		}
 	}
 	src.Subtitles[best].Default = true
 	src.DialogueCues = bestCues
 }
 
-// probeCues counts cue timings in the head of a subtitle track.
-func probeCues(ctx context.Context, rawURL, referer string) int {
-	head, err := hianime.GetPart(ctx, rawURL, referer, 64<<10, cueProbeTimeout)
+// probeCues counts cue timings in the head of a subtitle track. The error is
+// returned alongside so pickDialogue can stop probing on a challenge.
+func probeCues(ctx context.Context, rawURL, referer string) (int, error) {
+	head, err := hianime.GetSubPart(ctx, rawURL, referer, 64<<10, cueProbeTimeout)
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return strings.Count(head, "-->")
+	return strings.Count(head, "-->"), nil
 }
 
 // cueProbeTimeout bounds one track peek. Generous next to the other small hops:

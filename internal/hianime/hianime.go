@@ -12,12 +12,22 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
+
+	fhttp "github.com/bogdanfinn/fhttp"
+	tls_client "github.com/bogdanfinn/tls-client"
+	"github.com/bogdanfinn/tls-client/profiles"
 )
 
 const (
 	BaseAPI   = "https://hianime.at"
 	UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+	// SubUserAgent = UA browser yang terekam di HAR untuk request .vtt
+	// (Edge 154). Dipasangkan dengan profil Chrome_152: profil + UA yang sama
+	// seperti browser terverifikasi lolos 200 di cfprobe.
+	SubUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0"
 
 	// The embed page ships its config as base64(json XOR "otaku-embed-v1").
 	EmbedXORKey = "otaku-embed-v1"
@@ -34,7 +44,7 @@ var (
 	EpisodesAPI = BaseAPI + "/api/theme/episode/list/%s"
 	ServersAPI  = BaseAPI + "/api/theme/episode/servers?episodeId=%s"
 
-	ErrCloudflare = errors.New("blocked by cloudflare: install curl-impersonate or retry from another egress IP")
+	ErrCloudflare = errors.New("blocked by cloudflare: retry from another egress IP")
 )
 
 // MaxIdleConnsPerHost defaults to 2, which queues the player's parallel
@@ -116,8 +126,136 @@ func getCapped(ctx context.Context, rawURL, referer string, max int64, timeout t
 		return "", fmt.Errorf("upstream HTTP %d for %s", resp.StatusCode, rawURL)
 	}
 	page := string(body)
-	if strings.Contains(strings.ToLower(page), "just a moment") ||
-		strings.Contains(page, "cf-browser-verification") {
+	if isChallenge(page) {
+		return "", ErrCloudflare
+	}
+	return page, nil
+}
+
+// isChallenge membedakan halaman challenge CF dari konten asli. Frasa
+// "just a moment" ada di dialog subtitle (terdeteksi di episode ini:
+// "Wait just a moment!"), jadi teks saja tidak cukup — challenge selalu
+// berupa HTML, sedangkan subtitle/playlist tidak pernah.
+func isChallenge(page string) bool {
+	lower := strings.ToLower(page)
+	if !strings.Contains(lower, "<html") && !strings.Contains(lower, "<!doctype") {
+		return false
+	}
+	return strings.Contains(lower, "just a moment") ||
+		strings.Contains(lower, "cf-browser-verification") ||
+		strings.Contains(lower, "challenge-platform") ||
+		strings.Contains(lower, "cf-chl")
+}
+
+// browserOnce builds the impersonating client once: same Chrome handshake the
+// HAR browser sends, so subtitle hosts that challenge Go's TLS fingerprint
+// answer 200 (verified: dramahot.top and lunarfrontier.website challenge the
+// stock client on /subs/*.vtt while the identical URL loads in a browser).
+var (
+	browserOnce   sync.Once
+	browserClient tls_client.HttpClient
+	browserErr    error
+)
+
+func browser() (tls_client.HttpClient, error) {
+	browserOnce.Do(func() {
+		browserClient, browserErr = newBrowserClient()
+	})
+	return browserClient, browserErr
+}
+
+func newBrowserClient() (tls_client.HttpClient, error) {
+	// Tanpa cookie jar: browser di HAR lolos dengan nol cookie
+	// (cookies: [] di tiap request .vtt), dan jar bersama berisiko menyimpan
+	// cookie penanda bot dari respons challenge ke request berikutnya.
+	return tls_client.NewHttpClient(tls_client.NewNoopLogger(),
+		tls_client.WithTimeoutSeconds(30),
+		tls_client.WithClientProfile(profiles.Chrome_152),
+	)
+}
+
+// GetSub is Get for subtitle files: same caps and challenge detection, but
+// over the impersonating client. Only subtitle fetches use it — playlists and
+// segments already pass with the stock client.
+func GetSub(ctx context.Context, rawURL, referer string) (string, error) {
+	// 20s, bukan PageTimeout 10s: HAR menunjukkan request .vtt pertama butuh
+	// ~23 detik sebelum body penuh, dan timeout yang memotong di tengah
+	// terbaca sebagai kegagalan bukan challenge.
+	return getSubCapped(ctx, rawURL, referer, MaxPageBytes, 20*time.Second)
+}
+
+// GetSubPart is GetPart over the impersonating client.
+func GetSubPart(ctx context.Context, rawURL, referer string, max int64, timeout time.Duration) (string, error) {
+	return getSubCapped(ctx, rawURL, referer, max, timeout)
+}
+
+func getSubCapped(ctx context.Context, rawURL, referer string, max int64, timeout time.Duration) (string, error) {
+	// Challenge kadang muncul sekali lalu lolos di handshake berikutnya
+	// (teramati: URL sama gagal lalu 200 beberapa menit kemudian), jadi satu
+	// percobaan ulang dengan handshake baru. Lebih dari itu hanya membakar
+	// waktu: skor bot yang menetap butuh IP lain, bukan percobaan ke-N.
+	for attempt := 0; attempt < 2; attempt++ {
+		var client tls_client.HttpClient
+		var err error
+		if attempt == 0 {
+			client, err = browser()
+		} else {
+			client, err = newBrowserClient()
+		}
+		if err != nil {
+			return "", err
+		}
+		page, err := doSubFetch(ctx, client, rawURL, referer, max, timeout)
+		if err == nil {
+			return page, nil
+		}
+		if !errors.Is(err, ErrCloudflare) || attempt == 1 {
+			return "", err
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return "", ErrCloudflare
+}
+
+func doSubFetch(ctx context.Context, client tls_client.HttpClient, rawURL, referer string, max int64, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := fhttp.NewRequestWithContext(ctx, fhttp.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	// Header minimal saja; header + urutan khas Chrome datang dari profil
+	// tls-client, jangan ditimpa manual agar tetap konsisten.
+	req.Header.Set("User-Agent", SubUserAgent)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	if referer != "" {
+		req.Header.Set("Referer", referer)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, max))
+	if err != nil {
+		return "", err
+	}
+	// 403/503 dari host ini = challenge, bukan hilangnya file: diperlakukan
+	// sama seperti body challenge supaya jalan cooldown, bukan error
+	// menempel yang bikin player menyerah.
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusServiceUnavailable {
+		return "", ErrCloudflare
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("upstream HTTP %d for %s", resp.StatusCode, rawURL)
+	}
+	page := string(body)
+	if isChallenge(page) {
 		return "", ErrCloudflare
 	}
 	return page, nil

@@ -21,22 +21,3 @@ body {
   background: #0a0a0a;
   color: #fafafa;
 }
-
-/* Jarak subtitle dari dasar player. Docs shaka tidak punya opsi konfigurasi
-   untuk ini (TextDisplayerConfiguration hanya fontScaleFactor, positionArea,
-   subtitleDelay, suspendRenderingWhenHidden); kontrol shaka menulis `bottom`
-   inline (tinggi bar saat tampil, 0px saat hilang), jadi jaraknya diatur lewat
-   CSS — jalur kustomisasi yang disebut docs tutorial-ui-customization.
-   transform tidak bentrok dengan inline `bottom`, jadi gap ikut ke kedua
-   keadaan (kontrol tampil / hilang) dan ikut skala tinggi video. */
-.shaka-text-container {
-  transform: translateY(-2rem);
-}
-
-/* Latar subtitle: UITextDisplayer menulis inline rgba(0, 0, 0, 0.8) pada span
-   teks cue — terlalu tebal. Selector string agar span wrapper (background:none)
-   dan cue yang punya backgroundColor sendiri tidak ikut kena; !important
-   mengalahkan inline style. */
-.shaka-text-container span[style*="rgba(0, 0, 0, 0.8)"] {
-  background-color: rgba(0, 0, 0, 0.5) !important;
-}

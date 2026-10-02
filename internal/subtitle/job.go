@@ -4,8 +4,10 @@ package subtitle
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -92,7 +94,28 @@ func SubKey(episodeID, lang string) string {
 	return episodeID + "|" + lang
 }
 
+// subHost names the subtitle file's host for logs: enough to tell which
+// upstream challenges, without printing tokenized paths.
+func subHost(raw string) string {
+	if i := strings.Index(raw, "://"); i >= 0 {
+		raw = raw[i+3:]
+	}
+	if i := strings.IndexByte(raw, '/'); i >= 0 {
+		raw = raw[:i]
+	}
+	return raw
+}
+
 var subJobs sync.Map // SubKey -> *SubJob
+
+// cfCooldown jeda setelah fetch subtitle kena challenge: tanpa ini, entri job
+// yang dihapus membuat tiap poll /status membangun job baru (resolve +
+// fetch) — halaman yang dibiarkan terbuka menghantam upstream tiap detik dan
+// memperpanjang burst CF. Selama jeda, poll dijawab converting tanpa
+// menyentuh upstream; lewat dari itu percobaan sungguhan dimulai sendiri.
+const cfCooldown = 5 * time.Minute
+
+var cfBlocked sync.Map // SubKey -> time.Time blocked terakhir
 
 // EtaSeconds projects the cues still to come from how fast the job has actually
 // been going. A fixed rate would be a guess now that one call carries a whole
@@ -112,6 +135,15 @@ func Status(req *http.Request, cache *SubtitleCache, episodeID, lang string) (*S
 	if _, ok := cache.Get(key); ok {
 		return &SubJob{ready: true}, nil
 	}
+	// Dalam cooldown CF: jawab converting tanpa job dan tanpa upstream.
+	// Placeholder tidak disimpan — poll murah, percobaan sungguhan dimulai
+	// sendiri lewat dari cfCooldown.
+	if t, ok := cfBlocked.Load(key); ok {
+		if since, _ := t.(time.Time); time.Since(since) < cfCooldown {
+			return &SubJob{running: true, start: since}, nil
+		}
+		cfBlocked.Delete(key)
+	}
 	// A conversion already under way is answered from memory, before upstream is
 	// touched. Polling used to re-resolve the episode on every call, so a scrape
 	// that failed mid-conversion turned each /status into an error — the player
@@ -129,11 +161,12 @@ func Status(req *http.Request, cache *SubtitleCache, episodeID, lang string) (*S
 		return nil, errors.New("episode has no subtitles")
 	}
 	if hianime.MatchesLang(pick.Lang, lang) {
-		raw, err := hianime.Get(req.Context(), pick.URL, src.Referer)
+		raw, err := hianime.GetSub(req.Context(), pick.URL, src.Referer)
 		if err != nil {
 			return nil, err
 		}
 		cache.Put(key, raw)
+		cfBlocked.Delete(key)
 		return &SubJob{ready: true}, nil
 	}
 	job := &SubJob{running: true, start: time.Now()}
@@ -151,6 +184,15 @@ func RunSubtitleJob(cache *SubtitleCache, key, episodeID, lang string, job *SubJ
 	ctx := context.Background()
 	fail := func(err error) {
 		log.Printf("subtitle %s: %v", key, err)
+		if errors.Is(err, hianime.ErrCloudflare) {
+			// Challenge itu transien (URL sama lolos di handshake lain) dan
+			// terjadi sebelum kuota LLM tersentuh: jangan lengket. Entri
+			// dihapus + cooldown dicatat agar poll berikutnya tidak membangun
+			// job baru (tiap job = resolve + fetch = hit upstream baru).
+			subJobs.Delete(key)
+			cfBlocked.Store(key, time.Now())
+			return
+		}
 		// Sticky on purpose: what TranslateSplit gives up on is structural — a
 		// rejected request, a spent quota — so re-running it on each poll would
 		// only burn calls to hear the same answer.
@@ -158,7 +200,7 @@ func RunSubtitleJob(cache *SubtitleCache, key, episodeID, lang string, job *SubJ
 	}
 	src, err := stream.Resolve(ctx, episodeID)
 	if err != nil {
-		fail(err)
+		fail(fmt.Errorf("resolve: %w", err))
 		return
 	}
 	pick := PickSubtitle(src.Subtitles, lang)
@@ -166,9 +208,9 @@ func RunSubtitleJob(cache *SubtitleCache, key, episodeID, lang string, job *SubJ
 		fail(errors.New("episode has no subtitles"))
 		return
 	}
-	raw, err := hianime.Get(ctx, pick.URL, src.Referer)
+	raw, err := hianime.GetSub(ctx, pick.URL, src.Referer)
 	if err != nil {
-		fail(err)
+		fail(fmt.Errorf("fetch %s: %w", subHost(pick.URL), err))
 		return
 	}
 	// The fetches above run without holding a slot; only translating competes
@@ -206,6 +248,7 @@ func RunSubtitleJob(cache *SubtitleCache, key, episodeID, lang string, job *SubJ
 		return
 	}
 	cache.Put(key, done)
+	cfBlocked.Delete(key)
 	job.Finish(nil)
 }
 

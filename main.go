@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -43,7 +44,11 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: streams are long-lived and the server must not cut them.
 	}
-	log.Printf("listening on %s", *addr)
+	port := *addr
+	if i := strings.LastIndex(port, ":"); i >= 0 {
+		port = port[i:]
+	}
+	log.Printf("http://localhost%s", port)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

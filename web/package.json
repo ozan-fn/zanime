@@ -10,10 +10,11 @@
     "preview": "rsbuild preview"
   },
   "dependencies": {
+    "@videojs/hlsjs-video": "10.0.0",
+    "@videojs/react": "10.0.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "react-router": "^8.4.0",
-    "shaka-player": "^5.2.12"
+    "react-router": "^8.4.0"
   },
   "devDependencies": {
     "@rsbuild/core": "^2.2.10",

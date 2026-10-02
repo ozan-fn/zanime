@@ -10,11 +10,23 @@ import (
 
 func TestGetDetectsCloudflare(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, "<title>Just a moment...</title>")
+		io.WriteString(w, `<!DOCTYPE html><html><head><title>Just a moment...</title></head><body></body></html>`)
 	}))
 	defer srv.Close()
 	if _, err := Get(context.Background(), srv.URL, ""); err != ErrCloudflare {
 		t.Fatalf("want ErrCloudflare, got %v", err)
+	}
+}
+
+// Regresi: dialog subtitle "Wait just a moment!" pernah terdeteksi sebagai
+// challenge sehingga fetch yang sebenarnya 200 dilaporkan blocked.
+func TestGetIgnoresChallengePhraseOutsideHTML(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "WEBVTT\n\n00:02:13.540 --> 00:02:14.280\nWait just a moment!\n")
+	}))
+	defer srv.Close()
+	if _, err := Get(context.Background(), srv.URL, ""); err != nil {
+		t.Fatalf("subtitle body misread as challenge: %v", err)
 	}
 }
 

@@ -8,6 +8,9 @@ import { pluginTailwindcss } from '@rsbuild/plugin-tailwindcss';
 // React 19 tidak butuh react-compiler-runtime tambahan.
 export default defineConfig({
   plugins: [pluginReact({ reactCompiler: true }), pluginTailwindcss()],
+  html: {
+    title: 'zanime',
+  },
   server: {
     // Semua endpoint Go (API, HLS, subtitle, img) hidup di bawah /api/.
     proxy: { '/api': 'http://localhost:8080' },

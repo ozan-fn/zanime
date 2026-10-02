@@ -125,8 +125,6 @@ export function Anime() {
         </section>
       ) : null}
 
-      {/* Kolom "Rekomendasi" dari halaman upstream selama ini discrape lalu
-          dibuang: tidak ada yang menampilkannya. */}
       {detail?.recommended?.length ? (
         <section className="mt-8">
           <h3 className="text-sm font-medium text-subtle">Rekomendasi</h3>

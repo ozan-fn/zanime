@@ -170,20 +170,29 @@ func New(cache *subtitle.SubtitleCache, webRoot fs.FS) http.Handler {
 
 	// SPA: semua path non-/api dilayani dari embed — file dist apa adanya
 	// (ServeContent mengurus MIME per ekstensi), sisanya index.html supaya
-	// preact-router yang memutuskan 404.
+	// router yang memutuskan 404. Aset ber-hash di-cache permanen; index.html
+	// dan favicon selalu revalidate, kalau tidak browser bisa menjalankan
+	// bundel lama setelah rebuild dan seluruh perilaku SPA jadi usang.
 	r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
 		name := strings.TrimPrefix(req.URL.Path, "/")
-		if name != "" && !strings.Contains(name, "..") {
-			if data, err := fs.ReadFile(webRoot, name); err == nil {
-				http.ServeContent(w, req, name, time.Time{}, bytes.NewReader(data))
-				return
+		if name != "" && strings.Contains(name, "..") {
+			name = ""
+		}
+		if data, err := fs.ReadFile(webRoot, name); err == nil {
+			if strings.HasPrefix(name, "static/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else {
+				w.Header().Set("Cache-Control", "no-cache")
 			}
+			http.ServeContent(w, req, name, time.Time{}, bytes.NewReader(data))
+			return
 		}
 		index, err := fs.ReadFile(webRoot, "index.html")
 		if err != nil {
 			http.Error(w, "web/dist belum dibuild: jalankan `cd web && npm run build` lalu compile ulang", http.StatusNotFound)
 			return
 		}
+		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(index)
 	})
