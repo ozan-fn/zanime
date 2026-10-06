@@ -1,375 +1,122 @@
-# zanime — progress
+# Progress
 
-HTTP API + SPA web player di atas hianime.at. Backend Go 1.25 + chi; frontend
-React 19 + React Router 8, dibundel rsbuild dengan Tailwind 4 (plugin resmi,
-bukan CDN browser) dan **React Compiler** aktif (`reactCompiler: true`). Subtitle diterjemahkan ke Indonesia lewat RPC web Google Translate
-tanpa API key (job latar + progress, fallback gtx via proxy), video diputar lewat proxy HLS
-dengan shaka-player (paket npm, dibundel — bukan skrip CDN). Tanpa ffmpeg sama
-sekali: remux `-c copy` sudah dibuang.
+## 8. Fix proxy streaming mati total — selesai
+- Root cause: kode tak bisa di-build (`to_err_map` tak ada) → binary jadwal lama yang dipakai → video 0 menit.
+- Fix mime: CDN menyamarkan segmen (`.jpg`/`.js`/`.css`/`.html` tapi isi MPEG-TS) → `mime_for` by-extension salah → sekarang selalu sniff chunk pertama (magic bytes), fallback ekstensi → label upstream → octet-stream. Satu jalur, tanpa 2-layer if/else.
+- Hapus `Fetched.crange` (tak pernah dipakai).
+- Verifikasi curl (provider yuki, sub eng): master 200 (3 varian), media playlist 200 (333 segmen + ENDLIST), semua 333 segmen 200 & TS valid, total durasi 23.7 menit, sub VTT `text/vtt`, segmen `video/mp2t`. clippy -D warnings 0.
 
-Alur scrape + resolve **mengikuti `index.js` baris per baris** (lihat bagian
-"Alur resolve"): search → daftar episode → servers → embed → config player →
-master playlist, dengan urutan coba **sub → dub** dan **Vidstream-2 (megaplay) →
-ZokoAnime**, plus fallback ke server lain kalau track subtitle-nya cuma *signs*.
+## 9. Player `Invalid base URL` — selesai
+- Penyebab: `abs()` mengembalikan path relatif (`/api/hls?u=…`); parser player resolve URI via `new URL(uri, base).href` dengan `base` kosong → `TypeError: Failed to construct 'URL': Invalid base URL`, manifest gagal → durasi 0:00.
+- Fix: `abs()` di `web/src/lib/api.ts` → `new URL(u, location.origin).href` (relatif jadi absolut, http(s) apa adanya).
+- Verifikasi simulasi alur player (node, fungsi resolve sama): src absolut → varian → segmen → HTTP 200, TS sync, durasi 25 menit, sub `text/vtt`. `pnpm check` 0 error/warning, `web/dist` di-rebuild + disajikan ulang oleh Rust.
 
-## Struktur
+## 10. Spinner selamanya — tipe media tak terbaca player
+- Penyebab: player (`@videojs/html` bundle) menentukan tipe media dari **ekstensi URL**: `{".ts":"video/mp2t",".aac":"audio/aac"}` → `VE(pathname)`. URL proxy kita `/api/fetch?u=<b64>` tak punya ekstensi → `mimeType` undefined → player salah jalur (pikir bisa feed langsung ke MSE) → append gagal, video tak pernah mulai.
+- Fix: `rewrite_playlist` menulis segmen sebagai `/api/fetch/<nama>.ts?u=<b64>` (`.mp4` bila playlist punya `#EXT-X-MAP`); atribut `URI="…"` (key/map/media) tetap `/api/fetch?u=`. Route ditambah: `/api/fetch/{name}` (selain `/api/fetch`) via `web::resource`.
+- Verifikasi: segmen[0] = `/api/fetch/seg-1-f1-v1-a1.ts?u=…` → deteksi ekstensi = `video/mp2t` (sebelumnya `undefined`), HTTP 200, 809528 B, TS sync, ffprobe h264+aac, durasi 25 menit, sub `text/vtt`, clippy 0.
+- Catatan: bundle player tidak punya demuxer TS sendiri (`0x47`/`PAT`/`PMT`/`transmux` = 0 hit) → jalur TS mengandalkan MSE `video/mp2t` bawaan browser.
 
-```
-main.go                   bootstrap tipis: godotenv, flag, embed web/dist, ListenAndServe
-internal/hianime/         konstanta upstream, klien scraping, batas ukuran/waktu, scraping katalog
-internal/stream/          resolve embed (zoko + megaplay) + proxy HLS
-internal/subtitle/        terjemahan VTT (batch, split, dedup), job latar, cache, limiter
-internal/server/          routing chi: /api/* + SPA dari embed
-web/                      SPA React 19 (rsbuild + React Compiler)
-```
+## 11b. Player video.js 10 + adapter hlsjs — selesai (statis)
+- `@videojs/html` (`<hls-video>`, engine SPF) tak bisa MPEG-TS — dokumentasinya sendiri menyebut padanan berbasis hls.js yang "plays MPEG-TS". Solusi resmi: adapter `@videojs/hlsjs-video` → `<hlsjs-video>` (UI/skin tetap video.js 10).
+- `Player.svelte`: `@videojs/html/video/player` + `@videojs/html/video/skin` + `@videojs/html/media/hlsjs-video`, isi `<hlsjs-video>` dengan `<track>` subtitle (pola resmi dari guides/captions.md). `hls.js` langsung dihapus (dibawa adapter, v1.6.7).
+- Verifikasi: `pnpm check` 0/0; aset `index-CvNDyMSA.js` (961 KB) disajikan; bundel berisi `hlsjs-video`, `video-player`, `video-skin`, `hlsManifestParsed`.
 
-Monolith `main.go` (2064 baris) dan `main_test.go` (592 baris) yang lama
-**dihapus**: keduanya duplikat dari paket `internal/`, dan `main.go` sekarang
-hanya bootstrap. Test yang unik di `main_test.go` dipindah, bukan dibuang:
-`mostlyNonLatin` dan penolakan cache beraksara salah ke `internal/subtitle`,
-`Invalidate` ke `internal/stream`.
+## 11. Player sempat diganti ke hls.js langsung — digantikan 11b
 
-## Status
+- `@videojs/html` (video.js 10) tak bisa memutar MPEG-TS: bundlenya tanpa transmuxer TS, sedangkan MSE hanya menerima input fMP4 (alasan hls.js memakai mux.js). Sumber CDN semua TS → video mustahil mulai.
+- `Player.svelte` ditulis ulang: `hls.js` + `<video controls>`; Safari pakai HLS native (`canPlayType('application/vnd.apple.mpegurl')`). `@videojs/html` dihapus dari `web/package.json`; ditambah `hls.js@1.7.3`.
+- Verifikasi: `pnpm check` 0 error/warning; aset `index-CgkQ5s7r.js` (650 KB, berisi `hlsManifestParsed`/`maxBufferLength` = hls.js benar ter-bundle) disajikan Rust; negosiasi gzip benar (`content-encoding: gzip`, 204 KB → 650 KB). `Player` props (`src`, `sub`) tak berubah → `Watch.svelte` aman.
+- Batas: playback nyata belum bisa diuji agen (tanpa browser di lingkungan ini).
 
-| Bagian | Status |
-|---|---|
-| `go mod init zanime` + `go get chi/v5` | done |
-| Scraping katalog (search / detail / episodes) | done |
-| Resolve embed ala `index.js`: ZokoAnime + MegaPlay, fallback Vidstream → Zoko | done |
-| Sub default (dub fallback) + pilih track dialog (bahasa lalu cue) + fallback server bila <10 cue | done |
-| Prompt anti-aksara non-Latin + validasi berkas sebelum job `ready` | done |
-| Parse master playlist + pilih kualitas | done |
-| Terjemahan subtitle ID via RPC web Google Translate (tanpa API key) + fallback gtx via proxy | done |
-| Batch ≤4500 char/RPC, baris bernomor `N\|`, mapping by prefix | done |
-| Cache subtitle ke disk + job latar ber-progress | done |
-| Proxy HLS hemat memori (buffer pool, 1 request/segmen) | done |
-| SPA React 19 + React Router 8 (rsbuild, React Compiler) | done |
-| `go vet` + `go test ./...` | pass |
-| `npx tsc --noEmit` (web) | pass |
+## 1. CLI anime (dari `y.txt`) — selesai
+- Alur: input judul → pilih anime → pilih episode → URL stream + sub English (provider `yuki`).
+- API dari HAR: `POST graphql.animex.one/graphql` (`CatalogAnime`), `GET api.anistream.one/rest/api/episodes`, `GET .../sources?...&providerId=yuki`.
+- Fix bug pilih episode: browser UA + `Origin`/`Referer`, fallback nomor episode saat API `[]`, judul fallback `en → x-jat → ja`, guard EOF anti-loop.
+- Verifikasi stream 1 MB: master m3u8 cuma playlist (~257 B) → resolve varian → segmen → `Range: bytes=0-1048575`, ukur byte aktual.
 
-## Endpoint — semua API di bawah `/api/`
+## 2. API Actix — selesai
+- CLI dihapus total. Rust tetap di root; `src/` difolderkan per modul: `config/`, `error/`, `handlers/`, `models/`, `routes/`, `upstream/` + `main.rs`/`lib.rs`.
+- `main.rs` bootstrap → `lib.rs:create_app` → `routes.rs` → `handlers.rs` → `upstream.rs`; `ResponseError` → JSON; `Cors::permissive` (untuk player web); port **3000**.
+- Log resource tiap 2 detik via `sysinfo` (refresh ditarget ke pid sendiri): `proc_mem`, `proc_cpu`, `sys_mem`.
+- Log level default `info` (request Logger: peer localhost + method/path/status terlihat), startup log URL penuh `http://127.0.0.1:3000`.
+- `cargo check` + `clippy -D warnings` lolos. Testing runtime milik user, agen hanya statis.
 
-Tidak ada parameter audio: stream **sub** yang dipakai (audio Jepang + subtitle),
-dan **dub** hanya fallback kalau sub tidak ada — lihat "Pilihan audio" di bawah.
-Karena audio bukan pilihan pengguna, tidak ada tombol Subtitle/Dub di UI.
+## 3. Semua API `y.txt` jadi proxy `/api/*`, URL base64 — selesai
+- Route: `/api/search`, `/api/anime?anilistId=&section=base|seasons|relations|recommendations|characters`, `/api/episodes`, `/api/servers`, `/api/sources`, `/api/stream`, `/api/skiptimes`, `/api/comments`, `/api/episode-meta`, `POST /api/anilist`, `/api/fetch?u=<base64url>`, `/api/hls?u=<base64url>`.
+- Nol direct: gambar/cover/sub/segmen/playlist ditulis ulang ke `/api/*`; anti-SSRF via blocklist host privat (CDN berotasi tetap lolos).
+- `/api/stream` kembalikan URL ter-proxy (`/api/hls`, `/api/fetch`). `/api/hls` tolak konten non-playlist (blokir Cloudflare → 502 jelas); header default megaplay.
+- Multi-resolusi: semua varian dipertahankan + rekursi `/api/hls`; deteksi `.m3u8` abaikan query (`?token=`). Subtitle: `<track>` + `crossorigin`, VTT via `/api/fetch` (CORS + mime diteruskan).
+- Gambar dinormalisasi dua sisi (`img_url` backend, `imgOf` web) untuk object `{extraLarge,large,medium}`.
+- `test-upstream.sh`: 8 cek upstream langsung (catalog, episodes, servers, sources, master, segmen 1 MB, VTT, aniskip) — 8/8 lolos.
+- Tes localhost lolos: search (cover terisi), episodes, detail, relations, stream (probe 1 MB), `/api/hls` (varian 1080p + nested + I-FRAME), sub `WEBVTT`, index 200, gzip/identitas, gambar `image/jpeg`.
+- Fix label MIME: CDN salah label (`.ts`→jpeg, `.vtt`→octet-stream) → `mime_for` by-extension di `/api/fetch`.
 
-| Method | Path | Fungsi |
-|---|---|---|
-| GET | `/` | SPA (index.html + aset hashed, embed) |
-| GET | `/api/healthz` | status + sisa kuota |
-| GET | `/api/limits` | pacing request translate gratis |
-| GET | `/api/search?q=` | cari judul (poster + sinopsis per kartu, poster di-proxy) |
-| GET | `/api/img?u=` | proxy gambar CDN (base64url, allow-list host) |
-| GET | `/api/anime/{id}` | detail anime: meta, genre, studio, related, recommended |
-| GET | `/api/anime/{id}/episodes` | daftar episode |
-| GET | `/api/episode/{id}` | master URL, referer, kualitas, subtitle |
-| GET | `/api/subtitle/{id}?lang=id` | `.vtt` kalau siap, `202` + progress kalau masih dikonversi |
-| GET | `/api/subtitle/{id}/status` | `{state,done,total,eta_seconds}` |
-| GET | `/api/hls/{id}/master.m3u8` | master upstream, varian ditulis ulang ke `/api/hls/{id}/{label}/index.m3u8` |
-| GET | `/api/hls/{id}/{quality}/index.m3u8` | playlist media, semua URI segmen ditulis ulang ke `/s/{base64url}` |
-| GET | `/api/hls/{id}/{quality}/s/{seg}` | segmen absolut (base64url), content-type di-sniff dari byte |
+## 4. Proxy streaming hemat resource — selesai
+- `/api/fetch` streaming per-chunk (`bytes_stream`, tanpa buffer penuh), teruskan `content-type`/`content-range`/`content-length` + `Range`. Tidak wajib zero-memory, prioritas CPU/memory.
 
-## Alur resolve (sama dengan `index.js`)
+## 5. Web nonton anime (`web/`, pnpm) — selesai (statis)
+- Router `svelte-spa-router` v5, Tailwind v4 (Vite plugin, `@custom-variant dark`), `@videojs/html@10.0.1` (`hls-video` + skin), icon `@lucide/svelte`.
+- Struktur `features/<nama>/{api,hooks,stores,types,components,index}.ts`: `search`, `episodes`, `watch`; `pages/`: Home, Anime, Watch, NotFound.
+- Tanpa env: same-origin + Vite proxy `/api → 127.0.0.1:3000`, web port **5173**. Default dark, tanpa branding, hanya class `rounded` (4 px).
+- Halaman Anime: banner + deskripsi + episode + **Terkait** (prequel/sequel via `section=relations`).
+- `pnpm check` 0 error/warning; `pnpm build` ok (warning chunk >500 kB dari player — wajar).
 
-`internal/stream/resolve.go` mengikuti urutan hop di `index.js`:
+## 6. Serve web dari Rust + Makefile — selesai (statis)
+- `web/dist` di-embed via `rust-embed` (`src/spa/`); non-`/api` → `index.html` + aset (mime via `mime_guess`).
+- Zero-copy: `Bytes::from_static` + map startup (`OnceLock`), ETag + `304`, `Cache-Control: immutable` untuk `/assets/*`, `no-cache` untuk lainnya, `HEAD` + `GET`.
+- Precompress: `vite-plugin-compression` gzip level 9 (53 `.gz`); spa negosiasi `Accept-Encoding` → `.gz` + `Content-Encoding: gzip` + `Vary`, else identitas. `/api/fetch` teruskan `Accept-Encoding`/`Content-Encoding` upstream (tanpa decode → nol CPU).
+- `Makefile`: `make server` (cargo run --release, API+web :3000), `make client` (pnpm dev :5173 + proxy /api), `make build` (pnpm build → cargo build --release → `./zanime`).
+- `.gitignore`: `/target`, `/zanime`, `web/dist`, `web/node_modules`. `make -n` valid; build/run milik user.
 
-1. **servers** — `Servers(page)` memakai regex `index.js`
-   (`data-type="…"\s*data-server-name="…"[\s\S]*?data-hash="…"`), hash-nya
-   base64 → URL embed, duplikat dibuang; tipe audio tidak disaring di sini,
-   `ordered` yang mengurutkan. Envelope JSON-nya di-`json.Unmarshal` (bukan
-   di-scrub manual: scrub `\"` → `"` menyisakan `\n` **literal** di antara baris,
-   yang tidak pernah cocok dengan `\s*`, sehingga daftar server terbaca kosong).
-2. **embed** — `hianime.GetTiny(embed, hianime.at)`, dibaca sebagai salah satu
-   dari dua player:
-   - **ZokoAnime**: `window.__P` = `base64(json XOR "otaku-embed-v1")`;
-     JSON-nya `{src, subtitles[]}` → master + track subtitle, satu request.
-   - **MegaPlay**: `data-id` → `GET {origin}/stream/getSources?id=` dengan
-     `X-Requested-With: XMLHttpRequest` + referer embed. `enc` didekripsi
-     AES-256-CBC (`DecryptEnc`, key `i?LMTAx0Q6,:}50U` zero-pad 32 byte, IV
-     `W0;27ToaUpl_P%'c`, PKCS#7 dibuang manual) → `{"file": …/master.m3u8}`.
-     Kalau `enc` tidak ada, jatuh ke `sources` (string atau `[{file}]`) lalu
-     `file` — sama seperti `index.js`.
-3. **master** — `Qualities` mengambil master dan `ParseMaster` menyortir varian
-   per tinggi. Kalau URL itu ternyata playlist media (ada `#EXTINF`, tanpa
-   varian), ia dipakai sebagai satu kualitas `auto` — `index.js` juga
-   memperlakukannya sebagai playlist yang bisa diputar. Kalau benar-benar tidak
-   ada yang bisa diputar, resolve **gagal** supaya jatuh ke server berikutnya.
-4. **fallback otomatis** — `ordered()` mengurutkan embed: sub+megaplay, sub+zoko,
-   dub+megaplay, dub+zoko (urutan upstream dipertahankan di dalam grup), lalu
-   `Resolve` mencoba satu per satu. Embed mati / getSources gagal / master mati =
-   server berikutnya, bukan episode yang gagal. `index.js` menyerahkan pilihan
-   ini ke manusia; di sini urutannya sama, cuma tanpa prompt.
-5. **track subtitle** — `pickDialogue` menandai default dalam dua langkah:
-   bahasa dulu (`hianime.LangRank`: Indonesian → English → lainnya), lalu cue
-   terbanyak di antara track berbahasa itu. Semua track tetap ditawarkan ke
-   player, jadi menu subtitle tidak kosong.
+## 7. Biner release kecil — selesai (statis)
+- `[profile.release]`: `strip`, `opt-level="z"`, `lto`, `codegen-units=1`. Tanpa `panic=abort` (server jangan mati saat handler panic).
+- `web/dist` cuma 1,2 MB (gz 200 KB) → embed tetap murah. Ukur hasil via `make build` + `ls -lh zanime`.
 
-Dibuang karena tidak dipakai `index.js`: filter `megaplay.buzz` di daftar
-server (host tidak difilter, urutan yang menentukan), `NormMode`/parameter
-mode, pembacaan `data-realid`/`data-mediaid` di halaman embed (hanya `data-id`
-yang dipakai), dan aturan `kind: caption|sub` milik megaplay — diganti jumlah cue,
-lihat "Mengapa bukan track pertama".
+## 12. Bisu log request + tanpa `touch` — selesai
+- `Logger` actix dihapus dari `main.rs` (log `res proc_mem=…` tetap). Verifikasi: satu GET nyata → 0 baris request di log.
+- `Makefile`: `touch src/spa/mod.rs` dihapus — terbukti cargo sudah mendeteksi perubahan `web/dist` sendiri (`include_bytes!` rust-embed), diuji: ubah `dist/index.html` → `cargo build --release` recompile 37s & konten baru ter-embed.
 
-Bukti probe langsung ke upstream (Sep 2026, episode 37108): servers →
-`ZokoAnime [dub] https://zokoanime.video/stream/mal/59970/1/dub` +
-`Vidstream-2 [dub] https://megaplay.buzz/stream/s-2/169702/dub`; resolve →
-master `https://hls.dramahot.top/…/master.m3u8` (referer
-`https://zokoanime.video/`, sama seperti HAR), varian 1080p/720p/360p;
-`/api/hls/37108/360p/index.m3u8` 200 (50 KB, semua URI ditulis ulang), segmen
-200 `Content-Type: video/mp2t` 277 KB (0x47 di byte pertama) → satu request
-upstream per segmen.
+## 13. Detail anime di halaman Watch — selesai (statis)
+- `Watch.svelte`: fetch `fetchDetail(id)` lokal (`$state`), render cover + judul (EN/romaji) + chip (format, season+year, status, durasi, episode, ★score, studio, genre) + deskripsi 3 baris; `Episode {ep}` tetap jadi fallback saat detail belum ada.
+- `types.ts`: `AnimeDetail` ditambah `format/status/season/seasonYear/duration/averageScore/source/genres/studios`.
+- Verifikasi: `pnpm check` 0/0; aset `index-BoJENobh.js` disajikan (berisi kode chip); data nyata Frieren: `TV FALL 2023 | FINISHED | 24 mnt | 28 eps | ★ 9.1 | Adventure, Drama, Fantasy | MADHOUSE`.
 
-### Pilihan audio: sub, dub sebagai fallback
+## 14. Halaman Anime tahan episode banyak — selesai (statis)
+- `EpisodeList.svelte`: input cari + pagination 50/halaman (prev/next, nomor halaman dengan ellipsis, `x–y dari N episode`, auto-scroll ke daftar, reset ke halaman 1 saat query berubah).
+- Pencarian: `term = q.trim().toLowerCase().replace(/^ep(?:isode)?s?\s*/, '')` → nomor episode `startsWith(term)` atau judul `includes(term)`; kosong = semua. Judul kolom jadi `Episode (n dari m)` saat memfilter.
+- Verifikasi (`pnpm check` 0/0, aset `index-BwWOXEt5.js` disajikan, matcher baru ada di bundel): Naruto Shippuden 500 ep → 10 halaman (hal.2 = ep 51–100, terakhir = 451–500); cari `episode 5`/`ep5` → 16 cocok mulai ep 5; `1000` → 0 cocok (memang tak ada). One Piece 1180 ep → 24 halaman (terakhir 1151–1180).
 
-Keputusan awal "dub saja" (ikut `chisle: dub aja` di `index.js`) **salah untuk
-app ini**, dan `har.har` yang membuktikannya: embed yang benar-benar dibuka sesi
-itu `zokoanime.video/stream/mal/58514/1/sub` — sub, dan `58514` justru anime yang
-sedang ditonton. Yang diload cuma satu file subtitle, 21 176 B, referer
-`zokoanime.video/`: track dialog, bukan yang 510 B.
+## 15. Katalog dari skema animex + home berisi section — selesai
+- Introspeksi `graphql.animex.one/graphql` (docs-first): `queryType` = `anime/searchAnime/catalogAnime`; `AnimeSortField` = POPULARITY, TRENDING, AVERAGE_SCORE, MEAN_SCORE, FAVOURITES, SEASON_YEAR, UPDATED_AT, CREATED_AT, EPISODE_COUNT, DURATION, TITLE_ENGLISH, TITLE_ROMAJI, NEXT_AIRING_AT, SUB_COUNT, DUB_COUNT; `AnimeCatalogFilterInput` punya `query/statusIn/formatIn/seasonIn/seasonYearMin|Max/genres/…`.
+- Backend: `GET /api/catalog?sort=&direction=&status=&format=&season=&year=&genre=&query=&limit=&offset=` (whitelist enum → 400 jelas), upstream `catalog()` generik; `search()` kini memanggil `catalog()` (dedup). `CATALOG_QUERY` + item: `format seasonYear averageScore`; `AnimeItem`/`AnimeOut` ditambah field itu. Handler `catalog` + route.
+- Web: fitur `home/` (`api/hooks/stores/types/index` + `components/HomeSection.svelte`); `Home.svelte` menampilkan 6 section (Sedang Tren, Sedang Tayang, Rating Tertinggi, Musim `<season year>` dinamis, Akan Datang, Paling Difavoritkan) sebagai baris scroll horizontal; pencarian tetap menang bila ada hasil. `AnimeCard` dapat `block` + baris format/tahun/eps + skor.
+- Verifikasi: clippy `-D warnings` 0; `pnpm check` 0/0; 9 varian curl lolos (termasuk `sort=BOGUS`→400, `status=BOGUS`→400) + regresi `/api/search` 200; simulasi loader home: 6/6 section 200 dengan 12 item & cover lewat proxy.
 
-Diukur pada episode 6647 (Sep 2026):
+## 16. Label segmen TS stabil `video/mp2t` — selesai
+- Root cause: `fetch_stream` teruskan `Accept-Encoding` klien → upstream balas gzip → `bytes_stream` tanpa decode → sniff baca byte gzip (`1f8b`), kalah → fallback ekstensi `.jpg` → `image/jpeg`.
+- Fix: selalu minta `identity` ke upstream (video/gambar sudah terkompresi → hemat CPU), hapus plumbing `cenc`/`accept_encoding` (`Streamed.cenc`, param, header). Sniff prefix ≤2KB lintas-chunk + single-sync `0x47` (chunk pertama bisa kecil).
+- Verifikasi: Frieren ep1 340 segmen, 26.0 menit, ENDLIST, 3/3 `video/mp2t` TS-valid; clippy `-D warnings` 0.
 
-| Stream | Track | Cue |
-|---|---|---|
-| sub Zoko | 10 track, terpadat `en` | **363** |
-| sub MegaPlay | 10 track (ada `Indonesian`, `Japanese`, `Chinese`…) | — |
-| dub Zoko / MegaPlay | satu track *signs* | **7** |
+## 17. Subtitle Indonesia progresif (Groq Qwen) — selesai (statis)
+- Model `qwen/qwen3.8-27b` via Groq (1.7 dtk/6 cue; GLM flash ditinggal — reasoning ~40 dtk/call). Key di `.env` (`GROQ_API_KEY`, via `dotenvy`), `.env` di-gitignore.
+- Job FIFO 1 permit (tak tabrak limit 30 req/mnt, 8K token/mnt, 1K/hari): `POST /api/subid` → `GET /status` (`done/total/queue`) → `GET /result` (VTT parsial, sisa fallback EN). Batch 6 cue/call, jeda 2.5 dtk, 429 retry 3x.
+- Prompt profesional (FAR Pedersen: 20 CPS, 42 char/baris, ≤2 baris, honorifik, anti-literal). Per cue (bukan per baris): line-break cue dipertahankan via baris lanjutan parser.
+- Cache `.cache/subtitles/<hash-en>.vtt` (gitignore) → tonton ulang instan; dedup job per URL.
+- Web: track `Indonesia` muncul progresif (`{#key subVer}`, video tak restart → aman saat seek), indikator kanan-bawah `Subtitle Indonesia… N/total`, hilang saat done.
+- Verifikasi: 9 cue → 1.4 dtk, honorifik (`-sama/-kun/Sensei`) + jeda baris utuh; `clippy -D warnings` 0, `pnpm check` 0/0.
 
-Stream dub cuma membawa title card dan nama tempat; dialognya ada di stream sub.
-Karena itu `ordered()` menaruh sub di depan, dan dub tetap ada sebagai fallback
-(ada dub berlisensi yang tidak punya stream sub).
+## 18. Subtitle on-demand posisi (3 sisa → 6 berikut) — selesai (statis)
+- Worker cuma fetch+parse EN (tanpa LLM); `POST /api/subid/batch` terjemahkan 6 berikut, 1 permit semaphore → serial antar user.
+- Backend kirim `next_at` (akhir cue done-3 minus 2 dtk); Player `timeupdate` → lewat ambang = 1 batch. Tanpa runaway; seek ikut kejar berurutan.
+- Track Indonesia + English di player; indikator kanan-bawah `N/total`, hilang saat done. Key Groq di `.env`, cache `.cache/subtitles/`.
+- Verifikasi: `clippy -D warnings` 0, `pnpm check` 0/0. Tanpa test live (hemat limit).
 
-### Mengapa bukan track pertama
+## 19. Indonesia di menu sejak awal — selesai (statis)
+- Sebab: track blob dipasang telat → menu player snapshot saat init. Fix: `sub_id` dikembalikan `/api/stream` langsung; track `Indonesia` src stabil `/api/subid/result?id=` sejak paint pertama, reload per batch via key.
+- `result` kosong → `WEBVTT` 200 (entri menu aman, bukan 502). Blob/URL.revoke dihapus. Error sub tampil di indikator (tak lagi silent).
+- Verifikasi: `clippy -D warnings` 0, `pnpm check` 0/0, `dist` rebuild + embed ulang. Butuh restart backend.
 
-`index.js` membaca `subtitles[0]` / track `kind=caption` pertama — cukup untuk
-mencetak URL ke manusia, tapi bukan track dialog. Di zoko, `subtitles[0]`
-labelnya "English" dengan `default: true` dan isinya 8 cue *signs*, sementara
-track kedua berisi 553 cue dialog.
-
-Bahasa dan kepadatan dua hal berbeda, dan keduanya pernah salah:
-
-- **Jumlah cue saja tidak cukup.** Di MegaPlay, daftarnya berisi Simplified,
-  Traditional, English, Indonesian, Japanese, Korean…, semuanya track dialog
-  yang padat. Memilih yang terpadat berarti memilih track Cina paling awal, dan
-  berkas `（本作所有人物、组织名均为虚构）` yang keluar di `player` adalah
-  hasilnya: sumber Han → jawaban Han.
-- **Label saja juga tidak cukup.** Track signs yang 8 cue juga berlabel
-  "English".
-
-`pickDialogue` karena itu menyaring dengan `hianime.LangRank` dulu (cuma track
-berbahasa terbaik yang di-probe), lalu mengambil **head 64 KB tiap kandidat**
-(maks 3), menghitung `-->`, dan menjadikan yang terbanyak sebagai default;
-jumlahnya disimpan di `hianime.Source.DialogueCues` (tidak ikut di JSON). `Resolve` memakai
-angka itu: server yang track terbaiknya **di bawah `hianime.DenseCues` (10)**
-tidak langsung diterima — ia disimpan sebagai cadangan dan server berikutnya
-dicoba dulu, jadi episode yang dialog-nya cuma ada di provider lain tetap dapat
-subtitle utuh tanpa kehilangan video. Track yang gagal di-fetch dihitung 0, dan
-kalau tidak ada yang bisa dibandingkan, track pertama tetap dapat default
-(perilaku `index.js`).
-
-`hianime.MatchesLang` menyamakan `id` dengan label yang dipakai provider
-(`id`, `ind`, `Indonesian`, `Bahasa Indonesia`): megaplay kadang sudah
-menyediakan track Indonesia, dan track itu tidak perlu diterjemahkan — dulu
-perbandingannya `HasPrefix(label, "id")`, yang gagal untuk label bernama
-"Indonesian" sehingga file Indonesia yang sudah bagus malah diterjemahkan mesin.
-Tabel alias yang sama dipakai `LangRank` saat memilih track default.
-
-Bukti setelah perbaikan (episode 6647): master resolve dari zoko **sub**
-(`…/1pebmnrx09/5oncdnrmc7gyow/master.m3u8`), default = track `91fum5o8jyevwkno.vtt`,
-source 20 566 B / **363 cue** → `ParseVTT` 363 blok → `RebuildVTT` 363 cue
-(tidak ada yang hilang).
-
-Menambah pemilih audio (kalau nanti perlu dub manual): kirim tipe yang diminta ke
-`Resolve`/`ordered` dan tambahkan tombolnya di `Watch.tsx`.
-
-## Video (proxy hemat memori)
-
-Browser tidak bisa mengirim `Referer` yang diminta host stream, jadi tiga rute
-mem-proxy playlist + segmen.
-
-- Segmen **di-stream** dengan buffer dari `sync.Pool` (`copyUpstream`, 32 KB):
-  `io.Copy` biasa mengalokasikan buffer baru per request, dan player yang
-  mengambil selusin segmen paralel berarti selusin buffer. Pool ini yang menjaga
-  memori proxy tetap datar.
-- **Satu request upstream per segmen**: 512 byte pertama dibaca untuk men-sniff
-  content-type (`0x47` → TS, `ftyp` → MP4), lalu byte itu ditulis dan sisanya
-  dialirkan. Dulu ada request probe terpisah, jadi beban upstream tiap segmen
-  dua kali lipat.
-- Playlist dibaca dengan `io.LimitReader` 64 KB — host yang menjawab dengan
-  body raksasa tidak bisa menahan memori.
-- Transport sendiri: `MaxIdleConnsPerHost: 16`. Default Go (2) membuat unduhan
-  segmen paralel saling mengantre.
-- Segmen `max-age=3600` (immutable), playlist `no-cache` (token upstream
-  berumur pendek), `Invalidate` + retry sekali di `servePlaylist` saat upstream
-  menolak URL lama (error 1001 di player).
-
-Batas scrape **diukur, bukan ditebak**: halaman search/detail ~0,3 MB, daftar
-episode One Piece 1,1 MB, servers 2 KB, embed 4,5 KB, getSources ~0,5 KB,
-master ~2 KB. Karena itu `hianime.Get` 4 MB + 10 s dan `hianime.GetTiny` 64 KB +
-5 s; hop resolve gagal cepat lalu pindah server, halaman besar tetap muat.
-
-Aplikasi tanpa ffmpeg: remux `-c copy` tidak ada, jadi tidak ada `os/exec`.
-
-## Subtitle Indonesia
-
-1. Ambil `.vtt` asli (hampir selalu Inggris) pakai referer yang sama.
-2. Kalau sumbernya belum `id`, parse blok cue WebVTT.
-3. Pack cue sampai ~4500 char per panggilan RPC `MkEWBc` (batchexecute web,
-   bentuk disalin dari traffic browser): baris bernomor `N|teks`, jawaban
-   dipetakan balik by prefix (terbukti 60/60 utuh). Multiline/`N|` gagal di
-   `AVdN8`, satu teks per call di `gtx`, multiplex RPC di-drop server — jadi
-   satu batch = satu RPC multiline.
-4. Deduplikasi: cue dengan teks identik dikirim sekali, hasilnya disalin ke
-   semua kemunculannya. Payload mengecil dan konsistensi jadi gratis.
-5. Cue yang tidak dijawab (atau dijawab dalam aksara non-Latin) diulang sekali
-   (retry pass); mismatch jumlah baris → batch dipecah (retryable), bukan
-   ditebak — cue tak pernah nyasar.
-
-Track yang dipakai adalah track dialog hasil `pickDialogue` (lihat "Mengapa bukan
-track pertama"); kalau track itu sudah berlabel Indonesia, berkasnya dipakai apa
-adanya tanpa memanggil Google Translate.
-
-### Job latar + progress
-
-- `subtitle.Status` membuat job (`sync.Map` per `episode|lang`) dan
-  menjalankannya di goroutine dengan `context.Background()`.
-- `done`/`total` ditulis bersama oleh `SetProgress` = jumlah baris unik.
-- `/api/subtitle/{id}` → `202` + progress selama `converting`, lalu `.vtt`
-  dengan `no-store` setelah `ready`.
-- `MaxConcurrentJobs = 4` (semaphore `jobSlots`); kelebihannya menunggu.
-- Hasil akhir masuk cache disk `.cache/subtitles`, jadi pemutaran kedua instan.
-- Log live: `translating` saat mulai, `cue N: <teks ID>` per cue, progress
-  `done/total` tiap 5 dtk + saat selesai.
-
-### Konsistensi (tanpa prompt — RPC web, bukan model)
-
-Penjaga di kode:
-
-- `mostlyNonLatin` menolak jawaban beraksara salah; baris itu diperlakukan
-  seperti baris yang dijatuhkan (masuk pass retry) dan `SubtitleCache.Get`
-  menolak entri lama beraksara salah (dianggap cache miss).
-- `RunSubtitleJob` memvalidasi berkas sebelum job dinyatakan `ready`: hasil
-  beraksara bukan target membuat job `error` dengan pesan jelas. Sebelum ini,
-  job bisa `ready` dengan berkas yang cache-nya tolak, dan `/api/subtitle/{id}`
-  menjawab `finished subtitle is missing from the cache` terus-menerus.
-- `/api/subtitle/{id}` sekarang melihat cache lebih dulu: tidak ada di cache =
-  progress (`202` + `{state,done,total,eta_seconds}`), bukan `502`.
-
-### Sesi, fallback, dan 429
-
-- RPC web butuh `f.sid` + `bl` dari halaman Translate (`FdrFJe`/`cfb2h`);
-  `refreshGoogleSession` mengambilnya otomatis saat jawaban kosong, sekali
-  per kegagalan. Tanpa `at` (yang basi justru ditolak); override manual via
-  env `GOOGLE_FSID`/`GOOGLE_BL`/`GOOGLE_AT`.
-- Primer web gagal (retryable/token) → fallback `gtx` via proxy
-  `minky.anistream.one/fetch` (IP egress diblokir di googleapis langsung,
-  IP proxy bersih): teks polos, mapping posisional, di-chunk ≤1200 char/GET
-  (proxy menjawab 431 kalau URL kepanjangan).
-- Paralel `MaxTranslateWorkers = 4`, pacing `WaitForBudget` per batch +
-  jeda 500 ms; `requestsPerMinute = 120`.
-- 429/5xx/sorry-block → `APIError` retryable: split batch + backoff (`Retry-After`
-  dipakai). 5×429 beruntun = IP kena sorry-block → circuit breaker: cooldown
-  10 mnt fail-fast (`errCooling`, proxy tetap dicoba), bukan hammer.
-- 302 ke `/sorry` (Google mem-follow redirect jadi 200) dideteksi dari body
-  dan diperlakukan sama dengan 429.
-
-## Kuota
-
-RPC web + gtx pakai endpoint publik tanpa API key, jadi tidak ada secret yang
-perlu disembunyikan. Keduanya tidak terdokumentasi dan bisa rate-limit /
-berubah tanpa peringatan; pakai sebagai terjemahan gratis best-effort.
-IP yang kena sorry-block pulih sendiri (menit–jam); selama diblokir jangan
-tembak request — tiap hit berpotensi memperpanjangnya.
-
-## Frontend
-
-React 19 + `react-router` 8 (mode *declarative*: `BrowserRouter` →
-`<Routes>/<Route>`), dibundel rsbuild dengan React Compiler. Tidak ada skrip
-CDN: shaka-player dari npm.
-
-```
-web/src/
-  index.tsx          entry render
-  App.tsx            Route: /, /s/:q?, /a/:animeId, /w/:animeId/:epId, 404
-  components/        Header (pencarian), Player (shaka), NotFound, ui/Icon
-  features/search/   Search.tsx + api.ts
-  features/watch/    Watch.tsx, Anime.tsx, player.ts, catalog.ts, api.ts
-  lib/               api.ts, urls.ts, types.ts
-```
-
-| Path | Isi |
-|---|---|
-| `/` | form cari |
-| `/s/{q}` | hasil pencarian (`/s/:q?`) |
-| `/a/{animeId}` | detail + daftar episode |
-| `/w/{animeId}/{epId}` | player |
-| `*` | 404 |
-
-Audio tidak dipilih pengguna (selalu sub), jadi tidak ada kontrol Subtitle/Dub.
-
-`KeyedPage` (`App.tsx`) membungkus halaman dengan `<div key={pathname}>` dari
-`useLocation()` supaya subtree remount tiap URL berubah — cara docs React
-("Resetting state with a key"), jadi tidak perlu lagi trik muat-ulang penuh
-(`data-native` di preact-router) untuk membuang MSE/shaka lama saat pindah
-episode; cleanup effect `Player` yang membongkarnya. `Player.tsx` memakai
-`shaka.ui.Overlay` (quality + captions di control panel), subtitle dipasang
-`addTextTrackAsync` hanya saat status `ready`, dan `Watch.tsx` mem-poll
-`/api/subtitle/{id}/status` tiap 2 s selama `converting` (4 s kalau satu
-jawaban gagal — job tetap jalan di server).
-
-### Migrasi dari Preact (Sep 2026)
-
-Seluruh SPA dipindah dari Preact 10 + preact-router ke React 19 + React Router,
-sekaligus menghapus `lib/nav.ts`:
-
-- **Navigasi** — `<Link to=...>` di semua tautan (hasil pencarian, daftar
-  episode, prev/next, terkait/rekomendasi) dan `useNavigate()` untuk form
-  pencarian. Helper `navigate()`/`goTo()` yang memanggil `route()` preact-router
-  dan jatuh ke `location.assign` **dihapus** — itu sumber bug "Enter di kolom
-  pencarian tidak mengubah apa pun": submit form lolos ke navigasi bawaan
-  browser, halaman dimuat ulang di path yang sama, jadi halaman tonton tetap
-  tampil. React Router menangani klik modifier/tengah dan submit secara penuh di
-  klien, tanpa muat ulang.
-- **React Compiler** aktif lewat `pluginReact({ reactCompiler: true })`. Rsbuild
-  2.1+ menjalankannya sebagai Rust compiler di `jsc.transform.reactCompiler`
-  (SWC), bukan plugin Babel terpisah; React 19 tidak butuh
-  `react-compiler-runtime`. Bukti build: bundle memuat
-  `react.memo_cache_sentinel`.
-- **Atribut JSX** — `class`→`className`, `for`→`htmlFor`,
-  `stroke-width`→`strokeWidth`, `playsinline`→`playsInline`,
-  `enterkeyhint`→`enterKeyHint`, `autocomplete`→`autoComplete`; input
-  terkendali pakai `onChange` (React), bukan `onInput`.
-- **Ref** — `useRef<T>(null)` lalu dijaga null (React 19 tidak lagi memberi
-  `current` non-null tanpa alasan). `createRoot` + `StrictMode` di
-  `index.tsx`; effect `Player` sudah punya cleanup, jadi double-invoke dev
-  aman.
-- Docs: [React Compiler](https://react.dev/learn/react-compiler/installation),
-  [Rsbuild React plugin](https://rsbuild.rs/plugins/list/plugin-react),
-  [React Router](https://reactrouter.com/start/declarative/routing).
-
-## Toolchain
-
-- Go: `go.mod` menyebut 1.25.1; toolchain di mesin ini via mise (1.27).
-- Web: node + rsbuild (React 19, React Compiler); typecheck
-  `npx tsc --noEmit`, lint `pnpm run lint` dari `web/`.
-
-## Menjalankan
-
-```bash
-go run . -addr :8080        # API + SPA di :8080 (web/dist hasil build, di-embed)
-cd web && npm run dev       # dev server rsbuild + proxy /api → :8080
-cd web && npm run build     # hasil ke web/dist (di-embed oleh go:embed)
-go test ./...               # test semua paket
-```
-
-`go:embed` mengunci `web/dist` saat kompilasi: ubah frontend → `npm run build`
-dulu, lalu **compile ulang + restart** binary.
-
-## Dilewati
-
-- **Range request** — segmen di-proxy apa adanya, tanpa dukungan `Range`.
-- **Track audio di dalam satu file** — audio ditentukan di level server
-  (dub), bukan track terpisah.
-- **Cloudflare bypass** — `net/http` bisa kena blok; `ErrCloudflare` → 502
-  dengan pesan jelas. Solusinya `curl-impersonate`, bukan regex.
-- **Picture-in-picture** — tidak ada di layout kontrol.
+## 20. Cooldown batch anti-loop — selesai (statis)
+- Sebab lag/loop: gagal/tanpa progres → `timeupdate` 4Hz memanggil batch terus (track reload tiap kali). Fix: cooldown 15 dtk + skip bila `done` tak maju.
+- Verifikasi: `pnpm check` 0/0, `dist` rebuild + embed. Tanpa test live.

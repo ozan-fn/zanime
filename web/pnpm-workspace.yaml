@@ -1,9 +1,0 @@
-minimumReleaseAgeExclude:
-  - '@videojs/core@10.0.0'
-  - '@videojs/hlsjs-video@10.0.0'
-  - '@videojs/media@10.0.0'
-  - '@videojs/native-hls-video@10.0.0'
-  - '@videojs/react@10.0.0'
-  - '@videojs/spf@10.0.0'
-  - '@videojs/store@10.0.0'
-  - '@videojs/utils@10.0.0'

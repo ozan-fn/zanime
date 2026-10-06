@@ -1,28 +1,7 @@
-# Hasil build Go
-main
-main.exe
-zanime
-zanime.exe
-*.test
-*.out
-
-# Secrets
-.env
-
-# Cache subtitle terjemahan & runtime
-.cache/
-
-# Referensi porting (kode pihak ketiga, bukan bagian dari app)
-ref/
-
-# Frontend
-web/node_modules/
-web/dist/
-web/.rspack-profile-*/
-
-# OS / editor
-.DS_Store
-.idea/
-.vscode/
-*.local
-*.log*
+/target
+/zanime
+/.cache
+/.env
+web/dist
+web/node_modules
+y.txt

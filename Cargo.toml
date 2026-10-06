@@ -1,0 +1,33 @@
+[package]
+name = "zanime"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+actix-cors = "0.7.2"
+actix-web = "4"
+base64 = "0.23.1"
+bytes = "1.12.1"
+dotenvy = "0.15.7"
+env_logger = "0.11"
+futures-util = "0.3.34"
+log = "0.4"
+mime_guess = "2.0.5"
+reqwest = { version = "0.13.5", features = ["json", "stream"] }
+rust-embed = "8.12.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sysinfo = "0.39.6"
+tokio = { version = "1.53.2", features = ["rt", "time", "sync"] }
+
+# Biner kecil: strip simbol, optimasi ukuran, LTO, 1 codegen unit.
+# Tanpa panic=abort (server harus tetap hidup bila handler panic).
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
+
+[profile.dev]
+debug = false
+incremental = true

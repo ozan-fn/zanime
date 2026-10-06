@@ -1,6 +1,6 @@
-import { api } from '../../lib/api';
-import type { Anime } from '../../lib/types';
+import { get } from '../../lib/api';
+import type { Anime } from './types';
 
-export function searchAnime(q: string): Promise<Anime[]> {
-  return api<Anime[]>(`/search?q=${encodeURIComponent(q)}`);
+export function searchAnime(query: string): Promise<Anime[]> {
+  return get<Anime[]>(`/api/search?query=${encodeURIComponent(query)}`);
 }

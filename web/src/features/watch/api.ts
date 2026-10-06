@@ -1,30 +1,37 @@
-import { api } from '../../lib/api';
-import type { Anime, Episode } from '../../lib/types';
+import { get, post } from '../../lib/api';
+import type { Stream } from './types';
 
-// Detail katalog: semua yang kartu pencarian tidak bawa — judul Jepang,
-// jendela tayang, durasi, status, skor MAL, studio, genre, terkait.
-export interface AnimeDetails extends Anime {
-  japanese?: string;
-  aired?: string;
-  premiered?: string;
-  duration?: string;
-  status?: string;
-  score?: string;
-  studios?: string;
-  producers?: string;
-  genres?: string[];
-  episodeCount?: string;
-  subCount?: string;
-  dubCount?: string;
-  related?: { id: string; name: string }[];
-  recommended?: { id: string; name: string }[];
+export function fetchStream(id: string, ep: number): Promise<Stream> {
+  return get<Stream>(`/api/stream?id=${encodeURIComponent(id)}&ep=${ep}`);
 }
 
-export const searchAnime = (q: string): Promise<Anime[]> =>
-  api<Anime[]>(`/search?q=${encodeURIComponent(q)}`);
+export interface SkipInterval { startTime: number; endTime: number }
+export interface SkipTime { interval: SkipInterval }
 
-export const animeDetails = (id: string): Promise<AnimeDetails> =>
-  api<AnimeDetails>(`/anime/${encodeURIComponent(id)}`);
+export async function fetchSkiptimes(mal: number, ep: number, dur: number): Promise<SkipTime[]> {
+  const v = await get<{ results?: Array<{ interval: SkipInterval }> }>(`/api/skiptimes?mal=${mal}&ep=${ep}&len=${dur}`);
+  return v?.results ?? [];
+}
 
-export const animeEpisodes = (id: string): Promise<Episode[]> =>
-  api<Episode[]>(`/anime/${encodeURIComponent(id)}/episodes`);
+export interface SubStatus {
+  state: string;
+  queue: number;
+  done: number;
+  total: number;
+  next_at: number;
+  error?: string;
+  vtt?: string;
+}
+
+/** Job terjemahan ID on-demand: batch per 6 cue (tiap 3 tampil / posisi). */
+export function postSubBatch(id: string, at?: number): Promise<SubStatus> {
+  return post<SubStatus>('/api/subid/batch', { id, at });
+}
+
+export function getSubStatus(id: string, at?: number): Promise<SubStatus> {
+  return get<SubStatus>(`/api/subid/status?id=${encodeURIComponent(id)}${at != null ? `&at=${at}` : ''}`);
+}
+
+export function subResultUrl(id: string): string {
+  return `/api/subid/result?id=${encodeURIComponent(id)}&only=id`;
+}
