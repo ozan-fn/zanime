@@ -176,26 +176,88 @@ pub async fn sources(
 #[get("/stream")]
 pub async fn stream(
     cfg: web::Data<crate::config::Config>,
-          http: web::Data<reqwest::Client>,
-          jobs: web::Data<upstream::SubJobs>,
-          q: web::Query<StreamQuery>,
-      ) -> Result<HttpResponse, AppError> {
-          if q.id.trim().is_empty() {
-              return Err(AppError::BadRequest("id kosong".to_string()));
-          }
-          let s = upstream::sources(&http, &cfg, q.id.trim(), q.ep, "sub", cfg.provider).await?;
-          let (url, _) = upstream::probe_stream(&http, &s).await?;
-          let sub = s["tracks"]
-              .as_array()
-              .and_then(|t| t.iter().find(|x| x["lang"].as_str().is_some_and(|l| l.eq_ignore_ascii_case("english"))))
-              .and_then(|x| x["url"].as_str())
-              .unwrap_or("");
-          let sub_id = if sub.is_empty() { String::new() } else { enqueue_subid(&jobs, http.as_ref(), sub.to_string()) };
+    http: web::Data<reqwest::Client>,
+    jobs: web::Data<upstream::SubJobs>,
+    q: web::Query<StreamQuery>,
+) -> Result<HttpResponse, AppError> {
+    if q.id.trim().is_empty() {
+        return Err(AppError::BadRequest("id kosong".to_string()));
+    }
+    let (s, url) = sources_probe(&cfg, &http, q.id.trim(), q.ep).await?;
+    let sub = pick_en_sub(&s);
+    let sub_id = if sub.is_empty() { String::new() } else { enqueue_subid(&jobs, http.as_ref(), sub.to_string()) };
     Ok(HttpResponse::Ok().json(StreamResponse {
         stream: format!("/api/hls?u={}", upstream::b64(&url)),
         sub_en: px(sub),
         sub_id,
     }))
+}
+
+/// Percobaan ulang ambil stream: CDN/upstream sesaat 5xx atau balas HTML
+/// (parse gagal → 502), dan token m3u8 berumur pendek. Tiap percobaan memanggil
+/// `sources` lagi → token baru. 3x dengan jeda naik, lalu lempar error terakhir.
+async fn sources_probe(
+    cfg: &crate::config::Config,
+    http: &reqwest::Client,
+    id: &str,
+    ep: i64,
+) -> Result<(serde_json::Value, String), AppError> {
+    let mut err = None;
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            actix_web::rt::time::sleep(std::time::Duration::from_millis(400 * u64::from(attempt))).await; // chisle: backoff sederhana cukup, tak perlu lib retry
+        }
+        match upstream::sources(http, cfg, id, ep, "sub", cfg.provider).await {
+            Ok(s) => match upstream::probe_stream(http, &s).await {
+                Ok((url, _)) => return Ok((s, url)),
+                Err(e) => err = Some(e),
+            },
+            Err(e) => err = Some(e),
+        }
+    }
+    Err(err.unwrap_or_else(|| AppError::Upstream("stream gagal".to_string())))
+}
+
+/// URL VTT trek Inggris dari `tracks` upstream. `lang` tak pernah bersih:
+/// `"english (cr english)"`, `"English"`, `"en"`. Cukup cari yang memuat "english".
+fn pick_en_sub(s: &serde_json::Value) -> &str {
+    s["tracks"]
+        .as_array()
+        .and_then(|t| {
+            t.iter()
+                .find(|x| x["lang"].as_str().unwrap_or("").to_ascii_lowercase().contains("english"))
+                .and_then(|x| x["url"].as_str())
+        })
+        .unwrap_or("")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_en_sub;
+
+    #[test]
+    fn pick_en_sub_handles_real_upstream_shapes() {
+        // Bentuk asli api.anistream.one: lang "english (cr english)", bukan "english".
+        let v = serde_json::json!({"tracks": [
+            {"lang": "portuguese (cr portuguese(brazil))", "url": "pt.vtt"},
+            {"lang": "english (cr english)", "url": "en.vtt"},
+            {"lang": "spanish (cr spanish)", "url": "es.vtt"},
+        ]});
+        assert_eq!(pick_en_sub(&v), "en.vtt");
+
+        // Huruf besar/kecil & label bersih juga kena.
+        let v = serde_json::json!({"tracks": [{"lang": "English", "url": "en.vtt"}]});
+        assert_eq!(pick_en_sub(&v), "en.vtt");
+
+        // `en` polos tak memuat "english" → kosong (bukan salah pilih).
+        let v = serde_json::json!({"tracks": [{"lang": "en", "url": "en.vtt"}]});
+        assert_eq!(pick_en_sub(&v), "");
+
+        // Tanpa Inggris → kosong (bukan salah pilih trek).
+        let v = serde_json::json!({"tracks": [{"lang": "spanish (cr spanish)", "url": "es.vtt"}]});
+        assert_eq!(pick_en_sub(&v), "");
+        assert_eq!(pick_en_sub(&serde_json::json!({})), "");
+    }
 }
 
 #[get("/skiptimes")]
