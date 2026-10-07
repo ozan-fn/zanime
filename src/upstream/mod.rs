@@ -5,9 +5,9 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine as _};
 use futures_util::StreamExt as _;
 use serde_json::Value;
 
-use crate::{config::Config, error::AppError, models::AnimeItem};
+use crate::{cache::cached, config::Config, error::AppError, models::AnimeItem};
 
-const CATALOG_QUERY: &str = "query CatalogAnime($filter: AnimeCatalogFilterInput $sort: [AnimeSortInput!] $limit: Int $offset: Int){catalogAnime(filter:$filter sort:$sort limit:$limit offset:$offset){items{id anilistId titleRomaji titleEnglish episodeCount coverImage bannerImage format seasonYear averageScore}}}";
+const CATALOG_QUERY: &str = "query CatalogAnime($filter: AnimeCatalogFilterInput $sort: [AnimeSortInput!] $limit: Int $offset: Int){catalogAnime(filter:$filter sort:$sort limit:$limit offset:$offset){items{id anilistId titleRomaji titleEnglish episodeCount coverImage bannerImage format seasonYear averageScore status}}}";
 
 /// Nilai sah `AnimeSortField` (dari introspeksi skema upstream).
 pub const SORT_FIELDS: [&str; 15] = [
@@ -18,9 +18,13 @@ pub const STATUSES: [&str; 5] = ["FINISHED", "RELEASING", "NOT_YET_RELEASED", "C
 pub const FORMATS: [&str; 7] = ["TV", "TV_SHORT", "MOVIE", "SPECIAL", "OVA", "ONA", "MUSIC"];
 pub const SEASONS: [&str; 4] = ["WINTER", "SPRING", "SUMMER", "FALL"];
 
-const ANIME_BASE: &str = "query AnimeDetailBase($id: String, $anilistId: Int){anime(id:$id anilistId:$anilistId){id anilistId malId titleRomaji titleEnglish coverImage bannerImage backdropUrl description episodeCount status duration genres source format seasonYear season averageScore popularity studios}}";
+/// TTL cache Redis (detik): sehari. Konten yang tampil tak boleh basi, jadi semua
+/// entri kedaluwarsa sendiri dan diisi ulang dari upstream.
+const TTL: u64 = 86400;
+
+const ANIME_BASE: &str = "query AnimeDetailBase($id: String, $anilistId: Int){anime(id:$id anilistId:$anilistId){id anilistId malId titleRomaji titleEnglish titles coverImage bannerImage backdropUrl description episodeCount status duration genres source format seasonYear season averageScore popularity studios}}";
 const ANIME_SEASONS: &str = "query AnimeDetailSeasons($id: String, $anilistId: Int){anime(id:$id anilistId:$anilistId){id seasons{animeId anilistId title image coverImage episodeCount type rating}}}";
-const ANIME_RELATIONS: &str = "query AnimeDetailRelations($id: String, $anilistId: Int){anime(id:$id anilistId:$anilistId){id relations{animeId anilistId title image coverImage episodeCount type rating}}}";
+const ANIME_RELATIONS: &str = "query AnimeDetailRelations($id: String, $anilistId: Int){anime(id:$id anilistId:$anilistId){id relations{animeId anilistId title image coverImage episodeCount type rating seasonYear status}}}";
 const ANIME_RECS: &str = "query AnimeDetailRecommendations($id: String, $anilistId: Int){anime(id:$id anilistId:$anilistId){id recommendations{animeId anilistId title image coverImage episodeCount type rating}}}";
 const ANIME_CHARS: &str = "query AnimeDetailCharacters($id: String, $anilistId: Int){anime(id:$id anilistId:$anilistId){id characters}}";
 
@@ -88,16 +92,19 @@ pub fn client(cfg: &Config) -> Result<reqwest::Client, AppError> {
 
 /// `catalogAnime` generik: filter/sort upstream apa adanya.
 pub async fn catalog(client: &reqwest::Client, cfg: &Config, filter: &Value, sort: &str, direction: &str, limit: i64, offset: i64) -> Result<Vec<AnimeItem>, AppError> {
-    let r: Value = client
-        .post(cfg.graphql_url)
-        .json(&serde_json::json!({"query": CATALOG_QUERY, "variables": {"filter": filter, "sort": [{"field": sort, "direction": direction}], "limit": limit, "offset": offset}}))
-        .send()
-        .await
-        .map_err(|e| AppError::Upstream(e.to_string()))?
-        .json()
-        .await
-        .map_err(|e| AppError::Upstream(e.to_string()))?;
-    serde_json::from_value(r["data"]["catalogAnime"]["items"].clone()).map_err(|e| AppError::Upstream(e.to_string()))
+    cached(format!("catalog:{sort}:{direction}:{limit}:{offset}:{filter}"), TTL, async {
+        let r: Value = client
+            .post(cfg.graphql_url)
+            .json(&serde_json::json!({"query": CATALOG_QUERY, "variables": {"filter": filter, "sort": [{"field": sort, "direction": direction}], "limit": limit, "offset": offset}}))
+            .send()
+            .await
+            .map_err(|e| AppError::Upstream(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| AppError::Upstream(e.to_string()))?;
+        serde_json::from_value(r["data"]["catalogAnime"]["items"].clone()).map_err(|e| AppError::Upstream(e.to_string()))
+    })
+    .await
 }
 
 pub async fn search(client: &reqwest::Client, cfg: &Config, title: &str) -> Result<Vec<AnimeItem>, AppError> {
@@ -105,16 +112,21 @@ pub async fn search(client: &reqwest::Client, cfg: &Config, title: &str) -> Resu
 }
 
 pub async fn episodes(client: &reqwest::Client, cfg: &Config, id: &str) -> Result<Value, AppError> {
-    client
-        .get(format!("{}/episodes?id={id}", cfg.api_base))
-        .send()
-        .await
-        .map_err(|e| AppError::Upstream(e.to_string()))?
-        .json()
-        .await
-        .map_err(|e| AppError::Upstream(e.to_string()))
+    cached(format!("episodes:{id}"), TTL, async {
+        client
+            .get(format!("{}/episodes?id={id}", cfg.api_base))
+            .send()
+            .await
+            .map_err(|e| AppError::Upstream(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| AppError::Upstream(e.to_string()))
+    })
+    .await
 }
 
+/// Sengaja **tidak** di-cache: URL m3u8 dari CDN bertanda tangan + berkedaluwarsa
+/// (`?token=<exp>.<hmac>`), entri cache basi = playback mati.
 pub async fn sources(client: &reqwest::Client, cfg: &Config, id: &str, ep: i64, r#type: &str, provider: &str) -> Result<Value, AppError> {
     client
         .get(format!("{}/sources?id={id}&epNum={ep}&type={type}&providerId={provider}", cfg.api_base, type = r#type, provider = provider))
@@ -127,64 +139,85 @@ pub async fn sources(client: &reqwest::Client, cfg: &Config, id: &str, ep: i64, 
 }
 
 pub async fn servers(client: &reqwest::Client, cfg: &Config, id: &str, ep: i64) -> Result<Value, AppError> {
-    client
-        .get(format!("{}/servers?id={id}&epNum={ep}", cfg.api_base))
-        .send()
-        .await
-        .map_err(|e| AppError::Upstream(e.to_string()))?
-        .json()
-        .await
-        .map_err(|e| AppError::Upstream(e.to_string()))
+    cached(format!("servers:{id}:{ep}"), TTL, async {
+        client
+            .get(format!("{}/servers?id={id}&epNum={ep}", cfg.api_base))
+            .send()
+            .await
+            .map_err(|e| AppError::Upstream(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| AppError::Upstream(e.to_string()))
+    })
+    .await
 }
 
 pub async fn anime(client: &reqwest::Client, cfg: &Config, id: Option<&str>, anilist_id: Option<i64>, section: &str) -> Result<Value, AppError> {
-    let q = match section {
-        "seasons" => ANIME_SEASONS,
-        "relations" => ANIME_RELATIONS,
-        "recommendations" => ANIME_RECS,
-        "characters" => ANIME_CHARS,
-        _ => ANIME_BASE,
-    };
-    let r: Value = client
-        .post(cfg.graphql_url)
-        .json(&serde_json::json!({"query": q, "variables": {"id": id, "anilistId": anilist_id}}))
-        .send()
-        .await
-        .map_err(|e| AppError::Upstream(e.to_string()))?
-        .json()
-        .await
-        .map_err(|e| AppError::Upstream(e.to_string()))?;
-    Ok(r["data"]["anime"].clone())
+    let key = format!("anime:{section}:{}:{}", id.unwrap_or("-"), anilist_id.map_or_else(|| "-".to_string(), |v| v.to_string()));
+    cached(key, TTL, async {
+        let q = match section {
+            "seasons" => ANIME_SEASONS,
+            "relations" => ANIME_RELATIONS,
+            "recommendations" => ANIME_RECS,
+            "characters" => ANIME_CHARS,
+            _ => ANIME_BASE,
+        };
+        let r: Value = client
+            .post(cfg.graphql_url)
+            .json(&serde_json::json!({"query": q, "variables": {"id": id, "anilistId": anilist_id}}))
+            .send()
+            .await
+            .map_err(|e| AppError::Upstream(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| AppError::Upstream(e.to_string()))?;
+        let an = r["data"]["anime"].clone();
+        // null tanpa error = id memang tak ada; null karena error = query kita rusak.
+        if an.is_null() && !r["errors"].is_null() {
+            log::warn!("graphql anime gagal: {}", r["errors"]);
+        }
+        Ok(an)
+    })
+    .await
 }
 
 pub async fn skiptimes(client: &reqwest::Client, mal: i64, ep: i64, len: Option<f64>) -> Result<Value, AppError> {
-    let mut url = format!("https://api.aniskip.com/v2/skip-times/{mal}/{ep}?types[]=op&types[]=ed&types[]=mixed-op&types[]=mixed-ed&types[]=recap");
-    if let Some(l) = len {
-        url += &format!("&episodeLength={l}");
-    }
-    client.get(url).send().await.map_err(|e| AppError::Upstream(e.to_string()))?.json().await.map_err(|e| AppError::Upstream(e.to_string()))
+    cached(format!("skiptimes:{mal}:{ep}:{}", len.unwrap_or(0.0)), TTL, async {
+        let mut url = format!("https://api.aniskip.com/v2/skip-times/{mal}/{ep}?types[]=op&types[]=ed&types[]=mixed-op&types[]=mixed-ed&types[]=recap");
+        if let Some(l) = len {
+            url += &format!("&episodeLength={l}");
+        }
+        client.get(url).send().await.map_err(|e| AppError::Upstream(e.to_string()))?.json().await.map_err(|e| AppError::Upstream(e.to_string()))
+    })
+    .await
 }
 
 pub async fn comments(client: &reqwest::Client, media: &str, offset: u32, sort: &str, limit: u32) -> Result<Value, AppError> {
-    client
-        .get(format!("https://theanimecommunity.com/api/v1/comments/{media}?offset={offset}&sortBy={sort}&limit={limit}"))
-        .send()
-        .await
-        .map_err(|e| AppError::Upstream(e.to_string()))?
-        .json()
-        .await
-        .map_err(|e| AppError::Upstream(e.to_string()))
+    cached(format!("comments:{media}:{offset}:{sort}:{limit}"), TTL, async {
+        client
+            .get(format!("https://theanimecommunity.com/api/v1/comments/{media}?offset={offset}&sortBy={sort}&limit={limit}"))
+            .send()
+            .await
+            .map_err(|e| AppError::Upstream(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| AppError::Upstream(e.to_string()))
+    })
+    .await
 }
 
 pub async fn episode_meta(client: &reqwest::Client, anilist_id: i64, ep: i64) -> Result<Value, AppError> {
-    client
-        .get(format!("https://theanimecommunity.com/api/v1/episodes/mediaItemID?AniList_ID={anilist_id}&mediaType=anime&episodeChapterNumber={ep}"))
-        .send()
-        .await
-        .map_err(|e| AppError::Upstream(e.to_string()))?
-        .json()
-        .await
-        .map_err(|e| AppError::Upstream(e.to_string()))
+    cached(format!("episode-meta:{anilist_id}:{ep}"), TTL, async {
+        client
+            .get(format!("https://theanimecommunity.com/api/v1/episodes/mediaItemID?AniList_ID={anilist_id}&mediaType=anime&episodeChapterNumber={ep}"))
+            .send()
+            .await
+            .map_err(|e| AppError::Upstream(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| AppError::Upstream(e.to_string()))
+    })
+    .await
 }
 
 pub async fn anilist(client: &reqwest::Client, query: &str, variables: Option<Value>) -> Result<Value, AppError> {
@@ -527,10 +560,8 @@ async fn mistral_chat(client: &reqwest::Client, key: &str, user: &str) -> Result
         let out = &v["outputs"][0];
         let content = if let Some(s) = out["content"].as_str() {
             Some(s.to_string())
-        } else if let Some(arr) = out["content"].as_array() {
-            Some(arr.iter().filter_map(|c| c["text"].as_str().map(str::to_string)).collect::<String>())
         } else {
-            None
+            out["content"].as_array().map(|arr| arr.iter().filter_map(|c| c["text"].as_str().map(str::to_string)).collect::<String>())
         };
         return content
             .filter(|s| !s.is_empty())
@@ -584,7 +615,7 @@ pub fn build_vtt_id(head: &str, cues: &[Vec<String>], id: &HashMap<usize, String
     for (i, c) in cues.iter().enumerate() {
         let Some(p) = c.iter().position(|l| l.contains("-->")) else { continue };
         if let Some(txt) = id.get(&i) {
-            out.push(vec![c[p].clone(), txt.clone()].join("\n"));
+            out.push([c[p].clone(), txt.clone()].join("\n"));
         }
     }
     out.join("\n\n") + "\n"

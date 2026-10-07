@@ -17,6 +17,9 @@ fn pick(v: Option<&str>, allowed: &[&str], key: &str, f: &mut serde_json::Map<St
     Ok(())
 }
 
+/// Halaman maksimum yang dilayani upstream `catalogAnime` (di atas ini items = null).
+pub const UPSTREAM_MAX_PAGE: i64 = 30;
+
 /// Item katalog → output web (gambar lewat proxy).
 fn to_out(a: AnimeItem) -> AnimeOut {
     AnimeOut {
@@ -30,6 +33,7 @@ fn to_out(a: AnimeItem) -> AnimeOut {
         format: a.format,
         season_year: a.season_year,
         average_score: a.average_score,
+        status: a.status,
     }
 }
 
@@ -85,7 +89,8 @@ pub async fn catalog(
         &serde_json::Value::Object(f),
         &sort,
         &dir,
-        q.limit.unwrap_or(18).clamp(1, 50),
+        // 30 = batas keras upstream: limit > 30 → `items: null` (502 "invalid type: null").
+        q.limit.unwrap_or(18).clamp(1, UPSTREAM_MAX_PAGE),
         q.offset.unwrap_or(0).max(0),
     )
     .await?;
@@ -131,6 +136,9 @@ pub async fn episodes(
                 .or(e["titles"]["ja"].as_str())
                 .unwrap_or("?")
                 .to_string(),
+            title_romaji: e["titles"]["x-jat"].as_str().unwrap_or("").to_string(),
+            // Judul Jepang asli (kanji) — terpisah dari romaji biar keduanya bisa tampil.
+            title_jp: e["titles"]["ja"].as_str().unwrap_or("").to_string(),
             img: px(e["img"].as_str().unwrap_or("")),
         })
         .collect();
@@ -214,6 +222,18 @@ pub async fn anilist(http: web::Data<reqwest::Client>, body: web::Json<AnilistBo
         return Err(AppError::BadRequest("query kosong".to_string()));
     }
     Ok(HttpResponse::Ok().json(upstream::anilist(&http, body.query.trim(), body.variables.clone()).await?))
+}
+
+/// Resource proses ini (mem + cpu, sekarang & puncaknya) untuk navbar web.
+#[get("/stats")]
+pub async fn stats() -> HttpResponse {
+    let (mem_mb, peak_mem_mb, cpu, peak_cpu) = crate::stats::snapshot();
+    HttpResponse::Ok().json(serde_json::json!({
+        "memMb": mem_mb,
+        "peakMemMb": peak_mem_mb,
+        "cpu": cpu,
+        "peakCpu": peak_cpu,
+    }))
 }
 
 /// Proxy generik: /api/fetch?u=<base64url> (gambar, sub) dan

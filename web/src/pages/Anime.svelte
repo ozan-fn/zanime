@@ -5,7 +5,7 @@
   import EpisodeList from '../features/episodes/components/EpisodeList.svelte';
   import RelatedList from '../features/episodes/components/RelatedList.svelte';
   import { detail, episodes, error, loadAnime, loading, relations } from '../features/episodes';
-  import { detailTitle, imgOf } from '../features/episodes/types';
+  import { altTitles, detailTitle, imgOf } from '../features/episodes/types';
 
   let { params = {} }: { params?: Record<string, string> } = $props();
   const id = $derived(params.id ?? '');
@@ -14,6 +14,7 @@
   });
   const banner = $derived($detail ? abs(imgOf($detail.backdropUrl) || imgOf($detail.bannerImage)) : '');
   const cover = $derived($detail ? abs(imgOf($detail.coverImage)) : '');
+  const alts = $derived($detail ? altTitles($detail) : []);
 </script>
 
 <div class="mx-auto max-w-5xl space-y-4 p-4">
@@ -36,6 +37,9 @@
       {/if}
       <div class="min-w-0">
         <h1 class="text-xl font-semibold">{detailTitle($detail)}</h1>
+        {#each alts as t (t)}
+          <p class="text-sm text-zinc-500">{t}</p>
+        {/each}
         {#if $detail.episodeCount}
           <p class="text-sm text-zinc-500">{$detail.episodeCount} episode</p>
         {/if}

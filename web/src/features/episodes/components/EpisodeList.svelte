@@ -91,6 +91,12 @@
             <span class="min-w-0">
               <span class="block text-sm font-medium">Episode {e.number}</span>
               <span class="block truncate text-xs text-zinc-500">{e.title}</span>
+              {#if e.titleRomaji && e.titleRomaji !== e.title}
+                <span class="block truncate text-xs text-zinc-400 dark:text-zinc-500">{e.titleRomaji}</span>
+              {/if}
+              {#if e.titleJp && e.titleJp !== e.title && e.titleJp !== e.titleRomaji}
+                <span class="block truncate text-xs text-zinc-400 dark:text-zinc-500">{e.titleJp}</span>
+              {/if}
             </span>
           </a>
         </li>

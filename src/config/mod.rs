@@ -8,6 +8,8 @@ pub struct Config {
     pub api_base: &'static str,
     pub provider: &'static str,
     pub mistral_key: String,
+    /// Cache Redis (opsional): `rediss://default:<pass>@<host>:6379`. Kosong = tanpa cache.
+    pub redis_url: String,
 }
 
 impl Default for Config {
@@ -22,6 +24,7 @@ impl Default for Config {
             api_base: "https://api.anistream.one/rest/api",
             provider: "yuki",
             mistral_key: std::env::var("MISTRAL_API_KEY").unwrap_or_default(),
+            redis_url: std::env::var("REDIS_URL").unwrap_or_default(),
         }
     }
 }

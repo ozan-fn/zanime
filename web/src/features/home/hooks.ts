@@ -9,8 +9,14 @@ const year = now.getFullYear();
 
 const PER_SECTION = 12;
 
+export interface SectionDef {
+  key: string;
+  title: string;
+  params: CatalogParams;
+}
+
 /** Definisi section home — semuanya dari satu endpoint /api/catalog. */
-const SECTIONS: { key: string; title: string; params: CatalogParams }[] = [
+export const SECTIONS: SectionDef[] = [
   { key: 'trending', title: 'Sedang Tren', params: { sort: 'TRENDING', limit: PER_SECTION } },
   { key: 'airing', title: 'Sedang Tayang', params: { status: 'RELEASING', sort: 'POPULARITY', limit: PER_SECTION } },
   { key: 'top', title: 'Rating Tertinggi', params: { sort: 'AVERAGE_SCORE', limit: PER_SECTION } },
@@ -18,6 +24,11 @@ const SECTIONS: { key: string; title: string; params: CatalogParams }[] = [
   { key: 'upcoming', title: 'Akan Datang', params: { status: 'NOT_YET_RELEASED', sort: 'NEXT_AIRING_AT', direction: 'ASC', limit: PER_SECTION } },
   { key: 'favorites', title: 'Paling Difavoritkan', params: { sort: 'FAVOURITES', limit: PER_SECTION } },
 ];
+
+/** Section by key untuk halaman "lihat semua" (`/browse/:key`). */
+export function sectionByKey(key: string): SectionDef | undefined {
+  return SECTIONS.find((s) => s.key === key);
+}
 
 export async function loadHome(): Promise<void> {
   if (SECTIONS.length === 0) return;

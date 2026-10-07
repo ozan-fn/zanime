@@ -3,7 +3,7 @@
   import { untrack } from 'svelte';
   import { ChevronLeft, ChevronRight, LoaderCircle, TriangleAlert } from '@lucide/svelte';
   import { abs } from '../lib/api';
-  import { detailTitle, fetchDetail, imgOf, type AnimeDetail } from '../features/episodes';
+  import { altTitles, detailTitle, fetchDetail, imgOf, type AnimeDetail } from '../features/episodes';
   import Player from '../features/watch/components/Player.svelte';
   import { error, fetchSkiptimes, getSubStatus, loadStream, loading, postSubBatch, stream, subResultUrl, type SkipTime } from '../features/watch';
   import { FastForward } from '@lucide/svelte';
@@ -157,6 +157,7 @@
   let autoSkip = $state(localStorage.getItem('zanime-autoskip') === '1');
   let autoNext = $state(localStorage.getItem('zanime-autonext') !== '0');
   let cover = $derived(anime ? abs(imgOf(anime.coverImage)) : '');
+  let alts = $derived(anime ? altTitles(anime) : []);
   let chips = $derived(
     anime
       ? [
@@ -231,11 +232,10 @@
     {/if}
     <div class="min-w-0">
       <h1 class="text-xl font-semibold">{anime ? detailTitle(anime) : `Episode ${ep}`}</h1>
-      {#if anime?.titleRomaji && anime.titleRomaji !== detailTitle(anime)}
-        <p class="text-sm text-zinc-500">{anime.titleRomaji} · Episode {ep}</p>
-      {:else}
-        <p class="text-sm text-zinc-500">Episode {ep}</p>
-      {/if}
+      <p class="text-sm text-zinc-500">Episode {ep}</p>
+      {#each alts as t (t)}
+        <p class="text-sm text-zinc-500">{t}</p>
+      {/each}
       {#if chips.length}
         <div class="mt-2 flex flex-wrap gap-1">
           {#each chips as c}

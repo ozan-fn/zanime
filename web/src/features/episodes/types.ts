@@ -1,6 +1,10 @@
 export interface Episode {
   number: number;
   title: string;
+  /** Judul romaji (upstream `x-jat`). */
+  titleRomaji?: string;
+  /** Judul Jepang (kanji); kosong bila upstream tak punya. */
+  titleJp?: string;
   img: string;
 }
 
@@ -8,6 +12,7 @@ export interface AnimeDetail {
   malId?: number;
   titleRomaji?: string;
   titleEnglish?: string;
+  titles?: { en?: string; ja?: string };
   coverImage?: unknown;
   bannerImage?: unknown;
   backdropUrl?: unknown;
@@ -44,8 +49,18 @@ export interface Relation {
   coverImage?: unknown;
   episodeCount?: number;
   type?: string;
+  seasonYear?: number;
+  status?: string;
 }
 
 export function detailTitle(d: AnimeDetail): string {
   return d.titleEnglish?.trim() ? d.titleEnglish : (d.titleRomaji ?? '?');
+}
+
+/** Judul pendamping di bawah judul utama: romaji lalu kanji (`titles.ja`),
+ *  tanpa duplikat dan tanpa yang sama dengan judul utama. */
+export function altTitles(d: AnimeDetail): string[] {
+  const utama = detailTitle(d);
+  const kandidat = [d.titleRomaji?.trim() ?? '', d.titles?.ja?.trim() ?? ''];
+  return kandidat.filter((t, i) => t && t !== utama && kandidat.indexOf(t) === i);
 }

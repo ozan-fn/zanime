@@ -139,6 +139,8 @@ pub struct AnimeItem {
     pub season_year: Option<i64>,
     #[serde(rename = "averageScore", default)]
     pub average_score: Option<i64>,
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -159,12 +161,19 @@ pub struct AnimeOut {
     pub season_year: Option<i64>,
     #[serde(rename = "averageScore")]
     pub average_score: Option<i64>,
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct EpisodeItem {
     pub number: i64,
     pub title: String,
+    /// Judul romaji episode (upstream `x-jat`); kosong bila tak ada.
+    #[serde(rename = "titleRomaji")]
+    pub title_romaji: String,
+    /// Judul Jepang (kanji) episode; kosong bila upstream tak punya.
+    #[serde(rename = "titleJp")]
+    pub title_jp: String,
     pub img: String,
 }
 
