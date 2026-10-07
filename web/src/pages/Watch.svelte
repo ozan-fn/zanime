@@ -61,13 +61,24 @@
     lastTry = now;
     fetching = true;
     try {
-      const st = await postSubBatch(jobId, at);
+      let st: Awaited<ReturnType<typeof postSubBatch>> | null = null;
+      for (let i = 0; i < 3 && !st; i++) {
+        try {
+          st = await postSubBatch(jobId, at);
+        } catch (e) {
+          if (i === 2) throw e;
+          subProg = `Sedang antre, coba lagi (${i + 1}/2)…`;
+          await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
+        }
+      }
+      if (st) {
       console.log('[4] batch done=' + st.done + ' state=' + st.state + ' next_at=' + st.next_at + ' vtt=' + (st.vtt?.length ?? 0));
       if (st.done !== lastDone) lastDone = st.done;
       if (st.vtt) pushVtt(st.vtt);
       subDone = st.state === 'done';
       nextAt = st.next_at;
       subProg = '';
+      }
     } catch (e) {
       subProg = `Subtitle gagal: ${e instanceof Error ? e.message : 'unknown'}`;
     }
@@ -95,7 +106,7 @@
             return;
           }
           if (st.total > 0 || st.state === 'done') break;
-          subProg = st.queue > 0 ? `Antri subtitle Indonesia… #${st.queue}` : 'Menyiapkan subtitle…';
+          subProg = st.queue > 0 ? `Antri subtitle Indonesia… #${st.queue} dari ${st.queue_total} (±${Math.ceil(st.eta_sec / 60)} mnt)` : 'Menyiapkan subtitle…';
           await new Promise((r) => setTimeout(r, 1000));
         }
         if (gen === g) await needMore(0);

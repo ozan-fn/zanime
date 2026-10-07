@@ -23,11 +23,9 @@ tokio = { version = "1.53.2", features = ["rt", "time", "sync"] }
 # Biner kecil: strip simbol, optimasi ukuran, LTO, 1 codegen unit.
 # Tanpa panic=abort (server harus tetap hidup bila handler panic).
 [profile.release]
-strip = true
-opt-level = "z"
-lto = true
-codegen-units = 1
-
-[profile.dev]
+opt-level = 1
 debug = false
+lto = false
+codegen-units = 16
 incremental = true
+panic = "abort"

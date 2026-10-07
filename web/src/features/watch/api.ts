@@ -16,6 +16,8 @@ export async function fetchSkiptimes(mal: number, ep: number, dur: number): Prom
 export interface SubStatus {
   state: string;
   queue: number;
+  queue_total: number;
+  eta_sec: number;
   done: number;
   total: number;
   next_at: number;

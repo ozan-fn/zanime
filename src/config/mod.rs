@@ -7,7 +7,7 @@ pub struct Config {
     pub graphql_url: &'static str,
     pub api_base: &'static str,
     pub provider: &'static str,
-    pub groq_key: String,
+    pub mistral_key: String,
 }
 
 impl Default for Config {
@@ -21,7 +21,7 @@ impl Default for Config {
             graphql_url: "https://graphql.animex.one/graphql",
             api_base: "https://api.anistream.one/rest/api",
             provider: "yuki",
-            groq_key: std::env::var("GROQ_API_KEY").unwrap_or_default(),
+            mistral_key: std::env::var("MISTRAL_API_KEY").unwrap_or_default(),
         }
     }
 }

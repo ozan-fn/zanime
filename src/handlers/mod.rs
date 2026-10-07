@@ -307,8 +307,8 @@ pub async fn subid_batch(
     http: web::Data<reqwest::Client>,
     body: web::Json<SubBatchReq>,
 ) -> Result<HttpResponse, AppError> {
-    if cfg.groq_key.is_empty() {
-        return Err(AppError::BadRequest("GROQ_API_KEY kosong (isi .env)".to_string()));
+    if cfg.mistral_key.is_empty() {
+        return Err(AppError::BadRequest("MISTRAL_API_KEY kosong (isi .env)".to_string()));
     }
     let _permit = jobs.sem.acquire().await.map_err(|_| AppError::Upstream("antre penuh".to_string()))?;
     let batch: Vec<(usize, Vec<String>)> = {
@@ -334,7 +334,7 @@ pub async fn subid_batch(
     };
     let mut delta = String::new();
     if !batch.is_empty() {
-        let m = upstream::translate_batch(http.as_ref(), &cfg.groq_key, &batch).await?;
+        let m = upstream::translate_batch(http.as_ref(), &cfg.mistral_key, &batch).await?;
         {
             let mu = jobs.mu.lock().map_err(|_| AppError::Upstream("lock".to_string()))?;
             if let Some(j) = mu.get(&body.id) {
@@ -371,6 +371,13 @@ pub async fn subid_batch(
 fn sub_status_of(jobs: &upstream::SubJobs, id: &str, at: f64) -> Result<SubStatus, AppError> {
     let mu = jobs.mu.lock().map_err(|_| AppError::Upstream("lock".to_string()))?;
     let j = mu.get(id).ok_or_else(|| AppError::NotFound("job tak ada".to_string()))?;
+    let queue_total = jobs
+        .order
+        .lock()
+        .map_err(|_| AppError::Upstream("lock".to_string()))?
+        .iter()
+        .filter(|x| mu.get(*x).is_some_and(|v| v.state == "queued"))
+        .count();
     let queue = jobs
         .order
         .lock()
@@ -383,6 +390,9 @@ fn sub_status_of(jobs: &upstream::SubJobs, id: &str, at: f64) -> Result<SubStatu
     Ok(SubStatus {
         state: j.state.clone(),
         queue,
+        queue_total,
+        // Estimasi: tiap job ±2 mnt penuh; job berjalan dianggap ±1 sisa.
+        eta_sec: if queue > 0 { (queue.saturating_sub(1)) as u64 * 120 } else { 0 },
         done: j.id.len(),
         total: j.dlg.len(),
         next_at: next_at_of(j, at),

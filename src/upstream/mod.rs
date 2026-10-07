@@ -457,8 +457,8 @@ pub async fn probe_stream(client: &reqwest::Client, s: &Value) -> Result<(String
 
 // --- Subtitle ID via Groq (Qwen). Batch 6 cue/call, jeda 2.5 dtk
 // (limit 30 req/mnt, 8K token/mnt, 1K req/hari) → progresif per batch.
-const GROQ_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_MODEL: &str = "qwen/qwen3.8-27b";
+const MISTRAL_URL: &str = "https://api.mistral.ai/v1/conversations";
+const MISTRAL_MODEL: &str = "mistral-small-latest";
 pub const SUB_BATCH: usize = 10;
 
 /// Antrean subtitle ID: 1 permit → 1 video diterjemahkan dalam satu waktu,
@@ -491,14 +491,29 @@ impl Default for SubJobs {
     }
 }
 
-async fn groq_chat(client: &reqwest::Client, key: &str, user: &str) -> Result<String, AppError> {
+// Mistral free tier: 1 request/detik — throttle global antar semua job/user.
+pub static MISTRAL_LAST: tokio::sync::Mutex<Option<std::time::Instant>> = tokio::sync::Mutex::const_new(None);
+
+async fn throttle_rps() {
+    let mut last = MISTRAL_LAST.lock().await;
+    if let Some(prev) = *last {
+        let gap = prev.elapsed();
+        if gap < std::time::Duration::from_millis(1100) {
+            tokio::time::sleep(std::time::Duration::from_millis(1100) - gap).await;
+        }
+    }
+    *last = Some(std::time::Instant::now());
+}
+
+async fn mistral_chat(client: &reqwest::Client, key: &str, user: &str) -> Result<String, AppError> {
     let mut wait = 5;
     for _ in 0..4 {
+        throttle_rps().await;
         let r = client
-            .post(GROQ_URL)
+            .post(MISTRAL_URL)
             .bearer_auth(key)
             .timeout(std::time::Duration::from_secs(120))
-            .json(&serde_json::json!({"model": GROQ_MODEL, "temperature": 0, "max_completion_tokens": 1024, "messages": [{"role": "system", "content": "Kamu adalah penerjemah subtitle profesional Inggris → Indonesia untuk anime. Standar: akurat, natural, mudah dibaca (FAR Pedersen 2017). Maksimal 20 CPS, 42 karakter per baris, maksimal 2 baris per subtitle. Pertahankan honorifik Jepang (san, chan, kun, sama, senpai, sensei) dan nama asli. Jaga register bicara tiap karakter. Adaptasi wordplay, jangan literal. Italic untuk lagu, telepon, dan bisikan. Jangan menambah atau mengurangi makna, jangan spoiler, hindari bahasa gaul usang dan kalimat kaku."}, {"role": "user", "content": user}]}))
+            .json(&serde_json::json!({"model": MISTRAL_MODEL, "inputs": [{"role": "user", "content": user}], "tools": [], "completion_args": {"temperature": 0, "max_tokens": 1024, "top_p": 1}, "instructions": "Kamu adalah penerjemah subtitle profesional Inggris → Indonesia untuk anime. Standar: akurat, natural, mudah dibaca (FAR Pedersen 2017). Maksimal 20 CPS, 42 karakter per baris, maksimal 2 baris per subtitle. Pertahankan honorifik Jepang (san, chan, kun, sama, senpai, sensei) dan nama asli. Jaga register bicara tiap karakter. Adaptasi wordplay, jangan literal. Italic untuk lagu, telepon, dan bisikan. Jangan menambah atau mengurangi makna, jangan spoiler, hindari bahasa gaul usang dan kalimat kaku."}))
             .send().await.map_err(|e| AppError::Upstream(e.to_string()))?;
         if r.status().as_u16() == 429 {
             tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
@@ -506,15 +521,22 @@ async fn groq_chat(client: &reqwest::Client, key: &str, user: &str) -> Result<St
             continue;
         }
         let v: Value = r.json().await.map_err(|e| AppError::Upstream(e.to_string()))?;
-        if let Some(e) = v["error"]["message"].as_str() {
-            return Err(AppError::Upstream(format!("groq: {e}")));
+        if let Some(e) = v["message"].as_str() {
+            return Err(AppError::Upstream(format!("mistral: {e}")));
         }
-        let finish = v["choices"][0]["finish_reason"].as_str().unwrap_or("?").to_string();
-        return v["choices"][0]["message"]["content"].as_str().map(str::to_string)
+        let out = &v["outputs"][0];
+        let content = if let Some(s) = out["content"].as_str() {
+            Some(s.to_string())
+        } else if let Some(arr) = out["content"].as_array() {
+            Some(arr.iter().filter_map(|c| c["text"].as_str().map(str::to_string)).collect::<String>())
+        } else {
+            None
+        };
+        return content
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| AppError::Upstream(format!("groq tanpa content ({finish})")));
+            .ok_or_else(|| AppError::Upstream(format!("mistral tanpa content: {v}")));
     }
-    Err(AppError::Upstream("groq rate limit, coba lagi".to_string()))
+    Err(AppError::Upstream("mistral rate limit, coba lagi".to_string()))
 }
 
 /// Cache disk `.cache/subid/<hash-en>.vtt` → tonton ulang instan, hemat limit.
@@ -590,7 +612,7 @@ pub fn ts_end(line: &str) -> f64 {
 /// Baris lanjutan (tanpa `[N]`) ditempel ke cue aktif. Cue gagal dilewati (EN).
 pub async fn translate_batch(client: &reqwest::Client, key: &str, jobs: &[(usize, Vec<String>)]) -> Result<HashMap<usize, String>, AppError> {
     let q = jobs.iter().map(|(i, ls)| format!("[{i}] {}", ls.join("\n"))).collect::<Vec<_>>().join("\n");
-    let a = groq_chat(client, key, &format!("Translate each cue to Indonesian, keeping its line breaks. Reply ONLY as [N] <indonesian>, same order:\n{q}")).await?;
+    let a = mistral_chat(client, key, &format!("Translate each cue to Indonesian, keeping its line breaks. Reply ONLY as [N] <indonesian>, same order:\n{q}")).await?;
     let mut out = HashMap::new();
     let mut cur: Option<usize> = None;
     for line in a.lines().map(str::trim).filter(|l| !l.is_empty()) {

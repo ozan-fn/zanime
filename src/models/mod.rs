@@ -193,6 +193,10 @@ pub struct SubBatchReq {
 pub struct SubStatus {
     pub state: String,
     pub queue: usize,
+    /// Total job masih antre; `queue` = posisi job ini.
+    pub queue_total: usize,
+    /// Estimasi sisa detik sebelum job ini mulai diterjemahkan.
+    pub eta_sec: u64,
     pub done: usize,
     pub total: usize,
     pub next_at: f64,
