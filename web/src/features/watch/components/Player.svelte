@@ -96,17 +96,19 @@
     return un;
   });
 
-  // Fetch subtitle jalan → jeda; selesai → play lagi bila tadinya diputar.
+  // Jeda hanya saat fetch subtitle akibat seek; fetch otomatis (nextAt) tidak menjeda.
   let wasPlaying = false;
+  let seekBusy = false;
   $effect(() => {
     const p = playerEl;
     if (!p?.store) return;
-    if (busy) {
+    if (busy && seekBusy) {
       wasPlaying = !p.store.state?.paused;
       p.store.pause?.();
-    } else if (wasPlaying) {
+    } else if (!busy && seekBusy) {
+      seekBusy = false;
+      if (wasPlaying) p.store.play?.();
       wasPlaying = false;
-      p.store.play?.();
     }
   });
 
@@ -143,14 +145,20 @@
       }
       const idShowing = subs.some((t) => t.language === 'id' && t.mode === 'showing');
       if (idShowing !== idOn) {
+        console.log('[9] idShowing=' + idShowing);
         idOn = idShowing;
         idShowing ? onIdActive() : onIdInactive();
       }
       const t = p.store.state?.currentTime ?? 0;
       if (idOn) {
-        // Loncat >3 dtk (seek) → langsung minta batch di posisi baru.
-        if (lastT >= 0 && Math.abs(t - lastT) > 3) onSeek(t);
-        if (nextAt >= 0 && t >= nextAt) onNeedMore(t);
+        if (lastT >= 0 && Math.abs(t - lastT) > 3) {
+          console.log('[10] seek -> needMore force');
+          const tr = document.querySelector<HTMLTrackElement>('track[srclang="id"]');
+          console.log('[10b] id track mode=' + tr?.track?.mode + ' cues=' + (tr?.track?.cues?.length ?? 'n/a') + ' active=' + (tr?.track?.activeCues?.length ?? 'n/a'));
+          seekBusy = true;
+          onSeek(t);
+        }
+        if (nextAt >= 0 && t >= nextAt - 8) { console.log('[10] t=' + t.toFixed(1) + ' >= nextAt-8=' + (nextAt - 8)); onNeedMore(t); }
       }
       lastT = t;
     });

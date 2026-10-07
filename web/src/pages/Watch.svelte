@@ -32,6 +32,7 @@
     vttCache += '\n' + d + '\n';
     if (lastBlob) URL.revokeObjectURL(lastBlob);
     lastBlob = URL.createObjectURL(new Blob([vttCache], { type: 'text/vtt' }));
+    console.log('[1] pushVtt vttCache=' + vttCache.length);
     subId = lastBlob;
   }
 
@@ -40,6 +41,7 @@
     try {
       const r = await fetch(subResultUrl(jobId));
       const t = await r.text();
+      console.log('[7] loadBaseVtt len=' + t.length);
       if (t.trim().length > 'WEBVTT'.length) {
         vttCache = t.trimEnd() + '\n';
         if (lastBlob) URL.revokeObjectURL(lastBlob);
@@ -52,13 +54,15 @@
   /** Batch pertama langsung; berikut saat putar sisa 3 cue. Cooldown 15 dtk
    *  cegah loop timeupdate (gagal/tanpa progres tak dipanggil berulang). */
   async function needMore(at?: number, force = false): Promise<void> {
-    if (!idActive || fetching || subDone || !jobId) return;
+    if (!idActive || fetching || subDone || !jobId) { console.log('[3] needMore blocked idActive=' + idActive + ' fetching=' + fetching + ' subDone=' + subDone + ' jobId=' + !!jobId); return; }
     const now = Date.now();
-    if (!force && now - lastTry < 15000) return;
+    if (!force && now - lastTry < 15000) { console.log('[3] needMore cooldown'); return; }
+    console.log('[3] needMore at=' + at + ' force=' + force);
     lastTry = now;
     fetching = true;
     try {
       const st = await postSubBatch(jobId, at);
+      console.log('[4] batch done=' + st.done + ' state=' + st.state + ' next_at=' + st.next_at + ' vtt=' + (st.vtt?.length ?? 0));
       if (st.done !== lastDone) lastDone = st.done;
       if (st.vtt) pushVtt(st.vtt);
       subDone = st.state === 'done';
@@ -76,6 +80,7 @@
 
   /** Dipicu saat user pilih trek Indonesia di player → mulai alur batch. */
   function startId(): void {
+    console.log('[5] startId');
     idActive = true;
     if (started) return;
     started = true;
@@ -101,6 +106,7 @@
   }
 
   function stopId(): void {
+    console.log('[6] stopId');
     idActive = false;
   }
 
@@ -123,6 +129,7 @@
     if (!s?.sub_id) return;
     jobId = s.sub_id;
     subId = subResultUrl(jobId);
+    console.log('[8] stream sub_id=' + jobId);
     gen += 1;
   });
 
