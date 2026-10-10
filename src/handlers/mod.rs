@@ -233,7 +233,72 @@ fn pick_en_sub(s: &serde_json::Value) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::pick_en_sub;
+    use super::{next_at_of, pick, pick_en_sub, to_out};
+
+    #[test]
+    fn catalog_pick_sintetis() {
+        let mut f = serde_json::Map::new();
+        pick(Some("releasing"), &crate::upstream::STATUSES, "statusIn", &mut f).unwrap();
+        assert_eq!(f["statusIn"], serde_json::json!(["RELEASING"]));
+        assert!(pick(Some("ngawur"), &crate::upstream::STATUSES, "statusIn", &mut f).is_err());
+        assert!(pick(None, &crate::upstream::STATUSES, "statusIn", &mut f).is_ok());
+    }
+
+    #[test]
+    fn to_out_proxy_sintetis() {
+        let a: crate::models::AnimeItem = serde_json::from_value(serde_json::json!({
+            "id": "x", "anilistId": 1, "titleRomaji": "T",
+            "coverImage": {"large": "https://cdn/c.jpg"}, "bannerImage": "https://cdn/b.jpg"
+        }))
+        .unwrap();
+        let o = to_out(a);
+        assert!(o.cover.starts_with("/api/fetch?u="));
+        assert!(o.banner.starts_with("/api/fetch?u="));
+    }
+
+    #[test]
+    fn episodes_map_sort_sintetis() {
+        // Bentuk upstream /episodes → EpisodeItem (judul en > x-jat > ja, sort number).
+        let v = serde_json::json!([
+            {"number": 2, "titles": {"en": "Two", "x-jat": "Ni", "ja": "二"}, "img": "https://cdn/2.jpg"},
+            {"number": 1, "titles": {"en": null, "x-jat": "Ichi", "ja": "一"}, "img": ""},
+            {"number": 3, "titles": {}, "img": ""}
+        ]);
+        let mut out: Vec<crate::models::EpisodeItem> = v
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|e| crate::models::EpisodeItem {
+                number: e["number"].as_i64().unwrap_or(0),
+                title: e["titles"]["en"].as_str().or(e["titles"]["x-jat"].as_str()).or(e["titles"]["ja"].as_str()).unwrap_or("?").to_string(),
+                title_romaji: e["titles"]["x-jat"].as_str().unwrap_or("").to_string(),
+                title_jp: e["titles"]["ja"].as_str().unwrap_or("").to_string(),
+                img: crate::upstream::px(e["img"].as_str().unwrap_or("")),
+            })
+            .collect();
+        out.sort_by_key(|e| e.number);
+        assert_eq!(out[0].title, "Ichi");
+        assert_eq!(out[1].title, "Two");
+        assert_eq!(out[2].title, "?");
+        assert!(out[0].img.is_empty()); // img kosong → tanpa proxy
+    }
+
+    #[test]
+    fn next_at_sintetis() {
+        use std::collections::HashMap;
+        let mk = |id: Vec<usize>, n: usize| crate::upstream::SubJob {
+            state: "ready".to_string(),
+            err: None,
+            head: "WEBVTT".to_string(),
+            cues: (0..n).map(|i| vec![format!("00:00:{i:02}.000 --> 00:00:{:02}.000", i + 1), format!("L{i}")]).collect(),
+            dlg: (0..n).collect(),
+            id: id.into_iter().map(|i| (i, format!("ID{i}"))).collect::<HashMap<_, _>>(),
+            cache: String::new(),
+        };
+        assert_eq!(next_at_of(&mk(vec![0, 1], 2), 0.0), -1.0); // done penuh
+        assert_eq!(next_at_of(&mk(vec![], 0), 0.0), -1.0); // kosong
+    }
 
     #[test]
     fn pick_en_sub_handles_real_upstream_shapes() {

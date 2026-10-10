@@ -249,6 +249,9 @@ fn mime_for(url: &str) -> Option<String> {
         "png" => Some("image/png"),
         "webp" => Some("image/webp"),
         "gif" => Some("image/gif"),
+        "avif" => Some("image/avif"),
+        "aac" => Some("audio/aac"),
+        "mp3" => Some("audio/mpeg"),
         _ => None,
     }
     .map(str::to_string)
@@ -261,10 +264,6 @@ fn sniff(b: &[u8]) -> Option<&'static str> {
         Some("text/vtt")
     } else if b.starts_with(b"#EXTM3U") {
         Some("application/vnd.apple.mpegurl")
-    } else if b.first() == Some(&0x47) && (b.len() < 189 || b[188] == 0x47) {
-        Some("video/mp2t") // sync-byte TS; chunk pertama bisa <188B → single-sync cukup
-    } else if b.len() > 8 && &b[4..8] == b"ftyp" {
-        Some("video/mp4")
     } else if b.starts_with(&[0xFF, 0xD8, 0xFF]) {
         Some("image/jpeg")
     } else if b.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
@@ -273,6 +272,12 @@ fn sniff(b: &[u8]) -> Option<&'static str> {
         Some("image/webp")
     } else if b.starts_with(b"GIF8") {
         Some("image/gif")
+    } else if b.len() > 12 && &b[4..8] == b"ftyp" && (b[8..12] == *b"avif" || b[8..12] == *b"avis") {
+        Some("image/avif") // AVIF dicek dulu: brand-nya juga ftyp, generik di bawah salah label
+    } else if b.len() > 8 && &b[4..8] == b"ftyp" {
+        Some("video/mp4")
+    } else if b.first() == Some(&0x47) && (b.len() < 189 || b[188] == 0x47) {
+        Some("video/mp2t") // sync-byte TS; chunk pertama bisa <188B → single-sync cukup
     } else {
         None
     }
@@ -660,4 +665,92 @@ pub async fn translate_batch(client: &reqwest::Client, key: &str, jobs: &[(usize
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn img_url_shapes() {
+        assert_eq!(img_url(&serde_json::json!("https://cdn/x.jpg")), "https://cdn/x.jpg");
+        assert_eq!(img_url(&serde_json::json!({"large": "https://cdn/l.jpg"})), "https://cdn/l.jpg");
+        assert_eq!(img_url(&serde_json::json!({"medium": "", "url": "https://cdn/u.jpg"})), "https://cdn/u.jpg");
+        assert_eq!(img_url(&serde_json::json!({})), "");
+        assert_eq!(img_url(&serde_json::json!(null)), "");
+    }
+
+    #[test]
+    fn b64_target_ssrf_sintetis() {
+        let u = "https://cdn.example.com/seg0.ts?token=abc";
+        assert_eq!(decode_target(&b64(u)).unwrap(), u);
+        for host in ["http://localhost/x.m3u8", "http://127.0.0.1/a.ts", "http://10.0.0.5/a.ts", "http://192.168.1.1/a.ts", "http://169.254.169.254/x", "http://metadata.google.internal/x"] {
+            assert!(decode_target(&b64(host)).is_err(), "{host} harus ditolak");
+        }
+        assert!(decode_target("!!!").is_err());
+    }
+
+    #[test]
+    fn playlist_urls_master_vs_media() {
+        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=200\nhigh.m3u8\n";
+        assert_eq!(playlist_urls(master), vec!["low.m3u8", "high.m3u8"]);
+        let media = "#EXTM3U\n#EXTINF:6,\nseg0.ts\n#EXTINF:6,\nseg1.ts\n";
+        assert_eq!(playlist_urls(media), vec!["seg0.ts", "seg1.ts"]);
+    }
+
+    #[test]
+    fn rewrite_playlist_sintetis() {
+        let base = "https://cdn.example.com/hls";
+        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100\nlow.m3u8\n";
+        let out = rewrite_playlist(base, master, None, None);
+        assert!(out.contains("/api/hls?u="), "{out}");
+        let media = "#EXTM3U\n#EXTINF:6,\nseg0.ts\n#EXT-X-MAP:URI=\"init.mp4\"\n";
+        let out = rewrite_playlist(base, media, None, None);
+        assert!(out.contains("/api/fetch/seg0.mp4?u="), "{out}");
+        assert!(out.contains("URI=\"/api/fetch?u="), "{out}");
+    }
+
+    #[test]
+    fn sniff_mime_sintetis() {
+        assert_eq!(sniff(b"WEBVTT\n\n"), Some("text/vtt"));
+        assert_eq!(sniff(b"#EXTM3U\n"), Some("application/vnd.apple.mpegurl"));
+        assert_eq!(sniff(&[0x47, 0x00]), Some("video/mp2t"));
+        assert_eq!(sniff(&[0, 0, 0, 24, b'f', b't', b'y', b'p', b'm', b'p', b'4', b'2']), Some("video/mp4"));
+        assert_eq!(sniff(&[0xFF, 0xD8, 0xFF, 0x00]), Some("image/jpeg"));
+        assert_eq!(sniff(b"GIF89a"), Some("image/gif")); // regresi: 'G'=0x47 jangan sampai kena cabang TS
+        assert_eq!(sniff(b"GIF87a"), Some("image/gif"));
+        // AVIF = box ftyp + brand avif/avis → jangan sampai dikira video/mp4.
+        assert_eq!(sniff(&[0, 0, 0, 32, b'f', b't', b'y', b'p', b'a', b'v', b'i', b'f', 0, 0]), Some("image/avif"));
+        assert_eq!(sniff(&[0, 0, 0, 32, b'f', b't', b'y', b'p', b'a', b'v', b'i', b's', 0, 0]), Some("image/avif"));
+        assert_eq!(sniff(b"acak"), None);
+        assert_eq!(mime_for("https://x/seg0.ts?t=1").as_deref(), Some("video/mp2t"));
+        assert_eq!(mime_for("https://x/a.m3u8").as_deref(), Some("application/vnd.apple.mpegurl"));
+        assert_eq!(mime_for("https://x/cover.avif").as_deref(), Some("image/avif"));
+        assert_eq!(mime_for("https://x/audio.aac").as_deref(), Some("audio/aac"));
+        assert_eq!(mime_for("https://x/audio.mp3").as_deref(), Some("audio/mpeg"));
+        assert!(is_m3u8("https://x/low.m3u8?token=abc"));
+        assert!(!is_m3u8("https://x/seg0.ts"));
+    }
+
+    #[test]
+    fn vtt_sintetis_roundtrip() {
+        let raw = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n\n00:00:03.000 --> 00:00:04.000\nWorld\n";
+        let (head, cues) = parse_vtt(raw);
+        assert_eq!(head, "WEBVTT");
+        assert_eq!(cues.len(), 2);
+        assert_eq!(cue_lines(&cues[0]).unwrap(), vec!["Hello"]);
+        let mut id = HashMap::new();
+        id.insert(0, "Halo".to_string());
+        let full = build_vtt(&head, &cues, &id);
+        assert!(full.contains("Halo") && full.contains("World")); // idx 1 fallback EN
+        let only = build_vtt_id(&head, &cues, &id);
+        assert!(only.contains("Halo") && !only.contains("World"));
+    }
+
+    #[test]
+    fn ts_parse_sintetis() {
+        assert!((ts_start("00:01:02.500 --> 00:01:05.000") - 62.5).abs() < 1e-6);
+        assert!((ts_end("00:01:02.500 --> 00:01:05.000") - 65.0).abs() < 1e-6);
+        assert_eq!(ts_start("rusak"), 0.0);
+    }
 }
