@@ -7,7 +7,7 @@ pub struct Config {
     pub graphql_url: &'static str,
     pub api_base: &'static str,
     pub provider: &'static str,
-    pub mistral_key: String,
+    pub gemini_key: String,
     /// Cache Redis (opsional): `rediss://default:<pass>@<host>:6379`. Kosong = tanpa cache.
     pub redis_url: String,
 }
@@ -23,7 +23,7 @@ impl Default for Config {
             graphql_url: "https://graphql.animex.one/graphql",
             api_base: "https://api.anistream.one/rest/api",
             provider: "yuki",
-            mistral_key: std::env::var("MISTRAL_API_KEY").unwrap_or_default(),
+            gemini_key: std::env::var("GEMINI_API_KEY").unwrap_or_default(),
             redis_url: std::env::var("REDIS_URL").unwrap_or_default(),
         }
     }

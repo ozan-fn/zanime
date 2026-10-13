@@ -557,9 +557,9 @@ pub async fn subid_batch(
     http: web::Data<reqwest::Client>,
     body: web::Json<SubBatchReq>,
 ) -> Result<HttpResponse, AppError> {
-    if cfg.mistral_key.is_empty() {
+    if cfg.gemini_key.is_empty() {
         return Err(AppError::BadRequest(
-            "MISTRAL_API_KEY kosong (isi .env)".to_string(),
+            "GEMINI_API_KEY kosong (isi .env)".to_string(),
         ));
     }
     let _permit = jobs
@@ -620,7 +620,7 @@ pub async fn subid_batch(
     };
     let mut delta = String::new();
     if !batch.is_empty() {
-        let m = upstream::translate_batch(http.as_ref(), &cfg.mistral_key, &batch).await?;
+        let m = upstream::translate_batch(http.as_ref(), &cfg.gemini_key, &batch).await?;
         {
             let mu = jobs
                 .mu

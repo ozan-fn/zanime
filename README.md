@@ -10,7 +10,7 @@ browser — gambar, subtitle, playlist, dan segmen video ditulis ulang jadi URL 
 - Upstream katalog/detail: `https://graphql.animex.one/graphql` (GraphQL)
 - Upstream episode/server/sumber: `https://api.anistream.one/rest/api` (provider `yuki`)
 - Skip-time: `https://api.aniskip.com`, komentar & metadata episode: `theanimecommunity.com`
-- Terjemahan subtitle: Mistral (`mistral-small-latest`)
+- Terjemahan subtitle: Gemini (`gemini-3.1-flash-lite`)
 
 ---
 
@@ -62,7 +62,7 @@ Butuh Rust (edition 2024) dan, untuk frontend, `pnpm`.
 
 ```bash
 # 1) .env (lihat tabel di bawah)
-printf 'MISTRAL_API_KEY=...\nREDIS_URL=rediss://...\n' >> .env
+printf 'GEMINI_API_KEY=...\nREDIS_URL=rediss://...\n' >> .env
 
 # 2) build + jalankan semuanya dari satu port (API + web statis) di :3000
 make build && ./zanime
@@ -93,7 +93,7 @@ Dibaca dari `.env` (via `dotenvy`) atau environment. `.env`, `.cache/`, `target/
 
 | Variabel | Wajib | Default | Keterangan |
 | --- | --- | --- | --- |
-| `MISTRAL_API_KEY` | hanya untuk subtitle ID | kosong | Kosong → `POST /api/subid/batch` membalas 400 |
+| `GEMINI_API_KEY` | hanya untuk subtitle ID | kosong | Kosong → `POST /api/subid/batch` membalas 400 |
 | `REDIS_URL` | tidak | kosong | `rediss://default:<pass>@<host>:6379`. Kosong/gagal → cache mati, API tetap jalan |
 | `RUST_LOG` | tidak | `info` | Level logger `env_logger` |
 

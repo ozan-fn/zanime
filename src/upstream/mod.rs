@@ -742,15 +742,18 @@ pub async fn probe_stream(
     Err(AppError::NotFound("no playable source".to_string()))
 }
 
-// --- Subtitle ID via Mistral (mistral-small-latest, chat/completions).
-// Free/Experiment: ~1 req/detik + batas token/menit + token/bulan (ketiganya
-// enforced terpisah → 429). Batch 10 cue/call, progresif per batch.
-const MISTRAL_URL: &str = "https://api.mistral.ai/v1/chat/completions";
-const MISTRAL_MODEL: &str = "mistral-small-latest";
+// --- Subtitle ID via Gemini (gemini-3.1-flash-lite, generateContent).
+// Free: RPM + TPM + RPD per project (flash-lite paling longgar). 429 =
+// RESOURCE_EXHAUSTED, kadang tanpa Retry-After → cooldown global + gagal-cepat.
+// Batch 10 cue/call, progresif per batch.
+const GEMINI_URL: &str =
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent";
+/// System prompt subtitle (dipertahankan utuh, warisan era Mistral).
+const GEMINI_SYS: &str = "Kamu adalah penerjemah subtitle profesional Inggris → Indonesia untuk anime. Standar: akurat, natural, mudah dibaca (FAR Pedersen 2017). Maksimal 20 CPS, 42 karakter per baris, maksimal 2 baris per subtitle. Pertahankan honorifik Jepang (san, chan, kun, sama, senpai, sensei) dan nama asli. Jaga register bicara tiap karakter. Adaptasi wordplay, jangan literal. Italic untuk lagu, telepon, dan bisikan. Jangan menambah atau mengurangi makna, jangan spoiler, hindari bahasa gaul usang dan kalimat kaku.";
 pub const SUB_BATCH: usize = 10;
 
-/// Antrean subtitle ID: 1 permit → 1 panggilan Mistral dalam satu waktu,
-/// serial FIFO antar user, ikut batas ~1 req/detik paket free.
+/// Antrean subtitle ID: 1 permit → 1 panggilan Gemini dalam satu waktu,
+/// serial FIFO antar user, ikut batas RPM paket free.
 pub struct SubJob {
     pub state: String, // queued|ready|working|done|failed
     pub err: Option<String>,
@@ -783,24 +786,24 @@ impl Default for SubJobs {
     }
 }
 
-// Mistral free: ~1 req/detik + token/menit + token/bulan (enforced terpisah).
-// 429 jarang bawa Retry-After → cooldown global 20 dtk + gagal-cepat.
+// Gemini free: RPM + TPM + RPD per project (429 = RESOURCE_EXHAUSTED).
+// Kadang tanpa Retry-After → cooldown global 20 dtk + gagal-cepat.
 // Jangan pernah sleep sambil pegang permit: 1 job kena 429 = semua user ikut macet.
-pub static MISTRAL_LAST: tokio::sync::Mutex<Option<std::time::Instant>> =
+pub static GEMINI_LAST: tokio::sync::Mutex<Option<std::time::Instant>> =
     tokio::sync::Mutex::const_new(None);
-pub static MISTRAL_COOLDOWN_UNTIL: tokio::sync::Mutex<Option<std::time::Instant>> =
+pub static GEMINI_COOLDOWN_UNTIL: tokio::sync::Mutex<Option<std::time::Instant>> =
     tokio::sync::Mutex::const_new(None);
 
 async fn throttle_rps() -> Result<(), AppError> {
-    if let Some(until) = *MISTRAL_COOLDOWN_UNTIL.lock().await
+    if let Some(until) = *GEMINI_COOLDOWN_UNTIL.lock().await
         && let Some(left) = until.checked_duration_since(std::time::Instant::now())
     {
-        return Err(AppError::Upstream(format!(
-            "mistral rate limit, coba lagi dalam {} dtk",
+        return Err(AppError::RateLimited(format!(
+            "gemini rate limit, coba lagi dalam {} dtk",
             left.as_secs() + 1
         )));
     }
-    let mut last = MISTRAL_LAST.lock().await;
+    let mut last = GEMINI_LAST.lock().await;
     if let Some(prev) = *last {
         let gap = prev.elapsed();
         if gap < std::time::Duration::from_millis(1100) {
@@ -811,50 +814,65 @@ async fn throttle_rps() -> Result<(), AppError> {
     Ok(())
 }
 
-async fn mistral_chat(client: &reqwest::Client, key: &str, user: &str) -> Result<String, AppError> {
-    // Satu percobaan, gagal-cepat saat 429. Frontend sudah retry (cooldown 15 dtk),
-    // jadi loop backoff 95 dtk di sini cuma menahan permit + bikin thundering herd.
+/// Teks balasan generateContent: gabungan semua part kandidat pertama.
+fn gemini_text(v: &Value) -> Option<String> {
+    let parts = v["candidates"][0]["content"]["parts"].as_array()?;
+    let t: String = parts.iter().filter_map(|p| p["text"].as_str()).collect();
+    (!t.is_empty()).then_some(t)
+}
+
+/// Detik cooldown bila respons = rate limit (HTTP 429 atau RESOURCE_EXHAUSTED):
+/// pakai retryDelay (RetryInfo "20s") bila ada, default 20, clamp 5–60.
+fn gemini_cooldown_secs(status: u16, v: &Value) -> Option<u64> {
+    let exhausted = status == 429
+        || v["error"]["status"].as_str() == Some("RESOURCE_EXHAUSTED")
+        || v["error"]["code"].as_i64() == Some(429);
+    if !exhausted {
+        return None;
+    }
+    let delay = v["error"]["details"]
+        .as_array()
+        .into_iter()
+        .flat_map(|a| a.iter())
+        .filter_map(|d| d["retryDelay"].as_str())
+        .filter_map(|s| s.strip_suffix('s')?.parse::<f64>().ok())
+        .next()
+        .map(|n| n.ceil() as u64);
+    Some(delay.unwrap_or(20).clamp(5, 60))
+}
+
+async fn gemini_chat(client: &reqwest::Client, key: &str, user: &str) -> Result<String, AppError> {
+    // Satu percobaan, gagal-cepat saat 429. Frontend sudah retry (jeda 10 dtk),
+    // jadi loop backoff di sini cuma menahan permit + bikin thundering herd.
     throttle_rps().await?;
     let r = client
-        .post(MISTRAL_URL)
-        .bearer_auth(key)
+        .post(GEMINI_URL)
+        .header("x-goog-api-key", key)
         .timeout(std::time::Duration::from_secs(30))
-        .json(&serde_json::json!({"model": MISTRAL_MODEL, "messages": [{"role": "system", "content": "Terjemahkan subtitle Inggris → Indonesia natural, maks 42 karakter/baris, maks 2 baris. Pertahankan honorifik Jepang. Balas HANYA [N] <indonesia>."}, {"role": "user", "content": user}], "temperature": 0, "max_tokens": 1024}))
+        .json(&serde_json::json!({"system_instruction": {"parts": [{"text": GEMINI_SYS}]}, "contents": [{"parts": [{"text": user}]}], "generationConfig": {"temperature": 0, "maxOutputTokens": 1024}}))
         .send().await.map_err(|e| AppError::Upstream(e.to_string()))?;
-    if r.status().as_u16() == 429 {
-        let wait: u64 = r
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(20)
-            .clamp(5, 60);
-        *MISTRAL_COOLDOWN_UNTIL.lock().await =
-            Some(std::time::Instant::now() + std::time::Duration::from_secs(wait));
-        return Err(AppError::Upstream(format!(
-            "mistral rate limit, coba lagi dalam {wait} dtk"
-        )));
-    }
+    let status = r.status().as_u16();
     let v: Value = r
         .json()
         .await
         .map_err(|e| AppError::Upstream(e.to_string()))?;
-    if let Some(e) = v["message"].as_str() {
-        return Err(AppError::Upstream(format!("mistral: {e}")));
+    if let Some(wait) = gemini_cooldown_secs(status, &v) {
+        *GEMINI_COOLDOWN_UNTIL.lock().await =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(wait));
+        return Err(AppError::RateLimited(format!(
+            "gemini rate limit, coba lagi dalam {wait} dtk"
+        )));
     }
-    let out = &v["choices"][0]["message"]["content"];
-    let content = if let Some(s) = out.as_str() {
-        Some(s.to_string())
-    } else {
-        out.as_array().map(|arr| {
-            arr.iter()
-                .filter_map(|c| c["text"].as_str().map(str::to_string))
-                .collect::<String>()
-        })
-    };
-    content
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| AppError::Upstream(format!("mistral tanpa content: {v}")))
+    if status != 200 {
+        let msg = v["error"]["message"]
+            .as_str()
+            .unwrap_or("unknown")
+            .chars()
+            .take(200)
+            .collect::<String>();
+        return Err(AppError::Upstream(format!("gemini: {msg}")));
+    }
+    gemini_text(&v).ok_or_else(|| AppError::Upstream(format!("gemini tanpa content: {v}")))
 }
 
 /// Cache disk `.cache/subid/<hash-en>.vtt` → tonton ulang instan, hemat limit.
@@ -952,7 +970,7 @@ pub async fn translate_batch(
         .map(|(i, ls)| format!("[{i}] {}", ls.join("\n")))
         .collect::<Vec<_>>()
         .join("\n");
-    let a = mistral_chat(client, key, &format!("Translate each cue to Indonesian, keeping its line breaks. Reply ONLY as [N] <indonesian>, same order:\n{q}")).await?;
+    let a = gemini_chat(client, key, &format!("Translate each cue to Indonesian, keeping its line breaks. Reply ONLY as [N] <indonesian>, same order:\n{q}")).await?;
     let mut out = HashMap::new();
     let mut cur: Option<usize> = None;
     for line in a.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -1104,5 +1122,43 @@ mod tests {
         assert!((ts_start("00:01:02.500 --> 00:01:05.000") - 62.5).abs() < 1e-6);
         assert!((ts_end("00:01:02.500 --> 00:01:05.000") - 65.0).abs() < 1e-6);
         assert_eq!(ts_start("rusak"), 0.0);
+    }
+
+    /// Cooldown global: saat 429, throttle gagal-cepat tanpa network (global
+    /// direset di akhir biar test lain tak kena).
+    #[tokio::test]
+    async fn throttle_cooldown_fail_fast() {
+        *GEMINI_COOLDOWN_UNTIL.lock().await =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
+        let e = throttle_rps().await.unwrap_err();
+        assert!(e.to_string().contains("rate limit"), "{e}");
+        assert!(matches!(e, crate::error::AppError::RateLimited(_)));
+        *GEMINI_COOLDOWN_UNTIL.lock().await = None;
+        assert!(throttle_rps().await.is_ok());
+        *GEMINI_LAST.lock().await = None;
+    }
+
+    #[test]
+    fn gemini_shapes_sintetis() {
+        // generateContent 200: teks = gabungan semua part.
+        let ok = serde_json::json!({"candidates": [{"content": {"parts": [{"text": "[0] Halo"}, {"text": "\n[1] Pagi"}]}}]});
+        assert_eq!(gemini_text(&ok).as_deref(), Some("[0] Halo\n[1] Pagi"));
+        assert!(gemini_text(&serde_json::json!({})).is_none());
+        // 429 + RESOURCE_EXHAUSTED + retryDelay → cooldown ikut RetryInfo.
+        let rl = serde_json::json!({"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "details": [{"retryDelay": "35s"}]}});
+        assert_eq!(gemini_cooldown_secs(429, &rl), Some(35));
+        assert_eq!(gemini_cooldown_secs(200, &rl), Some(35)); // status bohong, body jujur
+        assert_eq!(gemini_cooldown_secs(429, &serde_json::json!({})), Some(20));
+        assert_eq!(
+            gemini_cooldown_secs(200, &serde_json::json!({"candidates": []})),
+            None
+        );
+        assert_eq!(
+            gemini_cooldown_secs(
+                503,
+                &serde_json::json!({"error": {"status": "UNAVAILABLE"}})
+            ),
+            None
+        );
     }
 }

@@ -7,6 +7,8 @@ pub enum AppError {
     Upstream(String),
     NotFound(String),
     BadRequest(String),
+    /// Rate-limit penerus (Gemini 429/RESOURCE_EXHAUSTED) → 429 ke klien, bukan 502.
+    RateLimited(String),
 }
 
 impl fmt::Display for AppError {
@@ -15,6 +17,7 @@ impl fmt::Display for AppError {
             Self::Upstream(e) => write!(f, "upstream error: {e}"),
             Self::NotFound(e) => write!(f, "{e}"),
             Self::BadRequest(e) => write!(f, "{e}"),
+            Self::RateLimited(e) => write!(f, "{e}"),
         }
     }
 }
@@ -27,6 +30,7 @@ impl ResponseError for AppError {
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
         }
     }
 
