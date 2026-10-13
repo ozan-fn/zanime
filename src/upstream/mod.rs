@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use futures_util::StreamExt as _;
 use serde_json::Value;
 
@@ -11,10 +11,29 @@ const CATALOG_QUERY: &str = "query CatalogAnime($filter: AnimeCatalogFilterInput
 
 /// Nilai sah `AnimeSortField` (dari introspeksi skema upstream).
 pub const SORT_FIELDS: [&str; 15] = [
-    "POPULARITY", "TRENDING", "AVERAGE_SCORE", "MEAN_SCORE", "FAVOURITES", "SEASON_YEAR", "UPDATED_AT", "CREATED_AT",
-    "EPISODE_COUNT", "DURATION", "TITLE_ENGLISH", "TITLE_ROMAJI", "NEXT_AIRING_AT", "SUB_COUNT", "DUB_COUNT",
+    "POPULARITY",
+    "TRENDING",
+    "AVERAGE_SCORE",
+    "MEAN_SCORE",
+    "FAVOURITES",
+    "SEASON_YEAR",
+    "UPDATED_AT",
+    "CREATED_AT",
+    "EPISODE_COUNT",
+    "DURATION",
+    "TITLE_ENGLISH",
+    "TITLE_ROMAJI",
+    "NEXT_AIRING_AT",
+    "SUB_COUNT",
+    "DUB_COUNT",
 ];
-pub const STATUSES: [&str; 5] = ["FINISHED", "RELEASING", "NOT_YET_RELEASED", "CANCELLED", "HIATUS"];
+pub const STATUSES: [&str; 5] = [
+    "FINISHED",
+    "RELEASING",
+    "NOT_YET_RELEASED",
+    "CANCELLED",
+    "HIATUS",
+];
 pub const FORMATS: [&str; 7] = ["TV", "TV_SHORT", "MOVIE", "SPECIAL", "OVA", "ONA", "MUSIC"];
 pub const SEASONS: [&str; 4] = ["WINTER", "SPRING", "SUMMER", "FALL"];
 
@@ -38,7 +57,16 @@ pub fn img_url(v: &Value) -> &str {
         return s;
     }
     if let Some(o) = v.as_object() {
-        for k in ["extraLarge", "large", "medium", "image", "url", "src", "cover", "banner"] {
+        for k in [
+            "extraLarge",
+            "large",
+            "medium",
+            "image",
+            "url",
+            "src",
+            "cover",
+            "banner",
+        ] {
             if let Some(s) = o.get(k).and_then(|x| x.as_str()).filter(|s| !s.is_empty()) {
                 return s;
             }
@@ -57,8 +85,17 @@ pub fn px(u: &str) -> String {
 /// karena host CDN video/gambar berotasi (dari y.txt: silentvoyage, moonridge, lunar, ...).
 fn blocked_host(h: &str) -> bool {
     let h = h.to_lowercase();
-    if h == "localhost" || h.ends_with(".localhost") || h.ends_with(".local") || h.ends_with(".internal")
-        || h == "0.0.0.0" || h == "::1" || h == "[::1]" || h.contains("metadata.google") { return true; }
+    if h == "localhost"
+        || h.ends_with(".localhost")
+        || h.ends_with(".local")
+        || h.ends_with(".internal")
+        || h == "0.0.0.0"
+        || h == "::1"
+        || h == "[::1]"
+        || h.contains("metadata.google")
+    {
+        return true;
+    }
     let p: Vec<&str> = h.split('.').collect();
     match p.as_slice() {
         ["127", _, _, _] | ["10", _, _, _] | ["192", "168", _, _] | ["169", "254", _, _] => true,
@@ -68,10 +105,24 @@ fn blocked_host(h: &str) -> bool {
 }
 
 pub fn decode_target(u: &str) -> Result<String, AppError> {
-    let raw = B64.decode(u).map_err(|_| AppError::BadRequest("u bukan base64".to_string()))?;
+    let raw = B64
+        .decode(u)
+        .map_err(|_| AppError::BadRequest("u bukan base64".to_string()))?;
     let s = String::from_utf8(raw).map_err(|_| AppError::BadRequest("u bukan utf8".to_string()))?;
-    let host = s.split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("").rsplit('@').next().unwrap_or("");
-    if !(s.starts_with("https://") || s.starts_with("http://")) || host.is_empty() || blocked_host(host) {
+    let host = s
+        .split("://")
+        .nth(1)
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .rsplit('@')
+        .next()
+        .unwrap_or("");
+    if !(s.starts_with("https://") || s.starts_with("http://"))
+        || host.is_empty()
+        || blocked_host(host)
+    {
         return Err(AppError::BadRequest("host tidak diizinkan".to_string()));
     }
     Ok(s)
@@ -82,8 +133,18 @@ pub fn client(cfg: &Config) -> Result<reqwest::Client, AppError> {
         .user_agent(cfg.user_agent)
         .default_headers({
             let mut h = reqwest::header::HeaderMap::new();
-            h.insert("Referer", cfg.referer.parse().map_err(|e| AppError::Upstream(format!("{e:?}")))?);
-            h.insert("Origin", cfg.origin.parse().map_err(|e| AppError::Upstream(format!("{e:?}")))?);
+            h.insert(
+                "Referer",
+                cfg.referer
+                    .parse()
+                    .map_err(|e| AppError::Upstream(format!("{e:?}")))?,
+            );
+            h.insert(
+                "Origin",
+                cfg.origin
+                    .parse()
+                    .map_err(|e| AppError::Upstream(format!("{e:?}")))?,
+            );
             h
         })
         .build()
@@ -91,7 +152,15 @@ pub fn client(cfg: &Config) -> Result<reqwest::Client, AppError> {
 }
 
 /// `catalogAnime` generik: filter/sort upstream apa adanya.
-pub async fn catalog(client: &reqwest::Client, cfg: &Config, filter: &Value, sort: &str, direction: &str, limit: i64, offset: i64) -> Result<Vec<AnimeItem>, AppError> {
+pub async fn catalog(
+    client: &reqwest::Client,
+    cfg: &Config,
+    filter: &Value,
+    sort: &str,
+    direction: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<AnimeItem>, AppError> {
     cached(format!("catalog:{sort}:{direction}:{limit}:{offset}:{filter}"), TTL, async {
         let r: Value = client
             .post(cfg.graphql_url)
@@ -107,8 +176,21 @@ pub async fn catalog(client: &reqwest::Client, cfg: &Config, filter: &Value, sor
     .await
 }
 
-pub async fn search(client: &reqwest::Client, cfg: &Config, title: &str) -> Result<Vec<AnimeItem>, AppError> {
-    catalog(client, cfg, &serde_json::json!({"query": title}), "POPULARITY", "DESC", 24, 0).await
+pub async fn search(
+    client: &reqwest::Client,
+    cfg: &Config,
+    title: &str,
+) -> Result<Vec<AnimeItem>, AppError> {
+    catalog(
+        client,
+        cfg,
+        &serde_json::json!({"query": title}),
+        "POPULARITY",
+        "DESC",
+        24,
+        0,
+    )
+    .await
 }
 
 pub async fn episodes(client: &reqwest::Client, cfg: &Config, id: &str) -> Result<Value, AppError> {
@@ -127,7 +209,14 @@ pub async fn episodes(client: &reqwest::Client, cfg: &Config, id: &str) -> Resul
 
 /// Sengaja **tidak** di-cache: URL m3u8 dari CDN bertanda tangan + berkedaluwarsa
 /// (`?token=<exp>.<hmac>`), entri cache basi = playback mati.
-pub async fn sources(client: &reqwest::Client, cfg: &Config, id: &str, ep: i64, r#type: &str, provider: &str) -> Result<Value, AppError> {
+pub async fn sources(
+    client: &reqwest::Client,
+    cfg: &Config,
+    id: &str,
+    ep: i64,
+    r#type: &str,
+    provider: &str,
+) -> Result<Value, AppError> {
     client
         .get(format!("{}/sources?id={id}&epNum={ep}&type={type}&providerId={provider}", cfg.api_base, type = r#type, provider = provider))
         .send()
@@ -138,7 +227,12 @@ pub async fn sources(client: &reqwest::Client, cfg: &Config, id: &str, ep: i64, 
         .map_err(|e| AppError::Upstream(e.to_string()))
 }
 
-pub async fn servers(client: &reqwest::Client, cfg: &Config, id: &str, ep: i64) -> Result<Value, AppError> {
+pub async fn servers(
+    client: &reqwest::Client,
+    cfg: &Config,
+    id: &str,
+    ep: i64,
+) -> Result<Value, AppError> {
     cached(format!("servers:{id}:{ep}"), TTL, async {
         client
             .get(format!("{}/servers?id={id}&epNum={ep}", cfg.api_base))
@@ -152,8 +246,18 @@ pub async fn servers(client: &reqwest::Client, cfg: &Config, id: &str, ep: i64) 
     .await
 }
 
-pub async fn anime(client: &reqwest::Client, cfg: &Config, id: Option<&str>, anilist_id: Option<i64>, section: &str) -> Result<Value, AppError> {
-    let key = format!("anime:{section}:{}:{}", id.unwrap_or("-"), anilist_id.map_or_else(|| "-".to_string(), |v| v.to_string()));
+pub async fn anime(
+    client: &reqwest::Client,
+    cfg: &Config,
+    id: Option<&str>,
+    anilist_id: Option<i64>,
+    section: &str,
+) -> Result<Value, AppError> {
+    let key = format!(
+        "anime:{section}:{}:{}",
+        id.unwrap_or("-"),
+        anilist_id.map_or_else(|| "-".to_string(), |v| v.to_string())
+    );
     cached(key, TTL, async {
         let q = match section {
             "seasons" => ANIME_SEASONS,
@@ -164,7 +268,9 @@ pub async fn anime(client: &reqwest::Client, cfg: &Config, id: Option<&str>, ani
         };
         let r: Value = client
             .post(cfg.graphql_url)
-            .json(&serde_json::json!({"query": q, "variables": {"id": id, "anilistId": anilist_id}}))
+            .json(
+                &serde_json::json!({"query": q, "variables": {"id": id, "anilistId": anilist_id}}),
+            )
             .send()
             .await
             .map_err(|e| AppError::Upstream(e.to_string()))?
@@ -181,7 +287,12 @@ pub async fn anime(client: &reqwest::Client, cfg: &Config, id: Option<&str>, ani
     .await
 }
 
-pub async fn skiptimes(client: &reqwest::Client, mal: i64, ep: i64, len: Option<f64>) -> Result<Value, AppError> {
+pub async fn skiptimes(
+    client: &reqwest::Client,
+    mal: i64,
+    ep: i64,
+    len: Option<f64>,
+) -> Result<Value, AppError> {
     cached(format!("skiptimes:{mal}:{ep}:{}", len.unwrap_or(0.0)), TTL, async {
         let mut url = format!("https://api.aniskip.com/v2/skip-times/{mal}/{ep}?types[]=op&types[]=ed&types[]=mixed-op&types[]=mixed-ed&types[]=recap");
         if let Some(l) = len {
@@ -192,7 +303,13 @@ pub async fn skiptimes(client: &reqwest::Client, mal: i64, ep: i64, len: Option<
     .await
 }
 
-pub async fn comments(client: &reqwest::Client, media: &str, offset: u32, sort: &str, limit: u32) -> Result<Value, AppError> {
+pub async fn comments(
+    client: &reqwest::Client,
+    media: &str,
+    offset: u32,
+    sort: &str,
+    limit: u32,
+) -> Result<Value, AppError> {
     cached(format!("comments:{media}:{offset}:{sort}:{limit}"), TTL, async {
         client
             .get(format!("https://theanimecommunity.com/api/v1/comments/{media}?offset={offset}&sortBy={sort}&limit={limit}"))
@@ -206,7 +323,11 @@ pub async fn comments(client: &reqwest::Client, media: &str, offset: u32, sort: 
     .await
 }
 
-pub async fn episode_meta(client: &reqwest::Client, anilist_id: i64, ep: i64) -> Result<Value, AppError> {
+pub async fn episode_meta(
+    client: &reqwest::Client,
+    anilist_id: i64,
+    ep: i64,
+) -> Result<Value, AppError> {
     cached(format!("episode-meta:{anilist_id}:{ep}"), TTL, async {
         client
             .get(format!("https://theanimecommunity.com/api/v1/episodes/mediaItemID?AniList_ID={anilist_id}&mediaType=anime&episodeChapterNumber={ep}"))
@@ -220,7 +341,11 @@ pub async fn episode_meta(client: &reqwest::Client, anilist_id: i64, ep: i64) ->
     .await
 }
 
-pub async fn anilist(client: &reqwest::Client, query: &str, variables: Option<Value>) -> Result<Value, AppError> {
+pub async fn anilist(
+    client: &reqwest::Client,
+    query: &str,
+    variables: Option<Value>,
+) -> Result<Value, AppError> {
     client
         .post("https://graphql.anilist.co/")
         .json(&serde_json::json!({"query": query, "variables": variables}))
@@ -272,7 +397,8 @@ fn sniff(b: &[u8]) -> Option<&'static str> {
         Some("image/webp")
     } else if b.starts_with(b"GIF8") {
         Some("image/gif")
-    } else if b.len() > 12 && &b[4..8] == b"ftyp" && (b[8..12] == *b"avif" || b[8..12] == *b"avis") {
+    } else if b.len() > 12 && &b[4..8] == b"ftyp" && (b[8..12] == *b"avif" || b[8..12] == *b"avis")
+    {
         Some("image/avif") // AVIF dicek dulu: brand-nya juga ftyp, generik di bawah salah label
     } else if b.len() > 8 && &b[4..8] == b"ftyp" {
         Some("video/mp4")
@@ -314,18 +440,37 @@ fn to_err(e: reqwest::Error) -> AppError {
 /// Selalu minta `identity` ke upstream: `bytes_stream` tanpa decode, jadi sniff
 /// melihat byte asli (gzip merusak sniff → label salah). Video/gambar sudah
 /// terkompresi → tanpa gzip justru hemat CPU dua sisi.
-pub async fn fetch_stream(client: &reqwest::Client, url: &str, origin: Option<&str>, referer: Option<&str>, range: Option<String>) -> Result<Streamed, AppError> {
+pub async fn fetch_stream(
+    client: &reqwest::Client,
+    url: &str,
+    origin: Option<&str>,
+    referer: Option<&str>,
+    range: Option<String>,
+) -> Result<Streamed, AppError> {
     let (o, f) = def_headers(origin, referer);
-    let mut r = client.get(url).header("Origin", o).header("Referer", f).header("Accept-Encoding", "identity");
+    let mut r = client
+        .get(url)
+        .header("Origin", o)
+        .header("Referer", f)
+        .header("Accept-Encoding", "identity");
     if let Some(g) = range {
         r = r.header("Range", g);
     }
-    let res = r.send().await.map_err(|e| AppError::Upstream(e.to_string()))?;
+    let res = r
+        .send()
+        .await
+        .map_err(|e| AppError::Upstream(e.to_string()))?;
     let status = res.status().as_u16();
     let h = res.headers().clone();
     let upstream_ct = h.get("content-type").and_then(|v| v.to_str().ok());
-    let crange = h.get("content-range").and_then(|v| v.to_str().ok()).map(str::to_string);
-    let clen = h.get("content-length").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let crange = h
+        .get("content-range")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let clen = h
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     // Intip prefix ≤2KB (bisa lintas chunk) → sniff magic bytes (CDN salah label:
     // segmen TS dinamai .jpg). Sniff kalah → ekstensi → label upstream → octet-stream.
     // Body utuh, tak berubah.
@@ -345,7 +490,11 @@ pub async fn fetch_stream(client: &reqwest::Client, url: &str, origin: Option<&s
             break;
         }
     }
-    let flat: Vec<u8> = prefix.iter().flat_map(|c| c.iter().copied()).take(2048).collect();
+    let flat: Vec<u8> = prefix
+        .iter()
+        .flat_map(|c| c.iter().copied())
+        .take(2048)
+        .collect();
     let t = sniff(&flat)
         .map(str::to_string)
         .or_else(|| mime_for(url))
@@ -354,43 +503,96 @@ pub async fn fetch_stream(client: &reqwest::Client, url: &str, origin: Option<&s
     let head = futures_util::stream::iter(prefix.into_iter().map(Ok::<_, AppError>));
     let tail = s.map(|r| r.map_err(to_err));
     let stream = Box::pin(head.chain(tail));
-    Ok(Streamed { status, ctype: t, crange, clen, stream })
+    Ok(Streamed {
+        status,
+        ctype: t,
+        crange,
+        clen,
+        stream,
+    })
 }
 
-pub async fn fetch_upstream(client: &reqwest::Client, url: &str, origin: Option<&str>, referer: Option<&str>, range: Option<String>) -> Result<Fetched, AppError> {
+pub async fn fetch_upstream(
+    client: &reqwest::Client,
+    url: &str,
+    origin: Option<&str>,
+    referer: Option<&str>,
+    range: Option<String>,
+) -> Result<Fetched, AppError> {
     let (o, f) = def_headers(origin, referer);
     let mut r = client.get(url).header("Origin", o).header("Referer", f);
     if let Some(g) = range {
         r = r.header("Range", g);
     }
-    let res = r.send().await.map_err(|e| AppError::Upstream(e.to_string()))?;
+    let res = r
+        .send()
+        .await
+        .map_err(|e| AppError::Upstream(e.to_string()))?;
     let status = res.status().as_u16();
-    let ctype = res.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream").to_string();
-    let body = res.bytes().await.map_err(|e| AppError::Upstream(e.to_string()))?.to_vec();
-    Ok(Fetched { status, ctype, body })
+    let ctype = res
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let body = res
+        .bytes()
+        .await
+        .map_err(|e| AppError::Upstream(e.to_string()))?
+        .to_vec();
+    Ok(Fetched {
+        status,
+        ctype,
+        body,
+    })
 }
 
 /// Path proxy segmen. Wajib berakhiran ekstensi: player web menentukan tipe media
 /// dari ekstensi URL (`{.ts → video/mp2t, .aac → audio/aac}`); tanpa itu ia salah pilih
 /// jalur MSE dan append gagal (video tak pernah mulai).
 fn seg_path(abs: &str, ext: &str) -> String {
-    let name = abs.split(['?', '#']).next().unwrap_or("").rsplit('/').next().unwrap_or("seg");
+    let name = abs
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit('/')
+        .next()
+        .unwrap_or("seg");
     let stem = name.split('.').next().unwrap_or("seg");
     format!("/api/fetch/{stem}{ext}?u={}", b64(abs))
 }
 
 /// Tulis ulang playlist m3u8 → semua URI menunjuk /api/hls atau /api/fetch (base64).
-pub fn rewrite_playlist(base: &str, t: &str, origin: Option<&str>, referer: Option<&str>) -> String {
+pub fn rewrite_playlist(
+    base: &str,
+    t: &str,
+    origin: Option<&str>,
+    referer: Option<&str>,
+) -> String {
     let suf = match (origin, referer) {
-        (Some(o), Some(r)) if !o.contains(['&', '?']) && !r.contains(['&', '?']) => format!("&origin={o}&referer={r}"),
+        (Some(o), Some(r)) if !o.contains(['&', '?']) && !r.contains(['&', '?']) => {
+            format!("&origin={o}&referer={r}")
+        }
         _ => String::new(),
     };
-    let ext = if t.contains("#EXT-X-MAP") { ".mp4" } else { ".ts" };
+    let ext = if t.contains("#EXT-X-MAP") {
+        ".mp4"
+    } else {
+        ".ts"
+    };
     let wrap = |abs: &str| {
-        if is_m3u8(abs) { format!("/api/hls?u={}{suf}", b64(abs)) } else { format!("{}{suf}", seg_path(abs, ext)) }
+        if is_m3u8(abs) {
+            format!("/api/hls?u={}{suf}", b64(abs))
+        } else {
+            format!("{}{suf}", seg_path(abs, ext))
+        }
     };
     let wrap_attr = |abs: &str| {
-        if is_m3u8(abs) { format!("/api/hls?u={}{suf}", b64(abs)) } else { format!("/api/fetch?u={}{suf}", b64(abs)) }
+        if is_m3u8(abs) {
+            format!("/api/hls?u={}{suf}", b64(abs))
+        } else {
+            format!("/api/fetch?u={}{suf}", b64(abs))
+        }
     };
     t.lines()
         .map(|line| {
@@ -428,12 +630,18 @@ fn base_of(u: &str) -> &str {
 }
 
 fn resolve(base: &str, r: &str) -> String {
-    if r.starts_with("http") { r.to_string() } else { format!("{base}/{}", r.trim_start_matches('/')) }
+    if r.starts_with("http") {
+        r.to_string()
+    } else {
+        format!("{base}/{}", r.trim_start_matches('/'))
+    }
 }
 
 /// Cek ekstensi abaikan query/fragment (?token=…), biar varian tak dikira segmen.
 fn is_m3u8(u: &str) -> bool {
-    u.split(['?', '#']).next().is_some_and(|p| p.ends_with(".m3u8"))
+    u.split(['?', '#'])
+        .next()
+        .is_some_and(|p| p.ends_with(".m3u8"))
 }
 
 fn playlist_urls(t: &str) -> Vec<String> {
@@ -444,43 +652,84 @@ fn playlist_urls(t: &str) -> Vec<String> {
         .map(|w| w[1].to_string())
         .collect();
     if o.is_empty() {
-        o = l.iter().filter(|x| !x.starts_with('#')).map(|x| x.to_string()).collect();
+        o = l
+            .iter()
+            .filter(|x| !x.starts_with('#'))
+            .map(|x| x.to_string())
+            .collect();
     }
     o
 }
 
-/// Master m3u8 cuma playlist (~ratusan byte) → resolve ke segmen video, ukur 1MB.
+/// Master m3u8 cuma playlist (~ratusan byte) → resolve ke segmen video, cuplik 64KB.
+/// 64KB cukup buktikan segmen hidup (byte count dibuang caller) — 16x hemat dari 1MB.
+/// Sekuensial + early-exit sengaja: berhenti di source pertama yang hidup = request
+/// CDN paling sedikit. Paralel justru menembak semua CDN tiap kali.
 /// Return (source_url, probe_bytes). Gagal semua → NotFound.
-pub async fn probe_stream(client: &reqwest::Client, s: &Value) -> Result<(String, usize), AppError> {
-    let origin = s["headers"]["Origin"].as_str().unwrap_or("https://megaplay.buzz");
-    let referer = s["headers"]["Referer"].as_str().unwrap_or("https://megaplay.buzz/");
+pub async fn probe_stream(
+    client: &reqwest::Client,
+    s: &Value,
+) -> Result<(String, usize), AppError> {
+    let origin = s["headers"]["Origin"]
+        .as_str()
+        .unwrap_or("https://megaplay.buzz");
+    let referer = s["headers"]["Referer"]
+        .as_str()
+        .unwrap_or("https://megaplay.buzz/");
     let srcs = s["sources"].as_array().cloned().unwrap_or_default();
     for x in &srcs {
         let u = x["url"].as_str().unwrap_or_default();
         if u.is_empty() {
             continue;
         }
-        let mt = match client.get(u).header("Origin", origin).header("Referer", referer).send().await {
-            Ok(r) => r.text().await.unwrap_or_default(),
-            Err(_) => continue,
+        let mt = match client
+            .get(u)
+            .header("Origin", origin)
+            .header("Referer", referer)
+            .send()
+            .await
+        {
+            // Status non-2xx (blokir Cloudflare dkk) → skip tanpa unduh body error-page.
+            Ok(r) if r.status().is_success() => r.text().await.unwrap_or_default(),
+            _ => continue,
         };
         if !mt.contains("#EXTM3U") {
             continue; // blokir Cloudflare / bukan playlist
         }
-        let media = playlist_urls(&mt).last().map(|v| resolve(base_of(u), v)).unwrap_or_else(|| u.to_string());
+        let media = playlist_urls(&mt)
+            .last()
+            .map(|v| resolve(base_of(u), v))
+            .unwrap_or_else(|| u.to_string());
         let seg = if is_m3u8(&media) {
-            match client.get(&media).header("Origin", origin).header("Referer", referer).send().await {
-                Ok(r) => {
+            match client
+                .get(&media)
+                .header("Origin", origin)
+                .header("Referer", referer)
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => {
                     let t = r.text().await.unwrap_or_default();
                     let b = base_of(&media).to_string();
-                    playlist_urls(&t).into_iter().next().map(|v| resolve(&b, &v)).unwrap_or(media)
+                    playlist_urls(&t)
+                        .into_iter()
+                        .next()
+                        .map(|v| resolve(&b, &v))
+                        .unwrap_or(media)
                 }
-                Err(_) => continue,
+                _ => continue,
             }
         } else {
             media
         };
-        match client.get(&seg).header("Origin", origin).header("Referer", referer).header("Range", "bytes=0-1048575").send().await {
+        match client
+            .get(&seg)
+            .header("Origin", origin)
+            .header("Referer", referer)
+            .header("Range", "bytes=0-65535")
+            .send()
+            .await
+        {
             Ok(r) if r.status().is_success() || r.status().as_u16() == 206 => {
                 let n = r.bytes().await.map(|b| b.len()).unwrap_or(0);
                 if n > 0 {
@@ -493,22 +742,23 @@ pub async fn probe_stream(client: &reqwest::Client, s: &Value) -> Result<(String
     Err(AppError::NotFound("no playable source".to_string()))
 }
 
-// --- Subtitle ID via Groq (Qwen). Batch 6 cue/call, jeda 2.5 dtk
-// (limit 30 req/mnt, 8K token/mnt, 1K req/hari) → progresif per batch.
-const MISTRAL_URL: &str = "https://api.mistral.ai/v1/conversations";
+// --- Subtitle ID via Mistral (mistral-small-latest, chat/completions).
+// Free/Experiment: ~1 req/detik + batas token/menit + token/bulan (ketiganya
+// enforced terpisah → 429). Batch 10 cue/call, progresif per batch.
+const MISTRAL_URL: &str = "https://api.mistral.ai/v1/chat/completions";
 const MISTRAL_MODEL: &str = "mistral-small-latest";
 pub const SUB_BATCH: usize = 10;
 
-/// Antrean subtitle ID: 1 permit → 1 video diterjemahkan dalam satu waktu,
-/// serial FIFO antar user, tak menabrak limit Groq.
+/// Antrean subtitle ID: 1 permit → 1 panggilan Mistral dalam satu waktu,
+/// serial FIFO antar user, ikut batas ~1 req/detik paket free.
 pub struct SubJob {
     pub state: String, // queued|ready|working|done|failed
     pub err: Option<String>,
     pub head: String,
     pub cues: Vec<Vec<String>>,
-    pub dlg: Vec<usize>, // indeks cue dialog (ada "-->")
+    pub dlg: Vec<usize>,            // indeks cue dialog (ada "-->")
     pub id: HashMap<usize, String>, // cue idx → teks ID
-    pub cache: String, // path cache disk (.cache/subtitles)
+    pub cache: String,              // path cache disk (.cache/subtitles)
 }
 
 pub struct SubJobs {
@@ -519,7 +769,11 @@ pub struct SubJobs {
 
 impl SubJobs {
     pub fn new() -> Self {
-        Self { sem: tokio::sync::Semaphore::new(1), mu: std::sync::Mutex::new(HashMap::new()), order: std::sync::Mutex::new(VecDeque::new()) }
+        Self {
+            sem: tokio::sync::Semaphore::new(1),
+            mu: std::sync::Mutex::new(HashMap::new()),
+            order: std::sync::Mutex::new(VecDeque::new()),
+        }
     }
 }
 
@@ -529,10 +783,23 @@ impl Default for SubJobs {
     }
 }
 
-// Mistral free tier: 1 request/detik — throttle global antar semua job/user.
-pub static MISTRAL_LAST: tokio::sync::Mutex<Option<std::time::Instant>> = tokio::sync::Mutex::const_new(None);
+// Mistral free: ~1 req/detik + token/menit + token/bulan (enforced terpisah).
+// 429 jarang bawa Retry-After → cooldown global 20 dtk + gagal-cepat.
+// Jangan pernah sleep sambil pegang permit: 1 job kena 429 = semua user ikut macet.
+pub static MISTRAL_LAST: tokio::sync::Mutex<Option<std::time::Instant>> =
+    tokio::sync::Mutex::const_new(None);
+pub static MISTRAL_COOLDOWN_UNTIL: tokio::sync::Mutex<Option<std::time::Instant>> =
+    tokio::sync::Mutex::const_new(None);
 
-async fn throttle_rps() {
+async fn throttle_rps() -> Result<(), AppError> {
+    if let Some(until) = *MISTRAL_COOLDOWN_UNTIL.lock().await
+        && let Some(left) = until.checked_duration_since(std::time::Instant::now())
+    {
+        return Err(AppError::Upstream(format!(
+            "mistral rate limit, coba lagi dalam {} dtk",
+            left.as_secs() + 1
+        )));
+    }
     let mut last = MISTRAL_LAST.lock().await;
     if let Some(prev) = *last {
         let gap = prev.elapsed();
@@ -541,38 +808,53 @@ async fn throttle_rps() {
         }
     }
     *last = Some(std::time::Instant::now());
+    Ok(())
 }
 
 async fn mistral_chat(client: &reqwest::Client, key: &str, user: &str) -> Result<String, AppError> {
-    let mut wait = 5;
-    for _ in 0..4 {
-        throttle_rps().await;
-        let r = client
-            .post(MISTRAL_URL)
-            .bearer_auth(key)
-            .timeout(std::time::Duration::from_secs(120))
-            .json(&serde_json::json!({"model": MISTRAL_MODEL, "inputs": [{"role": "user", "content": user}], "tools": [], "completion_args": {"temperature": 0, "max_tokens": 1024, "top_p": 1}, "instructions": "Kamu adalah penerjemah subtitle profesional Inggris → Indonesia untuk anime. Standar: akurat, natural, mudah dibaca (FAR Pedersen 2017). Maksimal 20 CPS, 42 karakter per baris, maksimal 2 baris per subtitle. Pertahankan honorifik Jepang (san, chan, kun, sama, senpai, sensei) dan nama asli. Jaga register bicara tiap karakter. Adaptasi wordplay, jangan literal. Italic untuk lagu, telepon, dan bisikan. Jangan menambah atau mengurangi makna, jangan spoiler, hindari bahasa gaul usang dan kalimat kaku."}))
-            .send().await.map_err(|e| AppError::Upstream(e.to_string()))?;
-        if r.status().as_u16() == 429 {
-            tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
-            wait *= 2;
-            continue;
-        }
-        let v: Value = r.json().await.map_err(|e| AppError::Upstream(e.to_string()))?;
-        if let Some(e) = v["message"].as_str() {
-            return Err(AppError::Upstream(format!("mistral: {e}")));
-        }
-        let out = &v["outputs"][0];
-        let content = if let Some(s) = out["content"].as_str() {
-            Some(s.to_string())
-        } else {
-            out["content"].as_array().map(|arr| arr.iter().filter_map(|c| c["text"].as_str().map(str::to_string)).collect::<String>())
-        };
-        return content
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| AppError::Upstream(format!("mistral tanpa content: {v}")));
+    // Satu percobaan, gagal-cepat saat 429. Frontend sudah retry (cooldown 15 dtk),
+    // jadi loop backoff 95 dtk di sini cuma menahan permit + bikin thundering herd.
+    throttle_rps().await?;
+    let r = client
+        .post(MISTRAL_URL)
+        .bearer_auth(key)
+        .timeout(std::time::Duration::from_secs(30))
+        .json(&serde_json::json!({"model": MISTRAL_MODEL, "messages": [{"role": "system", "content": "Terjemahkan subtitle Inggris → Indonesia natural, maks 42 karakter/baris, maks 2 baris. Pertahankan honorifik Jepang. Balas HANYA [N] <indonesia>."}, {"role": "user", "content": user}], "temperature": 0, "max_tokens": 1024}))
+        .send().await.map_err(|e| AppError::Upstream(e.to_string()))?;
+    if r.status().as_u16() == 429 {
+        let wait: u64 = r
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(20)
+            .clamp(5, 60);
+        *MISTRAL_COOLDOWN_UNTIL.lock().await =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(wait));
+        return Err(AppError::Upstream(format!(
+            "mistral rate limit, coba lagi dalam {wait} dtk"
+        )));
     }
-    Err(AppError::Upstream("mistral rate limit, coba lagi".to_string()))
+    let v: Value = r
+        .json()
+        .await
+        .map_err(|e| AppError::Upstream(e.to_string()))?;
+    if let Some(e) = v["message"].as_str() {
+        return Err(AppError::Upstream(format!("mistral: {e}")));
+    }
+    let out = &v["choices"][0]["message"]["content"];
+    let content = if let Some(s) = out.as_str() {
+        Some(s.to_string())
+    } else {
+        out.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|c| c["text"].as_str().map(str::to_string))
+                .collect::<String>()
+        })
+    };
+    content
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::Upstream(format!("mistral tanpa content: {v}")))
 }
 
 /// Cache disk `.cache/subid/<hash-en>.vtt` → tonton ulang instan, hemat limit.
@@ -589,13 +871,25 @@ pub fn parse_vtt(t: &str) -> (String, Vec<Vec<String>>) {
     let t = t.replace("\r\n", "\n");
     let mut blocks = t.split("\n\n");
     let head = blocks.next().unwrap_or("WEBVTT").to_string();
-    let cues: Vec<Vec<String>> = blocks.map(|b| b.lines().map(str::to_string).collect()).filter(|v: &Vec<String>| !v.is_empty()).collect();
+    let cues: Vec<Vec<String>> = blocks
+        .map(|b| b.lines().map(str::to_string).collect())
+        .filter(|v: &Vec<String>| !v.is_empty())
+        .collect();
     (head, cues)
 }
 
 /// Baris teks cue dialog (per cue, struktur baris dipertahankan).
 pub fn cue_lines(c: &[String]) -> Option<Vec<String>> {
-    c.iter().position(|l| l.contains("-->")).map(|p| c[p + 1..].iter().filter(|l| !l.trim().is_empty()).cloned().collect()).filter(|v: &Vec<String>| !v.is_empty())
+    c.iter()
+        .position(|l| l.contains("-->"))
+        .map(|p| {
+            c[p + 1..]
+                .iter()
+                .filter(|l| !l.trim().is_empty())
+                .cloned()
+                .collect()
+        })
+        .filter(|v: &Vec<String>| !v.is_empty())
 }
 
 /// Rakit VTT dari map terjemahan; cue belum diterjemahkan fallback EN.
@@ -618,7 +912,9 @@ pub fn build_vtt(head: &str, cues: &[Vec<String>], id: &HashMap<usize, String>) 
 pub fn build_vtt_id(head: &str, cues: &[Vec<String>], id: &HashMap<usize, String>) -> String {
     let mut out = vec![head.to_string()];
     for (i, c) in cues.iter().enumerate() {
-        let Some(p) = c.iter().position(|l| l.contains("-->")) else { continue };
+        let Some(p) = c.iter().position(|l| l.contains("-->")) else {
+            continue;
+        };
         if let Some(txt) = id.get(&i) {
             out.push([c[p].clone(), txt.clone()].join("\n"));
         }
@@ -646,13 +942,25 @@ pub fn ts_end(line: &str) -> f64 {
     h * 3600.0 + m * 60.0 + s
 }
 /// Baris lanjutan (tanpa `[N]`) ditempel ke cue aktif. Cue gagal dilewati (EN).
-pub async fn translate_batch(client: &reqwest::Client, key: &str, jobs: &[(usize, Vec<String>)]) -> Result<HashMap<usize, String>, AppError> {
-    let q = jobs.iter().map(|(i, ls)| format!("[{i}] {}", ls.join("\n"))).collect::<Vec<_>>().join("\n");
+pub async fn translate_batch(
+    client: &reqwest::Client,
+    key: &str,
+    jobs: &[(usize, Vec<String>)],
+) -> Result<HashMap<usize, String>, AppError> {
+    let q = jobs
+        .iter()
+        .map(|(i, ls)| format!("[{i}] {}", ls.join("\n")))
+        .collect::<Vec<_>>()
+        .join("\n");
     let a = mistral_chat(client, key, &format!("Translate each cue to Indonesian, keeping its line breaks. Reply ONLY as [N] <indonesian>, same order:\n{q}")).await?;
     let mut out = HashMap::new();
     let mut cur: Option<usize> = None;
     for line in a.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        if let Some((k, txt)) = line.strip_prefix('[').and_then(|r| r.split_once(']')).and_then(|(k, t)| k.parse::<usize>().ok().map(|k| (k, t.trim()))) {
+        if let Some((k, txt)) = line
+            .strip_prefix('[')
+            .and_then(|r| r.split_once(']'))
+            .and_then(|(k, t)| k.parse::<usize>().ok().map(|k| (k, t.trim())))
+        {
             cur = Some(k);
             if !txt.is_empty() {
                 out.insert(k, txt.to_string());
@@ -673,9 +981,18 @@ mod tests {
 
     #[test]
     fn img_url_shapes() {
-        assert_eq!(img_url(&serde_json::json!("https://cdn/x.jpg")), "https://cdn/x.jpg");
-        assert_eq!(img_url(&serde_json::json!({"large": "https://cdn/l.jpg"})), "https://cdn/l.jpg");
-        assert_eq!(img_url(&serde_json::json!({"medium": "", "url": "https://cdn/u.jpg"})), "https://cdn/u.jpg");
+        assert_eq!(
+            img_url(&serde_json::json!("https://cdn/x.jpg")),
+            "https://cdn/x.jpg"
+        );
+        assert_eq!(
+            img_url(&serde_json::json!({"large": "https://cdn/l.jpg"})),
+            "https://cdn/l.jpg"
+        );
+        assert_eq!(
+            img_url(&serde_json::json!({"medium": "", "url": "https://cdn/u.jpg"})),
+            "https://cdn/u.jpg"
+        );
         assert_eq!(img_url(&serde_json::json!({})), "");
         assert_eq!(img_url(&serde_json::json!(null)), "");
     }
@@ -684,7 +1001,14 @@ mod tests {
     fn b64_target_ssrf_sintetis() {
         let u = "https://cdn.example.com/seg0.ts?token=abc";
         assert_eq!(decode_target(&b64(u)).unwrap(), u);
-        for host in ["http://localhost/x.m3u8", "http://127.0.0.1/a.ts", "http://10.0.0.5/a.ts", "http://192.168.1.1/a.ts", "http://169.254.169.254/x", "http://metadata.google.internal/x"] {
+        for host in [
+            "http://localhost/x.m3u8",
+            "http://127.0.0.1/a.ts",
+            "http://10.0.0.5/a.ts",
+            "http://192.168.1.1/a.ts",
+            "http://169.254.169.254/x",
+            "http://metadata.google.internal/x",
+        ] {
             assert!(decode_target(&b64(host)).is_err(), "{host} harus ditolak");
         }
         assert!(decode_target("!!!").is_err());
@@ -715,19 +1039,47 @@ mod tests {
         assert_eq!(sniff(b"WEBVTT\n\n"), Some("text/vtt"));
         assert_eq!(sniff(b"#EXTM3U\n"), Some("application/vnd.apple.mpegurl"));
         assert_eq!(sniff(&[0x47, 0x00]), Some("video/mp2t"));
-        assert_eq!(sniff(&[0, 0, 0, 24, b'f', b't', b'y', b'p', b'm', b'p', b'4', b'2']), Some("video/mp4"));
+        assert_eq!(
+            sniff(&[0, 0, 0, 24, b'f', b't', b'y', b'p', b'm', b'p', b'4', b'2']),
+            Some("video/mp4")
+        );
         assert_eq!(sniff(&[0xFF, 0xD8, 0xFF, 0x00]), Some("image/jpeg"));
         assert_eq!(sniff(b"GIF89a"), Some("image/gif")); // regresi: 'G'=0x47 jangan sampai kena cabang TS
         assert_eq!(sniff(b"GIF87a"), Some("image/gif"));
         // AVIF = box ftyp + brand avif/avis → jangan sampai dikira video/mp4.
-        assert_eq!(sniff(&[0, 0, 0, 32, b'f', b't', b'y', b'p', b'a', b'v', b'i', b'f', 0, 0]), Some("image/avif"));
-        assert_eq!(sniff(&[0, 0, 0, 32, b'f', b't', b'y', b'p', b'a', b'v', b'i', b's', 0, 0]), Some("image/avif"));
+        assert_eq!(
+            sniff(&[
+                0, 0, 0, 32, b'f', b't', b'y', b'p', b'a', b'v', b'i', b'f', 0, 0
+            ]),
+            Some("image/avif")
+        );
+        assert_eq!(
+            sniff(&[
+                0, 0, 0, 32, b'f', b't', b'y', b'p', b'a', b'v', b'i', b's', 0, 0
+            ]),
+            Some("image/avif")
+        );
         assert_eq!(sniff(b"acak"), None);
-        assert_eq!(mime_for("https://x/seg0.ts?t=1").as_deref(), Some("video/mp2t"));
-        assert_eq!(mime_for("https://x/a.m3u8").as_deref(), Some("application/vnd.apple.mpegurl"));
-        assert_eq!(mime_for("https://x/cover.avif").as_deref(), Some("image/avif"));
-        assert_eq!(mime_for("https://x/audio.aac").as_deref(), Some("audio/aac"));
-        assert_eq!(mime_for("https://x/audio.mp3").as_deref(), Some("audio/mpeg"));
+        assert_eq!(
+            mime_for("https://x/seg0.ts?t=1").as_deref(),
+            Some("video/mp2t")
+        );
+        assert_eq!(
+            mime_for("https://x/a.m3u8").as_deref(),
+            Some("application/vnd.apple.mpegurl")
+        );
+        assert_eq!(
+            mime_for("https://x/cover.avif").as_deref(),
+            Some("image/avif")
+        );
+        assert_eq!(
+            mime_for("https://x/audio.aac").as_deref(),
+            Some("audio/aac")
+        );
+        assert_eq!(
+            mime_for("https://x/audio.mp3").as_deref(),
+            Some("audio/mpeg")
+        );
         assert!(is_m3u8("https://x/low.m3u8?token=abc"));
         assert!(!is_m3u8("https://x/seg0.ts"));
     }

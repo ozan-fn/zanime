@@ -38,27 +38,19 @@
     }
   });
 
+  // Satu timer 500ms untuk durasi + auto-skip OP/ED (dulu 2 interval 1s & 500ms).
   let lastDur = 0;
-  $effect(() => {
-    const iv = setInterval(() => {
-      const st = playerEl?.store?.state;
-      if (st && isFinite(st.duration) && st.duration > 0) {
-        if (lastDur === 0) lastDur = st.duration;
-        onDuration(st.duration);
-      }
-    }, 1000);
-    return () => clearInterval(iv);
-  });
-
-  // Tanda kuning OP/ED di seek bar (overlay pada media-time-slider).
-  // Auto skip OP/ED (polling langsung; autoSkip/skips dari prop).
   $effect(() => {
     const list = skips;
     const on = autoSkip;
     const iv = setInterval(() => {
-      if (!on || !list.length) return;
       const st = playerEl?.store?.state;
       if (!st) return;
+      if (isFinite(st.duration) && st.duration > 0) {
+        if (lastDur === 0) lastDur = st.duration;
+        onDuration(st.duration);
+      }
+      if (!on || !list.length) return;
       const t = st.currentTime ?? 0;
       const hit = list.find((s) => t >= s.interval.startTime && t < s.interval.endTime);
       if (hit) playerEl.store.seek?.(hit.interval.endTime + 0.05);

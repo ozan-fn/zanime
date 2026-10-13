@@ -1,7 +1,10 @@
 use actix_web::web;
 
 use crate::{
-    handlers::{anilist, anime, catalog, comments, episode_meta, episodes, fetch, hls, search, servers, skiptimes, sources, stats, stream, subid_batch, subid_result, subid_status},
+    handlers::{
+        anilist, anime, catalog, comments, episode_meta, episodes, fetch, hls, search, servers,
+        skiptimes, sources, stats, stream, subid_batch, subid_result, subid_status,
+    },
     spa,
 };
 

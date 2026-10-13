@@ -62,7 +62,9 @@ mod tests {
     /// Tanpa redis (`CON` belum diisi) hasil upstream harus lewat apa adanya.
     #[tokio::test]
     async fn tanpa_redis_lewat_langsung() {
-        let v: u32 = cached("kunci".to_string(), 1, async { Ok::<_, AppError>(9) }).await.unwrap();
+        let v: u32 = cached("kunci".to_string(), 1, async { Ok::<_, AppError>(9) })
+            .await
+            .unwrap();
         assert_eq!(v, 9);
     }
 }

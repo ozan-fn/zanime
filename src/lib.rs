@@ -9,15 +9,24 @@ pub mod stats;
 pub mod upstream;
 
 use actix_web::{
+    App, Error,
     dev::{ServiceFactory, ServiceRequest, ServiceResponse},
-    web, App, Error,
+    web,
 };
 
 pub fn create_app(
     cfg: config::Config,
     http: reqwest::Client,
     subjobs: web::Data<upstream::SubJobs>,
-) -> App<impl ServiceFactory<ServiceRequest, Config = (), Response = ServiceResponse, Error = Error, InitError = ()>> {
+) -> App<
+    impl ServiceFactory<
+        ServiceRequest,
+        Config = (),
+        Response = ServiceResponse,
+        Error = Error,
+        InitError = (),
+    >,
+> {
     App::new()
         .app_data(web::Data::new(cfg))
         .app_data(web::Data::new(http))

@@ -8,7 +8,11 @@ static CPU: AtomicU64 = AtomicU64::new(0);
 static PEAK_CPU: AtomicU64 = AtomicU64::new(0);
 
 pub fn set(mem_bytes: u64, cpu: f64) {
-    let cpu = if cpu.is_finite() && cpu > 0.0 { (cpu * 10.0) as u64 } else { 0 };
+    let cpu = if cpu.is_finite() && cpu > 0.0 {
+        (cpu * 10.0) as u64
+    } else {
+        0
+    };
     MEM.store(mem_bytes, Ordering::Relaxed);
     CPU.store(cpu, Ordering::Relaxed);
     PEAK_MEM.fetch_max(mem_bytes, Ordering::Relaxed);

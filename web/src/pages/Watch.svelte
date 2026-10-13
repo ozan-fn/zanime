@@ -21,6 +21,7 @@
   let wantFs = false;
   let lastTry = 0;
   let lastDone = -1;
+  let failStreak = 0;
 
   let vttCache = 'WEBVTT\n\n';
   let lastBlob = '';
@@ -72,6 +73,7 @@
         }
       }
       if (st) {
+      failStreak = 0;
       console.log('[4] batch done=' + st.done + ' state=' + st.state + ' next_at=' + st.next_at + ' vtt=' + (st.vtt?.length ?? 0));
       if (st.done !== lastDone) lastDone = st.done;
       if (st.vtt) pushVtt(st.vtt);
@@ -80,7 +82,14 @@
       subProg = '';
       }
     } catch (e) {
-      subProg = `Subtitle gagal: ${e instanceof Error ? e.message : 'unknown'}`;
+      const msg = e instanceof Error ? e.message : 'unknown';
+      // Retry berjeda 10 dtk (hormati cooldown rate-limit backend), maks 30 kali.
+      if (idActive && !subDone && ++failStreak <= 30) {
+        subProg = `Coba lagi ${failStreak}/30… (${msg})`;
+        setTimeout(() => void needMore(at, true), 10000);
+      } else {
+        subProg = `Subtitle gagal: ${msg}`;
+      }
     }
     fetching = false;
   }
