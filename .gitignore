@@ -1,7 +1,7 @@
-/target
 /zanime
 /.cache
 /.env
+/web_dist.v
 web/dist
 web/node_modules
 y.txt

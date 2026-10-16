@@ -24,7 +24,28 @@
   const idUrl = $derived(subId ? abs(subId) : '');
 
   let playerEl: any = $state(null);
+  let mediaEl: any = $state(null);
   let idTrackEl: HTMLTrackElement | null = $state(null);
+
+  // Batasi buffer hls.js biar preload/streaming tak makan internet berlebihan.
+  // Default hls.js: maxMaxBufferLength 600 dtk & maxBufferSize 60MB → terlalu boros.
+  // Engine config hanya lewat `source` (property), bukan atribut.
+  $effect(() => {
+    const el = mediaEl;
+    const u = url;
+    if (!el || !u) return;
+    el.source = {
+      src: u,
+      engine: {
+        hlsJs: {
+          maxBufferLength: 20,
+          maxMaxBufferLength: 30,
+          maxBufferSize: 20_000_000,
+          backBufferLength: 10,
+        },
+      },
+    };
+  });
 
   // src tak sama → reload sinkron ke fetch terbaru (URL stabil, dibedakan &v=).
   $effect(() => {
@@ -162,7 +183,7 @@
   <video-player bind:this={playerEl}>
     <video-skin style="display: block; width: 100%; aspect-ratio: 16 / 9;">
       <!-- hlsjs-video, bukan hls-video: sumber CDN MPEG-TS, dan hls-video (SPF) tak mendukung TS -->
-      <hlsjs-video src={url} autoplay playsinline crossorigin="anonymous" style="width: 100%;">
+      <hlsjs-video bind:this={mediaEl} src={url} autoplay playsinline preload="metadata" crossorigin="anonymous" style="width: 100%;">
         {#if subUrl}
           <track kind="subtitles" src={subUrl} srclang="en" label="English" default />
         {/if}
