@@ -787,22 +787,17 @@ impl Default for SubJobs {
 }
 
 // Gemini free: RPM + TPM + RPD per project (429 = RESOURCE_EXHAUSTED).
-// Kadang tanpa Retry-After → cooldown global 20 dtk + gagal-cepat.
+// Kadang tanpa Retry-After → cooldown 20 dtk. Cooldown kini **per key**:
+// 429 satu key tak memblok key lain (multi-key round-robin).
 // Jangan pernah sleep sambil pegang permit: 1 job kena 429 = semua user ikut macet.
 pub static GEMINI_LAST: tokio::sync::Mutex<Option<std::time::Instant>> =
     tokio::sync::Mutex::const_new(None);
-pub static GEMINI_COOLDOWN_UNTIL: tokio::sync::Mutex<Option<std::time::Instant>> =
-    tokio::sync::Mutex::const_new(None);
+static GEMINI_COOLDOWN: std::sync::LazyLock<std::sync::Mutex<HashMap<String, std::time::Instant>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-async fn throttle_rps() -> Result<(), AppError> {
-    if let Some(until) = *GEMINI_COOLDOWN_UNTIL.lock().await
-        && let Some(left) = until.checked_duration_since(std::time::Instant::now())
-    {
-        return Err(AppError::RateLimited(format!(
-            "gemini rate limit, coba lagi dalam {} dtk",
-            left.as_secs() + 1
-        )));
-    }
+/// Jeda antar panggilan (batas RPM paket free). Tanpa gagal-cepat global:
+/// seleksi key (`pick_key`) yang melompati key sedang cooldown.
+async fn throttle_rps() {
     let mut last = GEMINI_LAST.lock().await;
     if let Some(prev) = *last {
         let gap = prev.elapsed();
@@ -811,7 +806,37 @@ async fn throttle_rps() -> Result<(), AppError> {
         }
     }
     *last = Some(std::time::Instant::now());
-    Ok(())
+}
+
+/// Key berikut secara round-robin, lompati yang sedang cooldown. Semua
+/// cooldown → gagal-cepat (frontend sudah retry).
+fn pick_key(keys: &[String]) -> Result<&str, AppError> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    if keys.is_empty() {
+        return Err(AppError::BadRequest(
+            "GEMINI_API_KEY kosong (isi .env)".to_string(),
+        ));
+    }
+    let cd = GEMINI_COOLDOWN
+        .lock()
+        .map_err(|_| AppError::Upstream("lock".to_string()))?;
+    let now = std::time::Instant::now();
+    let start = NEXT.fetch_add(1, Ordering::Relaxed);
+    for off in 0..keys.len() {
+        let k = &keys[(start + off) % keys.len()];
+        if cd.get(k).is_none_or(|until| *until <= now) {
+            return Ok(k);
+        }
+    }
+    let wait = cd
+        .values()
+        .filter(|u| **u > now)
+        .min()
+        .map_or(20, |u| u.duration_since(now).as_secs() + 1);
+    Err(AppError::RateLimited(format!(
+        "semua key gemini rate limit, coba lagi dalam {wait} dtk"
+    )))
 }
 
 /// Teks balasan generateContent: gabungan semua part kandidat pertama.
@@ -844,7 +869,7 @@ fn gemini_cooldown_secs(status: u16, v: &Value) -> Option<u64> {
 async fn gemini_chat(client: &reqwest::Client, key: &str, user: &str) -> Result<String, AppError> {
     // Satu percobaan, gagal-cepat saat 429. Frontend sudah retry (jeda 10 dtk),
     // jadi loop backoff di sini cuma menahan permit + bikin thundering herd.
-    throttle_rps().await?;
+    throttle_rps().await;
     let r = client
         .post(GEMINI_URL)
         .header("x-goog-api-key", key)
@@ -857,8 +882,12 @@ async fn gemini_chat(client: &reqwest::Client, key: &str, user: &str) -> Result<
         .await
         .map_err(|e| AppError::Upstream(e.to_string()))?;
     if let Some(wait) = gemini_cooldown_secs(status, &v) {
-        *GEMINI_COOLDOWN_UNTIL.lock().await =
-            Some(std::time::Instant::now() + std::time::Duration::from_secs(wait));
+        if let Ok(mut cd) = GEMINI_COOLDOWN.lock() {
+            cd.insert(
+                key.to_string(),
+                std::time::Instant::now() + std::time::Duration::from_secs(wait),
+            );
+        }
         return Err(AppError::RateLimited(format!(
             "gemini rate limit, coba lagi dalam {wait} dtk"
         )));
@@ -962,7 +991,7 @@ pub fn ts_end(line: &str) -> f64 {
 /// Baris lanjutan (tanpa `[N]`) ditempel ke cue aktif. Cue gagal dilewati (EN).
 pub async fn translate_batch(
     client: &reqwest::Client,
-    key: &str,
+    keys: &[String],
     jobs: &[(usize, Vec<String>)],
 ) -> Result<HashMap<usize, String>, AppError> {
     let q = jobs
@@ -970,6 +999,7 @@ pub async fn translate_batch(
         .map(|(i, ls)| format!("[{i}] {}", ls.join("\n")))
         .collect::<Vec<_>>()
         .join("\n");
+    let key = pick_key(keys)?;
     let a = gemini_chat(client, key, &format!("Translate each cue to Indonesian, keeping its line breaks. Reply ONLY as [N] <indonesian>, same order:\n{q}")).await?;
     let mut out = HashMap::new();
     let mut cur: Option<usize> = None;
@@ -1124,18 +1154,37 @@ mod tests {
         assert_eq!(ts_start("rusak"), 0.0);
     }
 
-    /// Cooldown global: saat 429, throttle gagal-cepat tanpa network (global
-    /// direset di akhir biar test lain tak kena).
-    #[tokio::test]
-    async fn throttle_cooldown_fail_fast() {
-        *GEMINI_COOLDOWN_UNTIL.lock().await =
-            Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
-        let e = throttle_rps().await.unwrap_err();
-        assert!(e.to_string().contains("rate limit"), "{e}");
-        assert!(matches!(e, crate::error::AppError::RateLimited(_)));
-        *GEMINI_COOLDOWN_UNTIL.lock().await = None;
-        assert!(throttle_rps().await.is_ok());
-        *GEMINI_LAST.lock().await = None;
+    /// Round-robin: rotasi berputar, lompati key cooldown, gagal-cepat bila
+    /// semua key cooldown. Satu-satunya pemanggil pick_key di test → counter
+    /// global deterministik.
+    #[test]
+    fn gemini_pick_key_round_robin() {
+        let keys: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        let got: Vec<String> = (0..3)
+            .map(|_| pick_key(&keys).unwrap().to_string())
+            .collect();
+        assert_eq!(got, ["a", "b", "c"]); // NEXT mulai dari 0
+        // Key cooldown dilompati (NEXT lanjut → kandidat "a", dilewati → "b").
+        GEMINI_COOLDOWN.lock().unwrap().insert(
+            "a".to_string(),
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        );
+        assert_eq!(pick_key(&keys).unwrap(), "b");
+        // Semua key cooldown → gagal-cepat RateLimited.
+        let xy: Vec<String> = ["x", "y"].iter().map(|s| s.to_string()).collect();
+        {
+            let mut cd = GEMINI_COOLDOWN.lock().unwrap();
+            for k in &xy {
+                cd.insert(
+                    k.clone(),
+                    std::time::Instant::now() + std::time::Duration::from_secs(30),
+                );
+            }
+        }
+        let e = pick_key(&xy).unwrap_err();
+        assert!(matches!(e, crate::error::AppError::RateLimited(_)), "{e}");
+        assert!(pick_key(&[]).is_err());
+        GEMINI_COOLDOWN.lock().unwrap().clear();
     }
 
     #[test]

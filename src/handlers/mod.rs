@@ -444,6 +444,10 @@ pub async fn fetch(
     let mut b = HttpResponse::build(
         actix_web::http::StatusCode::from_u16(f.status).unwrap_or(actix_web::http::StatusCode::OK),
     );
+    // Gambar (dari `px`) tak berubah di URL sama → biar browser cache, tak fetch tiap render.
+    if f.ctype.starts_with("image/") {
+        b.insert_header(("cache-control", "public, max-age=31536000, immutable"));
+    }
     b.content_type(f.ctype);
     if let Some(cr) = f.crange {
         b.insert_header(("content-range", cr));
@@ -557,7 +561,7 @@ pub async fn subid_batch(
     http: web::Data<reqwest::Client>,
     body: web::Json<SubBatchReq>,
 ) -> Result<HttpResponse, AppError> {
-    if cfg.gemini_key.is_empty() {
+    if cfg.gemini_keys.is_empty() {
         return Err(AppError::BadRequest(
             "GEMINI_API_KEY kosong (isi .env)".to_string(),
         ));
@@ -620,7 +624,7 @@ pub async fn subid_batch(
     };
     let mut delta = String::new();
     if !batch.is_empty() {
-        let m = upstream::translate_batch(http.as_ref(), &cfg.gemini_key, &batch).await?;
+        let m = upstream::translate_batch(http.as_ref(), &cfg.gemini_keys, &batch).await?;
         {
             let mu = jobs
                 .mu
