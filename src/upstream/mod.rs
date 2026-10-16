@@ -742,12 +742,10 @@ pub async fn probe_stream(
     Err(AppError::NotFound("no playable source".to_string()))
 }
 
-// --- Subtitle ID via Gemini (gemini-3.1-flash-lite, generateContent).
+// --- Subtitle ID via Gemini (default: flash-lite, generateContent).
 // Free: RPM + TPM + RPD per project (flash-lite paling longgar). 429 =
-// RESOURCE_EXHAUSTED, kadang tanpa Retry-After → cooldown global + gagal-cepat.
+// RESOURCE_EXHAUSTED; 503 = model overloaded. Cooldown per key + gagal-cepat.
 // Batch 10 cue/call, progresif per batch.
-const GEMINI_URL: &str =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent";
 /// System prompt subtitle (dipertahankan utuh, warisan era Mistral).
 const GEMINI_SYS: &str = "Kamu adalah penerjemah subtitle profesional Inggris → Indonesia untuk anime. Standar: akurat, natural, mudah dibaca (FAR Pedersen 2017). Maksimal 20 CPS, 42 karakter per baris, maksimal 2 baris per subtitle. Pertahankan honorifik Jepang (san, chan, kun, sama, senpai, sensei) dan nama asli. Jaga register bicara tiap karakter. Adaptasi wordplay, jangan literal. Italic untuk lagu, telepon, dan bisikan. Jangan menambah atau mengurangi makna, jangan spoiler, hindari bahasa gaul usang dan kalimat kaku.";
 pub const SUB_BATCH: usize = 10;
@@ -866,12 +864,18 @@ fn gemini_cooldown_secs(status: u16, v: &Value) -> Option<u64> {
     Some(delay.unwrap_or(20).clamp(5, 60))
 }
 
-async fn gemini_chat(client: &reqwest::Client, key: &str, user: &str) -> Result<String, AppError> {
+async fn gemini_chat(
+    client: &reqwest::Client,
+    model: &str,
+    key: &str,
+    user: &str,
+) -> Result<String, AppError> {
     // Satu percobaan, gagal-cepat saat 429. Frontend sudah retry (jeda 10 dtk),
     // jadi loop backoff di sini cuma menahan permit + bikin thundering herd.
     throttle_rps().await;
+    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
     let r = client
-        .post(GEMINI_URL)
+        .post(url)
         .header("x-goog-api-key", key)
         .timeout(std::time::Duration::from_secs(30))
         .json(&serde_json::json!({"system_instruction": {"parts": [{"text": GEMINI_SYS}]}, "contents": [{"parts": [{"text": user}]}], "generationConfig": {"temperature": 0, "maxOutputTokens": 1024}}))
@@ -992,6 +996,7 @@ pub fn ts_end(line: &str) -> f64 {
 pub async fn translate_batch(
     client: &reqwest::Client,
     keys: &[String],
+    model: &str,
     jobs: &[(usize, Vec<String>)],
 ) -> Result<HashMap<usize, String>, AppError> {
     let q = jobs
@@ -1000,7 +1005,7 @@ pub async fn translate_batch(
         .collect::<Vec<_>>()
         .join("\n");
     let key = pick_key(keys)?;
-    let a = gemini_chat(client, key, &format!("Translate each cue to Indonesian, keeping its line breaks. Reply ONLY as [N] <indonesian>, same order:\n{q}")).await?;
+    let a = gemini_chat(client, model, key, &format!("Translate each cue to Indonesian, keeping its line breaks. Reply ONLY as [N] <indonesian>, same order:\n{q}")).await?;
     let mut out = HashMap::new();
     let mut cur: Option<usize> = None;
     for line in a.lines().map(str::trim).filter(|l| !l.is_empty()) {

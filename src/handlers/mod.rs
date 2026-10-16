@@ -624,7 +624,13 @@ pub async fn subid_batch(
     };
     let mut delta = String::new();
     if !batch.is_empty() {
-        let m = upstream::translate_batch(http.as_ref(), &cfg.gemini_keys, &batch).await?;
+        let m = upstream::translate_batch(
+            http.as_ref(),
+            &cfg.gemini_keys,
+            &cfg.gemini_model,
+            &batch,
+        )
+        .await?;
         {
             let mu = jobs
                 .mu

@@ -9,6 +9,8 @@ pub struct Config {
     pub provider: &'static str,
     /// Satu atau banyak key (pisah koma/baris) → dipakai round-robin.
     pub gemini_keys: Vec<String>,
+    /// Model Gemini (env `GEMINI_MODEL`). Default flash-lite terbaru: murah + free tier.
+    pub gemini_model: String,
     /// Cache Redis (opsional): `rediss://default:<pass>@<host>:6379`. Kosong = tanpa cache.
     pub redis_url: String,
 }
@@ -34,6 +36,10 @@ impl Default for Config {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
                 .collect(),
+            gemini_model: std::env::var("GEMINI_MODEL")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "gemini-3.5-flash-lite".to_string()),
             redis_url: std::env::var("REDIS_URL").unwrap_or_default(),
         }
     }
