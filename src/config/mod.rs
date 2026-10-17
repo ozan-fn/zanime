@@ -21,7 +21,10 @@ impl Default for Config {
         Self {
             bind: (
                 "0.0.0.0".to_string(),
-                std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3000),
+                std::env::var("PORT")
+                    .ok()
+                    .and_then(|p| p.parse().ok())
+                    .unwrap_or(3000),
             ),
             user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
             origin: "https://anistream.one",

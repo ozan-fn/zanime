@@ -165,6 +165,25 @@
   }
   let autoSkip = $state(localStorage.getItem('zanime-autoskip') === '1');
   let autoNext = $state(localStorage.getItem('zanime-autonext') !== '0');
+  /** Delay subtitle (dtk): positif = subtitle muncul lebih lambat. Disimpan di localStorage. */
+  let subDelay = $state(Number(localStorage.getItem('zanime-subdelay')) || 0);
+  function setDelay(v: number): void {
+    subDelay = Math.round(Math.max(-10, Math.min(10, v)) * 10) / 10;
+    localStorage.setItem('zanime-subdelay', String(subDelay));
+  }
+
+  /** Lanjut dari menit terakhir nonton (localStorage per episode). */
+  const posKey = $derived(`zanime-pos:${id}:${ep}`);
+  let startAt = $state(0);
+  let lastSave = 0;
+  function savePos(t: number): void {
+    const now = Date.now();
+    if (now - lastSave < 5000) return;
+    lastSave = now;
+    // Menit terakhir (10 dtk terakhir) dianggap selesai → jangan resume di ujung.
+    if (t <= 5 || (dur > 0 && t > dur - 10)) localStorage.removeItem(posKey);
+    else localStorage.setItem(posKey, String(Math.round(t)));
+  }
   let cover = $derived(anime ? abs(imgOf(anime.coverImage)) : '');
   let alts = $derived(anime ? altTitles(anime) : []);
   let chips = $derived(
@@ -184,6 +203,11 @@
 
   $effect(() => {
     if (id) void loadStream(id, ep);
+  });
+  $effect(() => {
+    const k = posKey;
+    startAt = Number(localStorage.getItem(k)) || 0;
+    lastSave = 0;
   });
   $effect(() => {
     if ($stream && wantFs) {
@@ -265,7 +289,7 @@
       <TriangleAlert class="size-4" /> {$error}
     </p>
   {:else if $stream}
-    <Player src={$stream.stream} sub={$stream.sub_en} subId={subId} nextAt={nextAt} autoSkip={autoSkip} skips={skips} busy={fetching && idActive} onDuration={(d: number) => { if (!dur) { dur = Math.round(d); trySkip(); } }} onEnded={() => { if (autoNext) { wantFs = !!document.fullscreenElement; location.hash = `/watch/${id}/${ep + 1}`; } }} onNeedMore={(t: number) => needMore(t)} onSeek={(t: number) => needMore(t, true)} onIdActive={startId} onIdInactive={stopId} />
+    <Player src={$stream.stream} sub={$stream.sub_en} subId={subId} subDelay={subDelay} startAt={startAt} nextAt={nextAt} autoSkip={autoSkip} skips={skips} busy={fetching && idActive} onProgress={(t: number) => savePos(t)} onDuration={(d: number) => { if (!dur) { dur = Math.round(d); trySkip(); } }} onEnded={() => { localStorage.removeItem(posKey); if (autoNext) { wantFs = !!document.fullscreenElement; location.hash = `/watch/${id}/${ep + 1}`; } }} onNeedMore={(t: number) => needMore(t)} onSeek={(t: number) => needMore(t, true)} onIdActive={startId} onIdInactive={stopId} />
     <div class="mt-3 flex items-center justify-between gap-2">
       <div class="flex gap-2">
       <button onclick={() => { autoSkip = !autoSkip; localStorage.setItem('zanime-autoskip', autoSkip ? '1' : '0'); }} class="inline-flex items-center gap-1 rounded border px-3 py-1 text-sm {autoSkip ? 'border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100' : 'border-zinc-300 text-zinc-500 dark:border-zinc-700'}" title="Auto skip OP/ED">
@@ -274,6 +298,11 @@
       <button onclick={() => { autoNext = !autoNext; localStorage.setItem('zanime-autonext', autoNext ? '1' : '0'); }} class="inline-flex items-center gap-1 rounded border px-3 py-1 text-sm {autoNext ? 'border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100' : 'border-zinc-300 text-zinc-500 dark:border-zinc-700'}" title="Auto next episode">
         <ChevronRight class="size-4" /> Auto next
       </button>
+      <div class="inline-flex items-center rounded border border-zinc-300 text-sm dark:border-zinc-700" title="Geser waktu subtitle (dtk). Positif = subtitle lebih lambat">
+        <button onclick={() => setDelay(subDelay - 0.5)} class="px-2 py-1 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100" aria-label="Subtitle lebih cepat">−</button>
+        <button onclick={() => setDelay(0)} class="min-w-14 px-1 py-1 {subDelay ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-500'}" title="Klik untuk reset ke 0">{subDelay > 0 ? '+' : ''}{subDelay.toFixed(1)}s</button>
+        <button onclick={() => setDelay(subDelay + 0.5)} class="px-2 py-1 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100" aria-label="Subtitle lebih lambat">+</button>
+      </div>
       </div>
       <div class="flex justify-end">
       {#if subProg}

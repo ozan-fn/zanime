@@ -7,6 +7,12 @@ use serde_json::Value;
 
 use crate::{cache::cached, config::Config, error::AppError, models::AnimeItem};
 
+/// Host player minky (dipakai anistream.one sendiri, lihat y.txt).
+const MINKY_FETCH: &str = "https://minky.anistream.one/fetch?url=";
+const MINKY_ORIGIN: &str = "https://megaplay.buzz";
+/// Token tak terbaca sama sekali → anggap valid sekian detik.
+const PLAY_FALLBACK_TTL: u64 = 120;
+
 const CATALOG_QUERY: &str = "query CatalogAnime($filter: AnimeCatalogFilterInput $sort: [AnimeSortInput!] $limit: Int $offset: Int){catalogAnime(filter:$filter sort:$sort limit:$limit offset:$offset){items{id anilistId titleRomaji titleEnglish episodeCount coverImage bannerImage format seasonYear averageScore status}}}";
 
 /// Nilai sah `AnimeSortField` (dari introspeksi skema upstream).
@@ -558,7 +564,12 @@ fn seg_path(abs: &str, ext: &str) -> String {
         .rsplit('/')
         .next()
         .unwrap_or("seg");
-    let stem = name.split('.').next().unwrap_or("seg");
+    // URL tanpa nama berkas (minky: `/?u=<blob>`) → stem kosong, pakai "seg".
+    let stem = name
+        .split('.')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("seg");
     format!("/api/fetch/{stem}{ext}?u={}", b64(abs))
 }
 
@@ -580,15 +591,19 @@ pub fn rewrite_playlist(
     } else {
         ".ts"
     };
-    let wrap = |abs: &str| {
-        if is_m3u8(abs) {
+    // Master: baris non-komentar = varian. Sebagian CDN menulisnya tanpa ekstensi
+    // (minky: `/?u=<blob>`), jadi ekstensi saja tidak cukup untuk menandai playlist.
+    let master = t.contains("#EXT-X-STREAM-INF");
+    let wrap = |abs: &str, pl: bool| {
+        if pl || is_m3u8(abs) {
             format!("/api/hls?u={}{suf}", b64(abs))
         } else {
             format!("{}{suf}", seg_path(abs, ext))
         }
     };
-    let wrap_attr = |abs: &str| {
-        if is_m3u8(abs) {
+    // `URI="…"` yang menempel di tag playlist (I-FRAME/rendition audio) juga playlist.
+    let wrap_attr = |abs: &str, pl: bool| {
+        if pl || is_m3u8(abs) {
             format!("/api/hls?u={}{suf}", b64(abs))
         } else {
             format!("/api/fetch?u={}{suf}", b64(abs))
@@ -601,6 +616,8 @@ pub fn rewrite_playlist(
                 return String::new();
             }
             if l.starts_with('#') {
+                let pl =
+                    l.starts_with("#EXT-X-I-FRAME-STREAM-INF") || l.starts_with("#EXT-X-MEDIA:");
                 let mut out = String::with_capacity(l.len() + 64);
                 let mut rest = l;
                 while let Some(i) = rest.find("URI=\"") {
@@ -608,7 +625,7 @@ pub fn rewrite_playlist(
                     match rest[start..].find('"') {
                         Some(end) => {
                             out.push_str(&rest[..start]);
-                            out.push_str(&wrap_attr(&resolve(base, &rest[start..start + end])));
+                            out.push_str(&wrap_attr(&resolve(base, &rest[start..start + end]), pl));
                             out.push('"');
                             rest = &rest[start + end + 1..];
                         }
@@ -618,7 +635,7 @@ pub fn rewrite_playlist(
                 out.push_str(rest);
                 out
             } else {
-                wrap(&resolve(base, l))
+                wrap(&resolve(base, l), master)
             }
         })
         .collect::<Vec<_>>()
@@ -740,6 +757,190 @@ pub async fn probe_stream(
         }
     }
     Err(AppError::NotFound("no playable source".to_string()))
+}
+
+// --- Playback siap putar: host minky dulu, fallback CDN provider (yuki).
+
+/// Percent-encode ketat untuk menitipkan URL di query (tanpa dependensi baru).
+fn enc(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// URL CDN dibungkus host player minky (bentuk persis dari y.txt).
+fn minky_url(src: &str) -> String {
+    format!("{MINKY_FETCH}{}&origin={}", enc(src), enc(MINKY_ORIGIN))
+}
+
+/// Salinan respons `sources` dengan semua URL sumber dibungkus host minky.
+fn via_minky(s: &Value) -> Value {
+    let mut v = s.clone();
+    if let Some(a) = v["sources"].as_array_mut() {
+        for x in a.iter_mut() {
+            if let Some(u) = x["url"].as_str() {
+                x["url"] = Value::String(minky_url(u));
+            }
+        }
+    }
+    v
+}
+
+/// Urutan percobaan putar: **minky dulu**, lalu CDN provider apa adanya (yuki).
+fn candidates(s: &Value) -> [Value; 2] {
+    [via_minky(s), s.clone()]
+}
+
+/// Percent-decode (tanpa dependensi baru): `%XX` → byte, sisanya apa adanya.
+fn pct_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let (Some(h), Some(l)) = (
+                (b[i + 1] as char).to_digit(16),
+                (b[i + 2] as char).to_digit(16),
+            )
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+/// Detik dari token CDN `?token=<b64(exp|path)>.<sig>`; 0 = tak terbaca.
+/// URL minky di-decode dulu: token CDN-nya ada di dalam `url=` yang ter-percent-encode.
+/// CDN tak menegakkan ini (token 16 menit tetap 200) → dipakai sebagai penanda
+/// kapan URL perlu disegarkan, bukan pagar mati.
+pub fn token_expiry(url: &str) -> u64 {
+    let u = pct_decode(url);
+    let b = u
+        .split("token=")
+        .nth(1)
+        .map(|t| t.split(['.', '&']).next().unwrap_or(""))
+        .unwrap_or("");
+    B64.decode(b)
+        .ok()
+        .and_then(|raw| String::from_utf8(raw).ok())
+        .and_then(|t| t.split('|').next().unwrap_or("").trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// Sumber siap putar satu episode; di-cache sampai token-nya kedaluwarsa.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct Play {
+    /// URL playlist yang sudah lolos probe (minky bila hidup, else CDN provider).
+    pub stream: String,
+    /// Respons `sources` apa adanya: sumber trek subtitle, chapter skip, header.
+    pub sources: Value,
+    /// Batas Unix pemakaian entri ini.
+    pub until: u64,
+}
+
+/// Masih layak dipakai pada detik `now`?
+pub fn still_ok(p: &Play, now: u64) -> bool {
+    p.until > now
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Batas pakai URL: **saat token benar-benar kedaluwarsa** — selama masih berlaku
+/// entri dipakai apa adanya, tak ada penyegaran berkala. Token tak terbaca → TTL pendek;
+/// token yang sudah lewat → 0 (jangan di-cache).
+fn until_of(url: &str, now: u64) -> u64 {
+    match token_expiry(url) {
+        0 => now + PLAY_FALLBACK_TTL,
+        exp if exp > now => exp,
+        _ => 0,
+    }
+}
+
+/// Cache memori proses (lapis pertama; redis dipakai antar-instance bila ada).
+/// Perlu karena probe mengunduh segmen (~800 KB lewat minky), sedangkan
+/// `/api/stream` dipanggil tiap halaman dibuka.
+static MEM: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Play>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Sumber siap putar untuk (id, ep): **minky dulu**, gagal → CDN provider apa adanya.
+/// Hasilnya di-cache sampai token hampir mati, lalu disegarkan sendiri (auto refresh).
+pub async fn play(
+    client: &reqwest::Client,
+    cfg: &Config,
+    id: &str,
+    ep: i64,
+    r#type: &str,
+    provider: &str,
+) -> Result<Play, AppError> {
+    let key = format!("play:{provider}:{type}:{id}:{ep}", type = r#type);
+    let now = now_secs();
+    let from_mem = MEM
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&key).cloned())
+        .filter(|p| still_ok(p, now));
+    if let Some(p) = from_mem {
+        return Ok(p);
+    }
+    if let Some(p) = crate::cache::get::<Play>(&key)
+        .await
+        .filter(|p| still_ok(p, now))
+    {
+        if let Ok(mut m) = MEM.lock() {
+            m.insert(key.clone(), p.clone());
+        }
+        return Ok(p);
+    }
+
+    // Basi / belum ada → ambil token baru. 3x percobaan: CDN/upstream sesaat 5xx.
+    let mut err = None;
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(400 * u64::from(attempt))).await;
+        }
+        let s = match sources(client, cfg, id, ep, r#type, provider).await {
+            Ok(s) => s,
+            Err(e) => {
+                err = Some(e);
+                continue;
+            }
+        };
+        for cand in candidates(&s) {
+            match probe_stream(client, &cand).await {
+                Ok((url, _)) => {
+                    let p = Play {
+                        until: until_of(&url, now),
+                        stream: url,
+                        sources: s,
+                    };
+                    if let Ok(mut m) = MEM.lock() {
+                        m.insert(key.clone(), p.clone());
+                    }
+                    let ttl = p.until.saturating_sub(now);
+                    if ttl > 0 {
+                        crate::cache::set(&key, ttl, &p).await;
+                    }
+                    return Ok(p);
+                }
+                Err(e) => err = Some(e),
+            }
+        }
+    }
+    Err(err.unwrap_or_else(|| AppError::Upstream("stream gagal".to_string())))
 }
 
 // --- Subtitle ID via Gemini (default: flash-lite, generateContent).
@@ -873,7 +1074,8 @@ async fn gemini_chat(
     // Satu percobaan, gagal-cepat saat 429. Frontend sudah retry (jeda 10 dtk),
     // jadi loop backoff di sini cuma menahan permit + bikin thundering herd.
     throttle_rps().await;
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
+    let url =
+        format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
     let r = client
         .post(url)
         .header("x-goog-api-key", key)
@@ -1033,6 +1235,97 @@ mod tests {
     use super::*;
 
     #[test]
+    fn minky_dan_token_sintetis() {
+        let u = "https://cdn.example.com/a/master.m3u8?token=ab.cd";
+        let m = minky_url(u);
+        assert_eq!(
+            m,
+            "https://minky.anistream.one/fetch?url=https%3A%2F%2Fcdn.example.com%2Fa%2Fmaster.m3u8%3Ftoken%3Dab.cd&origin=https%3A%2F%2Fmegaplay.buzz",
+            "{m}"
+        );
+        let s = serde_json::json!({"sources": [{"url": u}, {"url": "https://cdn.example.com/b/x.m3u8"}]});
+        let v = via_minky(&s);
+        assert!(
+            v["sources"][0]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with(MINKY_FETCH)
+        );
+        assert!(v["sources"][1]["url"].as_str().unwrap().contains("%2Fb%2F"));
+        assert_eq!(
+            s["sources"][0]["url"].as_str().unwrap(),
+            u,
+            "asli ikut berubah"
+        );
+        assert_eq!(
+            via_minky(&serde_json::json!({"sources": []}))["sources"],
+            serde_json::json!([])
+        );
+
+        // Urutan putar: minky dulu, fallback = CDN provider apa adanya.
+        let c = candidates(&s);
+        assert!(
+            c[0]["sources"][0]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with(MINKY_FETCH)
+        );
+        assert_eq!(c[1]["sources"][0]["url"].as_str().unwrap(), u);
+
+        // Token: `b64(exp|path)` — terbaca; tanpa/rusak → 0 (dianggap perlu refresh).
+        let exp = 1_792_201_839u64;
+        let url = format!(
+            "https://cdn/x/master.m3u8?token={}.sig&x=1",
+            b64(&format!("{exp}|p"))
+        );
+        assert_eq!(token_expiry(&url), exp);
+        assert_eq!(token_expiry("https://cdn/x/master.m3u8?a=1"), 0);
+        assert_eq!(token_expiry("https://cdn/x/m.m3u8?token=rusak"), 0);
+    }
+
+    #[test]
+    fn play_cache_basi_sintetis() {
+        let play = |until| Play {
+            stream: String::new(),
+            sources: Value::Null,
+            until,
+        };
+        let now = 1_000u64;
+        assert!(still_ok(&play(now + 1), now));
+        assert!(
+            !still_ok(&play(now), now),
+            "entri kedaluwarsa harus disegarkan"
+        );
+        let exp = now + 100;
+        let url = format!("https://cdn/x/m.m3u8?token={}", b64(&format!("{exp}|p")));
+        assert_eq!(
+            until_of(&url, now),
+            exp,
+            "dipakai sampai token benar-benar habis"
+        );
+        assert_eq!(
+            until_of(&url, exp),
+            0,
+            "token sudah habis → jangan di-cache"
+        );
+        assert_eq!(
+            until_of("https://cdn/x/m.m3u8", now),
+            now + PLAY_FALLBACK_TTL
+        );
+        assert_eq!(
+            until_of("https://cdn/x/m.m3u8?token=rusak", now),
+            now + PLAY_FALLBACK_TTL
+        );
+
+        // URL minky: token CDN-nya di dalam `url=` yang ter-percent-encode → tetap terbaca,
+        // jadi cachenya ikut kedaluwarsa token, bukan TTL buta.
+        let m = minky_url(&url);
+        assert_eq!(token_expiry(&m), exp);
+        assert_eq!(until_of(&m, now), exp);
+        assert_eq!(until_of(&m, exp + 1), 0);
+    }
+
+    #[test]
     fn img_url_shapes() {
         assert_eq!(
             img_url(&serde_json::json!("https://cdn/x.jpg")),
@@ -1085,6 +1378,19 @@ mod tests {
         let out = rewrite_playlist(base, media, None, None);
         assert!(out.contains("/api/fetch/seg0.mp4?u="), "{out}");
         assert!(out.contains("URI=\"/api/fetch?u="), "{out}");
+
+        // Varian tanpa ekstensi (bentuk minky `/?u=<blob>`) tetap playlist → /api/hls,
+        // bukan diperlakukan sebagai segmen (playlist mentah → URI segmennya nyasar).
+        let minky = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100\n/?u=abc&origin=x\n#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=9,URI=\"/?u=def\"\n";
+        let out = rewrite_playlist(base, minky, None, None);
+        assert!(out.contains("/api/hls?u="), "{out}");
+        assert!(!out.contains("/api/fetch/"), "{out}");
+
+        // Segmen tanpa nama berkas → /api/fetch/seg.ts (ekstensi tetap ada: player
+        // menebak tipe media dari ekstensi path).
+        let media = "#EXTM3U\n#EXT-X-TARGETDURATION:12\n#EXTINF:6,\n/?u=abc\n";
+        let out = rewrite_playlist(base, media, None, None);
+        assert!(out.contains("/api/fetch/seg.ts?u="), "{out}");
     }
 
     #[test]

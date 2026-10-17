@@ -3,11 +3,15 @@
   import '@videojs/html/video/skin';
   import '@videojs/html/media/hlsjs-video';
   import { abs } from '../../../lib/api';
+  import { shiftVtt } from '../../../lib/vtt';
 
   let {
     src,
     sub,
     subId = '',
+    subDelay = 0,
+    startAt = 0,
+    onProgress = () => {},
     nextAt = -1,
     onNeedMore = () => {},
     onSeek = () => {},
@@ -18,31 +22,88 @@
     busy = false,
     onEnded = () => {},
     onDuration = (d: number) => {},
-  }: { src: string; sub: string; subId?: string; nextAt?: number; onNeedMore?: (t: number) => void; onSeek?: (t: number) => void; onIdActive?: () => void; onIdInactive?: () => void; autoSkip?: boolean; skips?: Array<{ interval: { startTime: number; endTime: number } }>; busy?: boolean; onEnded?: () => void; onDuration?: (d: number) => void } = $props();
+  }: { src: string; sub: string; subId?: string; subDelay?: number; startAt?: number; onProgress?: (t: number) => void; nextAt?: number; onNeedMore?: (t: number) => void; onSeek?: (t: number) => void; onIdActive?: () => void; onIdInactive?: () => void; autoSkip?: boolean; skips?: Array<{ interval: { startTime: number; endTime: number } }>; busy?: boolean; onEnded?: () => void; onDuration?: (d: number) => void } = $props();
   const url = $derived(abs(src));
   const subUrl = $derived(sub ? abs(sub) : '');
   const idUrl = $derived(subId ? abs(subId) : '');
 
   let playerEl: any = $state(null);
+  let mediaEl: any = $state(null);
   let idTrackEl: HTMLTrackElement | null = $state(null);
 
-  // src tak sama → reload sinkron ke fetch terbaru (URL stabil, dibedakan &v=).
+  // Delay subtitle: timestamp VTT digeser di klien, jadi tak ada yang perlu diubah di backend.
+  // Saat delay 0 URL asli dipakai apa adanya (tanpa fetch tambahan).
+  // Kosong saat delay 0 → src memakai URL asli langsung (tanpa nunggu effect).
+  let enSrc = $state('');
+  let idSrc = $state('');
+  const blobs = new Set<string>();
+  async function trackUrl(u: string, d: number): Promise<string> {
+    if (!u || !d) return u;
+    const t = await (await fetch(u)).text();
+    const b = URL.createObjectURL(new Blob([shiftVtt(t, d)], { type: 'text/vtt' }));
+    blobs.add(b);
+    return b;
+  }
+  // shortcut: blob lama hanya di-revoke saat player dibongkar — tiap ganti delay/batch
+  // meninggalkan satu blob kecil (~25 KB) sampai itu.
+  $effect(() => () => {
+    for (const b of blobs) URL.revokeObjectURL(b);
+    blobs.clear();
+  });
   $effect(() => {
-    const tr = idTrackEl;
-    const u = idUrl;
-    if (tr && u) {
-      const mode = tr.track?.mode;
-      tr.src = u;
-      (tr as any).load?.();
-      if (mode === 'showing') tr.track.mode = 'showing';
-    }
+    const u = subUrl;
+    const d = subDelay;
+    let dead = false;
+    void trackUrl(u, d).then((x) => {
+      if (!dead) enSrc = x;
+    });
+    return () => {
+      dead = true;
+    };
   });
 
-  // Satu timer 500ms untuk durasi + auto-skip OP/ED (dulu 2 interval 1s & 500ms).
+  /** Batas buffer hls.js (default 30 dtk / 60 MB di depan → preload langsung tarik puluhan MB). */
+  const HLS_LIMITS = { maxBufferLength: 10, maxMaxBufferLength: 20, maxBufferSize: 8 * 1000 * 1000 };
+
+  // Lewat `source` (bukan atribut `src`): opsi engine hanya dibaca dari sini, dan engine
+  // dibangun ulang saat config berubah — jadi batas ini berlaku sejak load pertama.
+  $effect(() => {
+    const el = mediaEl;
+    if (el) el.source = { src: url, engine: { hlsJs: HLS_LIMITS } };
+  });
+
+  // src tak sama → reload sinkron ke fetch terbaru (URL stabil, dibedakan &v=).
+  // Delay subtitle ikut memicu ulang (teks digeser lalu dipasang sebagai blob baru).
+  $effect(() => {
+    const u = idUrl;
+    const d = subDelay;
+    let dead = false;
+    void trackUrl(u, d).then((x) => {
+      if (dead) return;
+      idSrc = x;
+      const tr = idTrackEl;
+      if (!tr || !x) return;
+      const mode = tr.track?.mode;
+      tr.src = x;
+      (tr as any).load?.();
+      if (mode === 'showing') tr.track.mode = 'showing';
+    });
+    return () => {
+      dead = true;
+    };
+  });
+
+  // Satu timer 500ms untuk durasi + auto-skip OP/ED + lanjut-dari-posisi-terakhir (dulu 2 interval).
   let lastDur = 0;
+  let resumed = false;
+  $effect(() => {
+    const u = url;
+    resumed = false; // src baru (episode lain) → boleh lanjut dari posisi tersimpan lagi
+  });
   $effect(() => {
     const list = skips;
     const on = autoSkip;
+    const start = startAt;
     const iv = setInterval(() => {
       const st = playerEl?.store?.state;
       if (!st) return;
@@ -50,6 +111,11 @@
         if (lastDur === 0) lastDur = st.duration;
         onDuration(st.duration);
       }
+      if (!resumed && start > 5 && st.duration > start + 10) {
+        resumed = true;
+        playerEl.store.seek?.(start);
+      }
+      if (st.currentTime > 0) onProgress(st.currentTime);
       if (!on || !list.length) return;
       const t = st.currentTime ?? 0;
       const hit = list.find((s) => t >= s.interval.startTime && t < s.interval.endTime);
@@ -162,12 +228,12 @@
   <video-player bind:this={playerEl}>
     <video-skin style="display: block; width: 100%; aspect-ratio: 16 / 9;">
       <!-- hlsjs-video, bukan hls-video: sumber CDN MPEG-TS, dan hls-video (SPF) tak mendukung TS -->
-      <hlsjs-video src={url} autoplay playsinline crossorigin="anonymous" style="width: 100%;">
+      <hlsjs-video bind:this={mediaEl} autoplay preload="metadata" playsinline crossorigin="anonymous" style="width: 100%;">
         {#if subUrl}
-          <track kind="subtitles" src={subUrl} srclang="en" label="English" default />
+          <track kind="subtitles" src={subDelay ? enSrc : subUrl} srclang="en" label="English" default />
         {/if}
         {#if idUrl}
-          <track kind="subtitles" src={idUrl} srclang="id" label="Indonesia" bind:this={idTrackEl} />
+          <track kind="subtitles" src={subDelay ? idSrc : idUrl} srclang="id" label="Indonesia" bind:this={idTrackEl} />
         {/if}
       </hlsjs-video>
     </video-skin>

@@ -28,6 +28,23 @@ pub async fn init(url: &str) {
     }
 }
 
+/// Baca entri JSON `key` (None bila redis mati / miss / isi rusak). Dipakai
+/// pemanggil yang perlu memutuskan sendiri apakah entri masih layak dipakai.
+pub async fn get<T: DeserializeOwned>(key: &str) -> Option<T> {
+    let con = CON.get()?;
+    let mut c = con.clone();
+    let s = c.get::<_, Option<String>>(key).await.ok()??;
+    serde_json::from_str(&s).ok()
+}
+
+/// Simpan entri JSON best-effort (redis mati = diabaikan).
+pub async fn set<T: Serialize>(key: &str, ttl: u64, v: &T) {
+    let Some(con) = CON.get() else { return };
+    if let Ok(s) = serde_json::to_string(v) {
+        let _: Result<(), _> = con.clone().set_ex(key, s, ttl).await;
+    }
+}
+
 /// Ambil `key` dari Redis; miss / isi rusak / redis error → jalankan `f`,
 /// lalu simpan hasilnya dengan TTL `ttl` detik (best-effort, gagal = diabaikan).
 pub async fn cached<T, F>(key: String, ttl: u64, f: F) -> Result<T, AppError>
@@ -66,5 +83,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(v, 9);
+    }
+
+    /// `get`/`set` tanpa redis: miss, dan penyimpanan tidak menggantung.
+    #[tokio::test]
+    async fn tanpa_redis_get_set_aman() {
+        assert_eq!(get::<u32>("kunci").await, None);
+        set("kunci", 1, &7u32).await;
+        assert_eq!(get::<u32>("kunci").await, None);
     }
 }

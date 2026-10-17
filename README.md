@@ -8,7 +8,8 @@ browser — gambar, subtitle, playlist, dan segmen video ditulis ulang jadi URL 
 (base64), jadi klien tidak bisa menembak sumbernya sendiri.
 
 - Upstream katalog/detail: `https://graphql.animex.one/graphql` (GraphQL)
-- Upstream episode/server/sumber: `https://api.anistream.one/rest/api` (provider `yuki`)
+- Upstream episode/server/sumber: `https://api.anistream.one/rest/api` (provider `yuki`, `type=sub`)
+- Host player: `https://minky.anistream.one` (dipakai anistream.one sendiri; lihat `y.txt`)
 - Skip-time: `https://api.aniskip.com`, komentar & metadata episode: `theanimecommunity.com`
 - Terjemahan subtitle: Gemini (`gemini-3.1-flash-lite`)
 
@@ -21,7 +22,7 @@ browser — gambar, subtitle, playlist, dan segmen video ditulis ulang jadi URL 
 | Katalog & pencarian | Filter status/format/season/tahun/genre + sort apa pun dari skema upstream, limit ≤ 30 |
 | Detail anime | Base/seasons/relations/recommendations/characters |
 | Episode & server | Daftar episode (dengan gambar), daftar server per episode |
-| Stream | Resolve sumber termurah-yang-hidup: probe 1 MB ke CDN → URL proxy `/api/hls` |
+| Stream | Host minky dulu, fallback CDN provider; probe segmen dulu → URL proxy `/api/hls`, hasilnya di-cache sampai token hampir mati (auto refresh) |
 | Proxy HLS penuh | Master/varian playlist ditulis ulang; segmen `.ts`/`.mp4` mengalir per-chunk tanpa buffer penuh |
 | Sniff MIME | Tipe media ditentukan dari magic bytes (CDN sering salah label: segmen TS dinamai `.jpg`) |
 | Anti-SSRF | Host privat/loopback/metadata diblokir di `decode_target` |
@@ -30,6 +31,8 @@ browser — gambar, subtitle, playlist, dan segmen video ditulis ulang jadi URL 
 | SPA ter-embed | Aset + gzip level-9 + ETag/304 + `Cache-Control` per jenis file, tanpa file statis di disk |
 | Judul EN + romaji + JP | Halaman detail, halaman putar, dan tiap baris episode menampilkan judul English, romaji, dan Jepang (kanji) |
 | Monitor resource | Navbar menampilkan mem, puncak mem, cpu, dan puncak cpu proses ini (poll `/api/stats` tiap 3 dtk) |
+| Delay subtitle | Kontrol `− / nilai / +` di sebelah Auto next (0.5 dtk, ±10 dtk): timestamp VTT digeser di klien untuk trek EN & ID, tersimpan di localStorage `zanime-subdelay` |
+| Lanjut menonton | Posisi terakhir tiap episode disimpan di localStorage (`zanime-pos:<id>:<ep>`, tiap 5 dtk) dan dipulihkan saat episode dibuka lagi; dihapus saat tamat |
 
 ---
 
@@ -115,7 +118,7 @@ Parameter `u` pada endpoint proxy adalah base64url (`URL_SAFE_NO_PAD`) dari URL 
 | GET | `/api/episodes` | `id` (wajib) | 1 hari |
 | GET | `/api/servers` | `id`, `ep` | 1 hari |
 | GET | `/api/sources` | `id`, `ep`, `type=sub`, `provider=yuki` | – |
-| GET | `/api/stream` | `id`, `ep` | – |
+| GET | `/api/stream` | `id`, `ep` | pendek: sampai token m3u8 kedaluwarsa (lalu auto refresh) |
 | GET | `/api/skiptimes` | `mal`, `ep`, `len` | 1 hari |
 | GET | `/api/comments` | `media`, `offset`, `sort=Top`, `limit=10` | 1 hari |
 | GET | `/api/episode-meta` | `anilistId`, `ep` | 1 hari |
@@ -130,6 +133,15 @@ Parameter `u` pada endpoint proxy adalah base64url (`URL_SAFE_NO_PAD`) dari URL 
 | OPTIONS | apa saja | – | CORS permissive |
 
 Catatan bentuk:
+- `/api/stream` mencoba **minky dulu** (`minky.anistream.one/fetch?url=<url di-encode>&origin=…`),
+  dan jatuh ke CDN provider (`yuki`) apa adanya bila minky mati/diblokir. Varian minky ditulis
+  tanpa ekstensi (`/?u=<blob>`), jadi penanda playlist di `rewrite_playlist` memakai jenis
+  playlist (ada `#EXT-X-STREAM-INF` = master → varian), bukan ekstensi URL. Segmen tanpa nama
+  berkas di-rewrite jadi `/api/fetch/seg.ts?u=…` (player menentukan tipe media dari ekstensi).
+- `/api/skiptimes` meneruskan aniskip apa adanya. `len` **wajib** ada di URL kita karena
+  aniskip menolak permintaan tanpa `episodeLength`. Sebagian anime belum terdaftar
+  (contoh: MAL 37579 → `{found: false, results: []}`); untuk mereka, skip OP/ED hanya
+  tersedia sebagai `chapters` di respons `/api/sources`.
 - `/api/anime?section=base` memuat `titleRomaji`, `titleEnglish`, dan `titles`
   (JSON scalar berisi judul semua bahasa, termasuk `ja`). `titles` **bukan** objek
   GraphQL — minta apa adanya (`titles`), `titles{ja}` bikin seluruh query gagal.
@@ -187,7 +199,8 @@ sehari dan diisi ulang dari upstream — tak ada data basi yang menetap.
 
 | Endpoint | Alasan |
 | --- | --- |
-| `/api/sources`, `/api/stream` | URL m3u8 dari CDN bertanda tangan + berkedaluwarsa (`?token=<exp>.<hmac>`); entri basi = playback mati |
+| `/api/sources` | Dijawab langsung dari upstream; tak ada yang perlu di-cache (URL bertanda tangan) |
+| key `play:*` | **Bukan** lewat TTL sehari: `/api/stream` menyimpan `{stream, sources, until}` di memori proses + Redis dengan TTL pendek, dan `until` = waktu token m3u8 **kedaluwarsa** (`?token=<b64(exp\|path)>.<sig>`; untuk URL minky token itu ada di dalam `url=` yang ter-percent-encode sehingga tetap terbaca). Tidak ada refresh berkala — entri dipakai selama token masih berlaku, baru disegarkan setelah token habis. Token tak terbaca → 120 dtk; token sudah lewat → tidak di-cache sama sekali. Token CDN sendiri terbukti **tidak** ditegakkan (URL 16 menit tetap 200), jadi ini penghemat probe, bukan perbaikan playback |
 | `/api/hls`, `/api/fetch` | Playlist/segmen/gambar: besar, bervariasi per `Range`, mengalir per-chunk |
 | `/api/anilist` | Query GraphQL bebas dari klien → jumlah key tak terbatas (cache poisoning/DOS) |
 | `/api/subid/*` | Stateful (job in-memory + cache disk `.cache/subtitles/<hash>.vtt`) |
@@ -229,10 +242,8 @@ Vite ke `127.0.0.1:3000`.
 - Definisi section (judul + parameter katalog) tinggal di `features/home/hooks.ts`
   (`SECTIONS`), dipakai bareng oleh baris home dan halaman lihat-semua.
 - Router `svelte-spa-router`; setiap fitur (`search`, `episodes`, `home`, `watch`)
-  berisi `api / hooks / stores / types / components / index`.
-- Player: `<hlsjs-video>` dari `@videojs/html` + adapter `@videojs/hlsjs-video`
-  (hls.js) — wajib, karena MSE browser tidak menerima MPEG-TS dan bundel video.js
-  tidak punya transmuxer TS.
+  berisi `api / hooks / stores / types / components / index`.- Player: `<hlsjs-video>` dari `@videojs/html` + adapter `@videojs/hlsjs-video` (hls.js) — wajib, karena MSE browser tidak menerima MPEG-TS dan bundel video.js tidak punya transmuxer TS.
+- Buffer ditekan lewat `source.engine.hlsJs` di `Player.svelte` (`maxBufferLength: 10`, `maxMaxBufferLength: 20`, `maxBufferSize: 8 MB`) + `preload="metadata"`. Default hls.js 30 dtk / 600 dtk / 60 MB di depan → preload langsung menarik puluhan MB (kuota). Angka ini satu tempat, naikkan bila sering buffering.
 - Cek: `pnpm --dir web check` (svelte-check + tsc), build produksi: `pnpm --dir web build`.
 
 ---

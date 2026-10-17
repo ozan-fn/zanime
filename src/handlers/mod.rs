@@ -197,44 +197,18 @@ pub async fn stream(
     if q.id.trim().is_empty() {
         return Err(AppError::BadRequest("id kosong".to_string()));
     }
-    let (s, url) = sources_probe(&cfg, &http, q.id.trim(), q.ep).await?;
-    let sub = pick_en_sub(&s);
+    let p = upstream::play(&http, &cfg, q.id.trim(), q.ep, "sub", cfg.provider).await?;
+    let sub = pick_en_sub(&p.sources);
     let sub_id = if sub.is_empty() {
         String::new()
     } else {
         enqueue_subid(&jobs, http.as_ref(), sub.to_string())
     };
     Ok(HttpResponse::Ok().json(StreamResponse {
-        stream: format!("/api/hls?u={}", upstream::b64(&url)),
+        stream: format!("/api/hls?u={}", upstream::b64(&p.stream)),
         sub_en: px(sub),
         sub_id,
     }))
-}
-
-/// Percobaan ulang ambil stream: CDN/upstream sesaat 5xx atau balas HTML
-/// (parse gagal → 502), dan token m3u8 berumur pendek. Tiap percobaan memanggil
-/// `sources` lagi → token baru. 3x dengan jeda naik, lalu lempar error terakhir.
-async fn sources_probe(
-    cfg: &crate::config::Config,
-    http: &reqwest::Client,
-    id: &str,
-    ep: i64,
-) -> Result<(serde_json::Value, String), AppError> {
-    let mut err = None;
-    for attempt in 0..3u32 {
-        if attempt > 0 {
-            actix_web::rt::time::sleep(std::time::Duration::from_millis(400 * u64::from(attempt)))
-                .await; // chisle: backoff sederhana cukup, tak perlu lib retry
-        }
-        match upstream::sources(http, cfg, id, ep, "sub", cfg.provider).await {
-            Ok(s) => match upstream::probe_stream(http, &s).await {
-                Ok((url, _)) => return Ok((s, url)),
-                Err(e) => err = Some(e),
-            },
-            Err(e) => err = Some(e),
-        }
-    }
-    Err(err.unwrap_or_else(|| AppError::Upstream("stream gagal".to_string())))
 }
 
 /// URL VTT trek Inggris dari `tracks` upstream. `lang` tak pernah bersih:
@@ -624,13 +598,9 @@ pub async fn subid_batch(
     };
     let mut delta = String::new();
     if !batch.is_empty() {
-        let m = upstream::translate_batch(
-            http.as_ref(),
-            &cfg.gemini_keys,
-            &cfg.gemini_model,
-            &batch,
-        )
-        .await?;
+        let m =
+            upstream::translate_batch(http.as_ref(), &cfg.gemini_keys, &cfg.gemini_model, &batch)
+                .await?;
         {
             let mu = jobs
                 .mu
