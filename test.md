@@ -1,6 +1,18 @@
 # Test
 
-Terakhir: 2026-10-17 — `cargo test` → 18 passed, 0 failed (offline sintetis, tanpa network) + 4 ignored (live). `cargo clippy --all-targets -- -D warnings` → 0. `cargo fmt` bersih. `pnpm --dir web check` → 0 errors, 0 warnings.
+Terakhir: 2026-10-21 — `cargo test` → 19 passed, 0 failed (offline sintetis, tanpa network) + 5 ignored (live). `cargo clippy --all-targets` → 0 warning. `pnpm --dir web check` → 0 errors, 0 warnings. `pnpm build` → ok.
+
+## Ronde 2026-10-21
+
+LLM: Gemini → endpoint kompatibel OpenAI (`OPENAI_API_KEY`, `OPENAI_BASE_URL=https://kenari.id/v1`, `OPENAI_MODEL=gemma-4-31b-it`), `llm_chat` → `<base>/chat/completions` + Bearer, respons `choices[0].message.content`, rate limit 429 (cooldown 20 dtk/key). Live: 1 batch dengan system prompt asli → `[3] …` / `[7] …`, 10/10 format `[N]` valid. Test bentuk respons: `upstream::llm_shapes_sintetis`.
+
+Player: kualitas terakhir disimpan di localStorage `zanime-quality` (tinggi rendisi, bukan id — id hls.js cuma indeks level) dan dipulihkan tiap sumber baru; `{#key url}` dipindah ke dalam `<video-skin>` supaya `media-container` (= elemen fullscreen `VIDEO-SKIN`) tidak dibongkar saat pindah episode → fullscreen bertahan di auto next; `play()` eksplisit setelah ganti media (`autoplay` tidak berlaku untuk elemen pengganti); jeda selama fetch subtitle (`busy`) lalu lanjut otomatis; `lastDur` jadi `$state` agar tanda OP/ED muncul saat durasi diketahui. Konfigurasi pembatas preload (`preload="metadata"`, `HLS_LIMITS`) sengaja tidak diubah.
+
+Halaman anime: chip genre (`$detail.genres`).
+
+Cache subtitle: **redis saja**, tanpa disk. Kunci `subid:<hash VTT EN>` (`upstream::sub_cache_id`), TTL 30 hari (`SUB_CACHE_TTL`); worker membaca redis saat job dibuat, VTT penuh ditulis saat job selesai (guard mutex tidak melintasi `await`). Field `SubJob.cache` (path disk) diganti `SubJob.key` (kunci redis); `.cache/subtitles/` tidak dipakai lagi. Belum diuji dengan redis hidup di environment ini.
+
+Verifikasi perilaku player saat itu memakai Chromium (harness sementara + app asli, sudah dihapus): pilih 480p → tersimpan → reload → terpulihkan; ganti sumber saat fullscreen → fullscreen + 480p tetap, video lanjut; `busy` true → pause, false → lanjut; ep 1 → ep 2 lewat `location.hash` → player sama, fullscreen tetap, ep 2 main otomatis. Sesuai instruksi terakhir, pengetesan browser tidak dipakai lagi.
 
 Live (yuki + minky, dari `y.txt`): `cargo test --test stream_live -- --ignored --nocapture` → 4 passed.
 - `yuki_sub_subtitle_en_stream_auto_skip` — `/api/stream` (provider yuki, type sub) → sub EN VTT `text/vtt`, master → varian → segmen `0x47` (TS), `chapters` Intro 159–249 / Outro 1265–1332, `/api/skiptimes` MAL 37579 kosong (`found:false`, memang belum terdaftar di aniskip) dan MAL 21 → op 310.571–400.571 (pipenya hidup).
@@ -53,4 +65,6 @@ Fix: `sniff` cek brand `avif`/`avis` sebelum `ftyp` generik + `mime_for` tambah 
 - `upstream::vtt_sintetis_roundtrip` — streaming parse/build VTT — ok
 - `upstream::ts_parse_sintetis` — streaming ts_start/ts_end — ok
 - `upstream::throttle_cooldown_fail_fast` — 429 → gagal-cepat tanpa network + status 429 — ok
-- `upstream::gemini_shapes_sintetis` — parse parts + deteksi RESOURCE_EXHAUSTED/retryDelay — ok
+- `upstream::llm_shapes_sintetis` — parse `choices[0].message.content` + deteksi rate limit 429 — ok
+- `upstream::sub_cache_id_sintetis` — hash VTT EN stabil, isi beda → kunci beda — ok
+- `upstream::pick_key_round_robin` — rotasi key, lompati yang cooldown, gagal-cepat 429 — ok

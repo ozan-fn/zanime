@@ -69,7 +69,11 @@
   // dibangun ulang saat config berubah — jadi batas ini berlaku sejak load pertama.
   $effect(() => {
     const el = mediaEl;
-    if (el) el.source = { src: url, engine: { hlsJs: HLS_LIMITS } };
+    if (!el) return;
+    el.source = { src: url, engine: { hlsJs: HLS_LIMITS } };
+    // Media diganti di player yang sama saat ganti episode: `autoplay` hanya berlaku
+    // untuk elemen saat pertama dimuat, jadi episode berikutnya harus diputar ulang manual.
+    playerEl?.store?.play?.()?.catch(() => {});
   });
 
   // src tak sama → reload sinkron ke fetch terbaru (URL stabil, dibedakan &v=).
@@ -94,7 +98,7 @@
   });
 
   // Satu timer 500ms untuk durasi + auto-skip OP/ED + lanjut-dari-posisi-terakhir (dulu 2 interval).
-  let lastDur = 0;
+  let lastDur = $state(0); // $state: tanda skip baru tergambar setelah durasi diketahui
   let resumed = false;
   $effect(() => {
     const u = url;
@@ -154,27 +158,27 @@
     return un;
   });
 
-  // Jeda hanya saat fetch subtitle akibat seek; fetch otomatis (nextAt) tidak menjeda.
+  // Jeda selama fetch subtitle, lanjut lagi begitu selesai.
   let wasPlaying = false;
-  let seekBusy = false;
   $effect(() => {
     const p = playerEl;
     if (!p?.store) return;
-    if (busy && seekBusy) {
+    if (busy) {
       wasPlaying = !p.store.state?.paused;
       p.store.pause?.();
-    } else if (!busy && seekBusy) {
-      seekBusy = false;
-      if (wasPlaying) p.store.play?.();
+    } else if (wasPlaying) {
+      p.store.play?.();
       wasPlaying = false;
     }
   });
 
   // Mode trek ID dari player store; sekalian cek pemicu batch (time-based).
   // Trek terakhir terpilih disimpan ke localStorage dan dipulihkan saat list tiba.
+  // Bergantung pada `url`: player tak lagi di-mount ulang per episode (container tetap agar
+  // fullscreen tak putus), jadi pemulihan harus di-arm ulang tiap sumber.
   $effect(() => {
     const p = playerEl;
-    if (!p?.store) return;
+    if (!p?.store || !url) return;
     let idOn = false;
     let restored = false;
     let lastShown: string | null = null;
@@ -213,7 +217,6 @@
           console.log('[10] seek -> needMore force');
           const tr = document.querySelector<HTMLTrackElement>('track[srclang="id"]');
           console.log('[10b] id track mode=' + tr?.track?.mode + ' cues=' + (tr?.track?.cues?.length ?? 'n/a') + ' active=' + (tr?.track?.activeCues?.length ?? 'n/a'));
-          seekBusy = true;
           onSeek(t);
         }
         if (nextAt >= 0 && t >= nextAt - 8) { console.log('[10] t=' + t.toFixed(1) + ' >= nextAt-8=' + (nextAt - 8)); onNeedMore(t); }
@@ -222,11 +225,41 @@
     });
     return un;
   });
+
+  // Kualitas: pulihkan pilihan terakhir tiap sumber, lalu simpan perubahan user.
+  // Yang disimpan tinggi rendisi — id rendisi hls.js cuma indeks level, artinya beda antar episode.
+  $effect(() => {
+    const p = playerEl;
+    if (!p?.store || !url) return;
+    let restoring = true;
+    let last = '';
+    const un = p.store.subscribe(() => {
+      const list = (p.store.state?.videoRenditionList ?? []) as Array<{ id: string; height?: number; selected: boolean }>;
+      if (!list.length) return;
+      if (restoring) {
+        restoring = false;
+        const saved = localStorage.getItem('zanime-quality') ?? 'auto';
+        const hit = saved === 'auto' ? undefined : list.find((r) => String(r.height) === saved);
+        p.store.selectVideoRendition?.(hit?.id ?? 'auto');
+        last = hit ? saved : 'auto'; // hasil pemulihan jangan ditulis balik
+        return;
+      }
+      const sel = list.find((r) => r.selected);
+      const v = sel?.height != null ? String(sel.height) : 'auto';
+      if (v !== last) {
+        last = v;
+        localStorage.setItem('zanime-quality', v);
+      }
+    });
+    return un;
+  });
 </script>
 
-{#key url}
-  <video-player bind:this={playerEl}>
-    <video-skin style="display: block; width: 100%; aspect-ratio: 16 / 9;">
+<video-player bind:this={playerEl}>
+  <video-skin style="display: block; width: 100%; aspect-ratio: 16 / 9;">
+    <!-- Kunci hanya media, bukan <video-player>: elemen fullscreen (media-container di dalam
+         skin) tetap ter-mount saat ganti episode, jadi fullscreen tak putus di auto next. -->
+    {#key url}
       <!-- hlsjs-video, bukan hls-video: sumber CDN MPEG-TS, dan hls-video (SPF) tak mendukung TS -->
       <hlsjs-video bind:this={mediaEl} autoplay preload="metadata" playsinline crossorigin="anonymous" style="width: 100%;">
         {#if subUrl}
@@ -236,6 +269,6 @@
           <track kind="subtitles" src={subDelay ? idSrc : idUrl} srclang="id" label="Indonesia" bind:this={idTrackEl} />
         {/if}
       </hlsjs-video>
-    </video-skin>
-  </video-player>
-{/key}
+    {/key}
+  </video-skin>
+</video-player>

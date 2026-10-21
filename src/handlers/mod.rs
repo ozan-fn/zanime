@@ -1,6 +1,7 @@
 use actix_web::{HttpRequest, HttpResponse, get, post, web};
 
 use crate::{
+    cache,
     error::AppError,
     models::{
         AnilistBody, AnimeItem, AnimeOut, AnimeQuery, CatalogQuery, CommentsQuery, EpisodeItem,
@@ -9,6 +10,9 @@ use crate::{
     },
     upstream::{self, px},
 };
+
+/// TTL cache terjemahan subtitle di redis (detik): 30 hari.
+const SUB_CACHE_TTL: u64 = 30 * 86400;
 
 /// Masukkan filter enum (status/format/season) sebagai `key: [VALUE]` bila diisi.
 fn pick(
@@ -311,7 +315,7 @@ mod tests {
                 .into_iter()
                 .map(|i| (i, format!("ID{i}")))
                 .collect::<HashMap<_, _>>(),
-            cache: String::new(),
+            key: String::new(),
         };
         assert_eq!(next_at_of(&mk(vec![0, 1], 2), 0.0), -1.0); // done penuh
         assert_eq!(next_at_of(&mk(vec![], 0), 0.0), -1.0); // kosong
@@ -456,12 +460,9 @@ async fn sub_worker(
         if !text.trim_start().starts_with("WEBVTT") {
             return Err(AppError::Upstream("bukan VTT".to_string()));
         }
-        let path = upstream::sub_cache_path(&text)
-            .to_string_lossy()
-            .to_string();
-        if let Ok(hit) = std::fs::read_to_string(&path)
-            && !hit.is_empty()
-        {
+        // Hasil terjemahan hanya di redis (tak ada salinan disk): kunci = hash VTT EN.
+        let key = format!("subid:{}", upstream::sub_cache_id(&text));
+        if let Some(hit) = cache::get::<String>(&key).await.filter(|v| !v.trim().is_empty()) {
             let (head, cues) = upstream::parse_vtt(&hit);
             let ids: std::collections::HashMap<usize, String> = cues
                 .iter()
@@ -481,7 +482,7 @@ async fn sub_worker(
                 j.cues = cues;
                 j.dlg = (0..n).collect();
                 j.id = ids;
-                j.cache = path;
+                j.key = key;
             }
             return Ok(());
         }
@@ -501,7 +502,7 @@ async fn sub_worker(
                 j.head = head;
                 j.cues = cues;
                 j.dlg = dlg;
-                j.cache = path;
+                j.key = key;
             }
         }
         Ok(())
@@ -535,9 +536,9 @@ pub async fn subid_batch(
     http: web::Data<reqwest::Client>,
     body: web::Json<SubBatchReq>,
 ) -> Result<HttpResponse, AppError> {
-    if cfg.gemini_keys.is_empty() {
+    if cfg.llm_keys.is_empty() {
         return Err(AppError::BadRequest(
-            "GEMINI_API_KEY kosong (isi .env)".to_string(),
+            "OPENAI_API_KEY kosong (isi .env)".to_string(),
         ));
     }
     let _permit = jobs
@@ -598,9 +599,14 @@ pub async fn subid_batch(
     };
     let mut delta = String::new();
     if !batch.is_empty() {
-        let m =
-            upstream::translate_batch(http.as_ref(), &cfg.gemini_keys, &cfg.gemini_model, &batch)
-                .await?;
+        let m = upstream::translate_batch(
+            http.as_ref(),
+            &cfg.llm_keys,
+            &cfg.llm_base,
+            &cfg.llm_model,
+            &batch,
+        )
+        .await?;
         {
             let mu = jobs
                 .mu
@@ -618,22 +624,27 @@ pub async fn subid_batch(
                 delta = parts.join("\n\n");
             }
         }
-        let mut mu = jobs
-            .mu
-            .lock()
-            .map_err(|_| AppError::Upstream("lock".to_string()))?;
-        if let Some(j) = mu.get_mut(&body.id) {
-            j.id.extend(m);
-            if j.id.len() >= j.dlg.len() {
-                j.state = "done".to_string();
-                let done = upstream::build_vtt(&j.head, &j.cues, &j.id);
-                if !j.cache.is_empty() {
-                    if let Some(dir) = std::path::Path::new(&j.cache).parent() {
-                        let _ = std::fs::create_dir_all(dir);
+        // Guard mu tidak boleh hidup saat await → hasil cache dikeluarkan dari blok.
+        let cached: Option<(String, String)> = {
+            let mut mu = jobs
+                .mu
+                .lock()
+                .map_err(|_| AppError::Upstream("lock".to_string()))?;
+            let mut out = None;
+            if let Some(j) = mu.get_mut(&body.id) {
+                j.id.extend(m);
+                if j.id.len() >= j.dlg.len() {
+                    j.state = "done".to_string();
+                    let done = upstream::build_vtt(&j.head, &j.cues, &j.id);
+                    if !j.key.is_empty() {
+                        out = Some((j.key.clone(), done));
                     }
-                    let _ = std::fs::write(&j.cache, &done);
                 }
             }
+            out
+        };
+        if let Some((key, vtt)) = cached {
+            cache::set(&key, SUB_CACHE_TTL, &vtt).await;
         }
     }
     let mut st = sub_status_of(&jobs, &body.id, body.at.unwrap_or(0.0))?;
@@ -737,7 +748,7 @@ fn enqueue_subid(
                     cues: Vec::new(),
                     dlg: Vec::new(),
                     id: std::collections::HashMap::new(),
-                    cache: String::new(),
+                    key: String::new(),
                 },
             );
             if let Ok(mut q) = jobs.order.lock() {

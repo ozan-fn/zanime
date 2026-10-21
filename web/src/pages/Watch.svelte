@@ -18,7 +18,6 @@
   let jobId = '';
   let subDone = false;
   let fetching = $state(false);
-  let wantFs = false;
   let lastTry = 0;
   let lastDone = -1;
   let failStreak = 0;
@@ -177,6 +176,7 @@
   let startAt = $state(0);
   let lastSave = 0;
   function savePos(t: number): void {
+    if ($loading) return; // masih episode lama saat stream baru dimuat
     const now = Date.now();
     if (now - lastSave < 5000) return;
     lastSave = now;
@@ -201,26 +201,18 @@
       : [],
   );
 
+  let prevId = '';
   $effect(() => {
+    if (id && id !== prevId) {
+      prevId = id;
+      stream.set(null); // anime lain: jangan tampilkan video lama saat memuat
+    }
     if (id) void loadStream(id, ep);
   });
   $effect(() => {
     const k = posKey;
     startAt = Number(localStorage.getItem(k)) || 0;
     lastSave = 0;
-  });
-  $effect(() => {
-    if ($stream && wantFs) {
-      wantFs = false;
-      let n = 0;
-      const iv = setInterval(() => {
-        const el = document.querySelector('video-player');
-        if (el) {
-          clearInterval(iv);
-          el.requestFullscreen?.().catch(() => {});
-        } else if (++n > 20) clearInterval(iv);
-      }, 500);
-    }
   });
   $effect(() => {
     const i = id;
@@ -282,14 +274,16 @@
     </div>
   </div>
 
-  {#if $loading}
-    <p class="flex items-center gap-2 text-sm text-zinc-500"><LoaderCircle class="size-4 animate-spin" /> memuat stream…</p>
-  {:else if $error}
+  {#if $error}
     <p class="flex items-center gap-2 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
       <TriangleAlert class="size-4" /> {$error}
     </p>
-  {:else if $stream}
-    <Player src={$stream.stream} sub={$stream.sub_en} subId={subId} subDelay={subDelay} startAt={startAt} nextAt={nextAt} autoSkip={autoSkip} skips={skips} busy={fetching && idActive} onProgress={(t: number) => savePos(t)} onDuration={(d: number) => { if (!dur) { dur = Math.round(d); trySkip(); } }} onEnded={() => { localStorage.removeItem(posKey); if (autoNext) { wantFs = !!document.fullscreenElement; location.hash = `/watch/${id}/${ep + 1}`; } }} onNeedMore={(t: number) => needMore(t)} onSeek={(t: number) => needMore(t, true)} onIdActive={startId} onIdInactive={stopId} />
+  {/if}
+  {#if $stream}
+    <Player src={$stream.stream} sub={$stream.sub_en} subId={subId} subDelay={subDelay} startAt={startAt} nextAt={nextAt} autoSkip={autoSkip} skips={skips} busy={fetching && idActive} onProgress={(t: number) => savePos(t)} onDuration={(d: number) => { if (!dur) { dur = Math.round(d); trySkip(); } }} onEnded={() => { localStorage.removeItem(posKey); if (autoNext && !$loading) location.hash = `/watch/${id}/${ep + 1}`; }} onNeedMore={(t: number) => needMore(t)} onSeek={(t: number) => needMore(t, true)} onIdActive={startId} onIdInactive={stopId} />
+    {#if $loading}
+      <p class="flex items-center gap-2 text-sm text-zinc-500"><LoaderCircle class="size-4 animate-spin" /> memuat episode…</p>
+    {/if}
     <div class="mt-3 flex items-center justify-between gap-2">
       <div class="flex gap-2">
       <button onclick={() => { autoSkip = !autoSkip; localStorage.setItem('zanime-autoskip', autoSkip ? '1' : '0'); }} class="inline-flex items-center gap-1 rounded border px-3 py-1 text-sm {autoSkip ? 'border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100' : 'border-zinc-300 text-zinc-500 dark:border-zinc-700'}" title="Auto skip OP/ED">
@@ -310,5 +304,7 @@
       {/if}
       </div>
     </div>
+  {:else if $loading}
+    <p class="flex items-center gap-2 text-sm text-zinc-500"><LoaderCircle class="size-4 animate-spin" /> memuat stream…</p>
   {/if}
 </div>

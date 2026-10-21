@@ -943,15 +943,14 @@ pub async fn play(
     Err(err.unwrap_or_else(|| AppError::Upstream("stream gagal".to_string())))
 }
 
-// --- Subtitle ID via Gemini (default: flash-lite, generateContent).
-// Free: RPM + TPM + RPD per project (flash-lite paling longgar). 429 =
-// RESOURCE_EXHAUSTED; 503 = model overloaded. Cooldown per key + gagal-cepat.
-// Batch 10 cue/call, progresif per batch.
+// --- Subtitle ID via endpoint kompatibel OpenAI (default kenari, gemma).
+// 429 = rate limit → cooldown per key + gagal-cepat. Batch 10 cue/call,
+// progresif per batch.
 /// System prompt subtitle (dipertahankan utuh, warisan era Mistral).
-const GEMINI_SYS: &str = "Kamu adalah penerjemah subtitle profesional Inggris → Indonesia untuk anime. Standar: akurat, natural, mudah dibaca (FAR Pedersen 2017). Maksimal 20 CPS, 42 karakter per baris, maksimal 2 baris per subtitle. Pertahankan honorifik Jepang (san, chan, kun, sama, senpai, sensei) dan nama asli. Jaga register bicara tiap karakter. Adaptasi wordplay, jangan literal. Italic untuk lagu, telepon, dan bisikan. Jangan menambah atau mengurangi makna, jangan spoiler, hindari bahasa gaul usang dan kalimat kaku.";
+const LLM_SYS: &str = "Kamu adalah penerjemah subtitle profesional Inggris → Indonesia untuk anime. Standar: akurat, natural, mudah dibaca (FAR Pedersen 2017). Maksimal 20 CPS, 42 karakter per baris, maksimal 2 baris per subtitle. Pertahankan honorifik Jepang (san, chan, kun, sama, senpai, sensei) dan nama asli. Jaga register bicara tiap karakter. Adaptasi wordplay, jangan literal. Italic untuk lagu, telepon, dan bisikan. Jangan menambah atau mengurangi makna, jangan spoiler, hindari bahasa gaul usang dan kalimat kaku.";
 pub const SUB_BATCH: usize = 10;
 
-/// Antrean subtitle ID: 1 permit → 1 panggilan Gemini dalam satu waktu,
+/// Antrean subtitle ID: 1 permit → 1 panggilan LLM dalam satu waktu,
 /// serial FIFO antar user, ikut batas RPM paket free.
 pub struct SubJob {
     pub state: String, // queued|ready|working|done|failed
@@ -960,7 +959,7 @@ pub struct SubJob {
     pub cues: Vec<Vec<String>>,
     pub dlg: Vec<usize>,            // indeks cue dialog (ada "-->")
     pub id: HashMap<usize, String>, // cue idx → teks ID
-    pub cache: String,              // path cache disk (.cache/subtitles)
+    pub key: String,                // kunci redis hasil terjemahan: subid:<hash VTT EN>
 }
 
 pub struct SubJobs {
@@ -985,19 +984,18 @@ impl Default for SubJobs {
     }
 }
 
-// Gemini free: RPM + TPM + RPD per project (429 = RESOURCE_EXHAUSTED).
-// Kadang tanpa Retry-After → cooldown 20 dtk. Cooldown kini **per key**:
-// 429 satu key tak memblok key lain (multi-key round-robin).
+// Rate limit upstream sering tanpa Retry-After → cooldown buta 20 dtk.
+// Cooldown **per key**: 429 satu key tak memblok key lain (multi-key round-robin).
 // Jangan pernah sleep sambil pegang permit: 1 job kena 429 = semua user ikut macet.
-pub static GEMINI_LAST: tokio::sync::Mutex<Option<std::time::Instant>> =
+pub static LLM_LAST: tokio::sync::Mutex<Option<std::time::Instant>> =
     tokio::sync::Mutex::const_new(None);
-static GEMINI_COOLDOWN: std::sync::LazyLock<std::sync::Mutex<HashMap<String, std::time::Instant>>> =
+static LLM_COOLDOWN: std::sync::LazyLock<std::sync::Mutex<HashMap<String, std::time::Instant>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 /// Jeda antar panggilan (batas RPM paket free). Tanpa gagal-cepat global:
 /// seleksi key (`pick_key`) yang melompati key sedang cooldown.
 async fn throttle_rps() {
-    let mut last = GEMINI_LAST.lock().await;
+    let mut last = LLM_LAST.lock().await;
     if let Some(prev) = *last {
         let gap = prev.elapsed();
         if gap < std::time::Duration::from_millis(1100) {
@@ -1014,10 +1012,10 @@ fn pick_key(keys: &[String]) -> Result<&str, AppError> {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     if keys.is_empty() {
         return Err(AppError::BadRequest(
-            "GEMINI_API_KEY kosong (isi .env)".to_string(),
+            "OPENAI_API_KEY kosong (isi .env)".to_string(),
         ));
     }
-    let cd = GEMINI_COOLDOWN
+    let cd = LLM_COOLDOWN
         .lock()
         .map_err(|_| AppError::Upstream("lock".to_string()))?;
     let now = std::time::Instant::now();
@@ -1034,39 +1032,24 @@ fn pick_key(keys: &[String]) -> Result<&str, AppError> {
         .min()
         .map_or(20, |u| u.duration_since(now).as_secs() + 1);
     Err(AppError::RateLimited(format!(
-        "semua key gemini rate limit, coba lagi dalam {wait} dtk"
+        "semua key LLM rate limit, coba lagi dalam {wait} dtk"
     )))
 }
 
-/// Teks balasan generateContent: gabungan semua part kandidat pertama.
-fn gemini_text(v: &Value) -> Option<String> {
-    let parts = v["candidates"][0]["content"]["parts"].as_array()?;
-    let t: String = parts.iter().filter_map(|p| p["text"].as_str()).collect();
-    (!t.is_empty()).then_some(t)
+/// Teks balasan chat completions: `choices[0].message.content`.
+fn llm_text(v: &Value) -> Option<String> {
+    let t = v["choices"][0]["message"]["content"].as_str()?;
+    (!t.trim().is_empty()).then(|| t.to_string())
 }
 
-/// Detik cooldown bila respons = rate limit (HTTP 429 atau RESOURCE_EXHAUSTED):
-/// pakai retryDelay (RetryInfo "20s") bila ada, default 20, clamp 5–60.
-fn gemini_cooldown_secs(status: u16, v: &Value) -> Option<u64> {
-    let exhausted = status == 429
-        || v["error"]["status"].as_str() == Some("RESOURCE_EXHAUSTED")
-        || v["error"]["code"].as_i64() == Some(429);
-    if !exhausted {
-        return None;
-    }
-    let delay = v["error"]["details"]
-        .as_array()
-        .into_iter()
-        .flat_map(|a| a.iter())
-        .filter_map(|d| d["retryDelay"].as_str())
-        .filter_map(|s| s.strip_suffix('s')?.parse::<f64>().ok())
-        .next()
-        .map(|n| n.ceil() as u64);
-    Some(delay.unwrap_or(20).clamp(5, 60))
+/// Detik cooldown bila respons = rate limit (HTTP 429 atau `error.code` 429).
+fn llm_cooldown_secs(status: u16, v: &Value) -> Option<u64> {
+    (status == 429 || v["error"]["code"].as_i64() == Some(429)).then_some(20)
 }
 
-async fn gemini_chat(
+async fn llm_chat(
     client: &reqwest::Client,
+    base: &str,
     model: &str,
     key: &str,
     user: &str,
@@ -1074,28 +1057,27 @@ async fn gemini_chat(
     // Satu percobaan, gagal-cepat saat 429. Frontend sudah retry (jeda 10 dtk),
     // jadi loop backoff di sini cuma menahan permit + bikin thundering herd.
     throttle_rps().await;
-    let url =
-        format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
+    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
     let r = client
         .post(url)
-        .header("x-goog-api-key", key)
+        .bearer_auth(key)
         .timeout(std::time::Duration::from_secs(30))
-        .json(&serde_json::json!({"system_instruction": {"parts": [{"text": GEMINI_SYS}]}, "contents": [{"parts": [{"text": user}]}], "generationConfig": {"temperature": 0, "maxOutputTokens": 1024}}))
+        .json(&serde_json::json!({"model": model, "temperature": 0, "max_tokens": 1024, "messages": [{"role": "system", "content": LLM_SYS}, {"role": "user", "content": user}]}))
         .send().await.map_err(|e| AppError::Upstream(e.to_string()))?;
     let status = r.status().as_u16();
     let v: Value = r
         .json()
         .await
         .map_err(|e| AppError::Upstream(e.to_string()))?;
-    if let Some(wait) = gemini_cooldown_secs(status, &v) {
-        if let Ok(mut cd) = GEMINI_COOLDOWN.lock() {
+    if let Some(wait) = llm_cooldown_secs(status, &v) {
+        if let Ok(mut cd) = LLM_COOLDOWN.lock() {
             cd.insert(
                 key.to_string(),
                 std::time::Instant::now() + std::time::Duration::from_secs(wait),
             );
         }
         return Err(AppError::RateLimited(format!(
-            "gemini rate limit, coba lagi dalam {wait} dtk"
+            "LLM rate limit, coba lagi dalam {wait} dtk"
         )));
     }
     if status != 200 {
@@ -1105,18 +1087,18 @@ async fn gemini_chat(
             .chars()
             .take(200)
             .collect::<String>();
-        return Err(AppError::Upstream(format!("gemini: {msg}")));
+        return Err(AppError::Upstream(format!("LLM: {msg}")));
     }
-    gemini_text(&v).ok_or_else(|| AppError::Upstream(format!("gemini tanpa content: {v}")))
+    llm_text(&v).ok_or_else(|| AppError::Upstream(format!("LLM tanpa content: {v}")))
 }
 
-/// Cache disk `.cache/subid/<hash-en>.vtt` → tonton ulang instan, hemat limit.
-pub fn sub_cache_path(t: &str) -> std::path::PathBuf {
+/// Hash isi VTT EN → kunci cache terjemahan di redis (`subid:<id>`).
+pub fn sub_cache_id(t: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut h = DefaultHasher::new();
     t.hash(&mut h);
-    std::path::PathBuf::from(format!(".cache/subtitles/{:016x}.vtt", h.finish()))
+    format!("{:016x}", h.finish())
 }
 
 /// VTT → (head, cues). Cue tanpa "-->" (NOTE/STYLE) ikut lolos utuh saat build.
@@ -1198,6 +1180,7 @@ pub fn ts_end(line: &str) -> f64 {
 pub async fn translate_batch(
     client: &reqwest::Client,
     keys: &[String],
+    base: &str,
     model: &str,
     jobs: &[(usize, Vec<String>)],
 ) -> Result<HashMap<usize, String>, AppError> {
@@ -1207,7 +1190,7 @@ pub async fn translate_batch(
         .collect::<Vec<_>>()
         .join("\n");
     let key = pick_key(keys)?;
-    let a = gemini_chat(client, model, key, &format!("Translate each cue to Indonesian, keeping its line breaks. Reply ONLY as [N] <indonesian>, same order:\n{q}")).await?;
+    let a = llm_chat(client, base, model, key, &format!("Translate each cue to Indonesian, keeping its line breaks. Reply ONLY as [N] <indonesian>, same order:\n{q}")).await?;
     let mut out = HashMap::new();
     let mut cur: Option<usize> = None;
     for line in a.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -1469,14 +1452,14 @@ mod tests {
     /// semua key cooldown. Satu-satunya pemanggil pick_key di test → counter
     /// global deterministik.
     #[test]
-    fn gemini_pick_key_round_robin() {
+    fn pick_key_round_robin() {
         let keys: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
         let got: Vec<String> = (0..3)
             .map(|_| pick_key(&keys).unwrap().to_string())
             .collect();
         assert_eq!(got, ["a", "b", "c"]); // NEXT mulai dari 0
         // Key cooldown dilompati (NEXT lanjut → kandidat "a", dilewati → "b").
-        GEMINI_COOLDOWN.lock().unwrap().insert(
+        LLM_COOLDOWN.lock().unwrap().insert(
             "a".to_string(),
             std::time::Instant::now() + std::time::Duration::from_secs(30),
         );
@@ -1484,7 +1467,7 @@ mod tests {
         // Semua key cooldown → gagal-cepat RateLimited.
         let xy: Vec<String> = ["x", "y"].iter().map(|s| s.to_string()).collect();
         {
-            let mut cd = GEMINI_COOLDOWN.lock().unwrap();
+            let mut cd = LLM_COOLDOWN.lock().unwrap();
             for k in &xy {
                 cd.insert(
                     k.clone(),
@@ -1495,29 +1478,37 @@ mod tests {
         let e = pick_key(&xy).unwrap_err();
         assert!(matches!(e, crate::error::AppError::RateLimited(_)), "{e}");
         assert!(pick_key(&[]).is_err());
-        GEMINI_COOLDOWN.lock().unwrap().clear();
+        LLM_COOLDOWN.lock().unwrap().clear();
     }
 
     #[test]
-    fn gemini_shapes_sintetis() {
-        // generateContent 200: teks = gabungan semua part.
-        let ok = serde_json::json!({"candidates": [{"content": {"parts": [{"text": "[0] Halo"}, {"text": "\n[1] Pagi"}]}}]});
-        assert_eq!(gemini_text(&ok).as_deref(), Some("[0] Halo\n[1] Pagi"));
-        assert!(gemini_text(&serde_json::json!({})).is_none());
-        // 429 + RESOURCE_EXHAUSTED + retryDelay → cooldown ikut RetryInfo.
-        let rl = serde_json::json!({"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "details": [{"retryDelay": "35s"}]}});
-        assert_eq!(gemini_cooldown_secs(429, &rl), Some(35));
-        assert_eq!(gemini_cooldown_secs(200, &rl), Some(35)); // status bohong, body jujur
-        assert_eq!(gemini_cooldown_secs(429, &serde_json::json!({})), Some(20));
-        assert_eq!(
-            gemini_cooldown_secs(200, &serde_json::json!({"candidates": []})),
-            None
+    fn sub_cache_id_sintetis() {
+        let t = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n";
+        let id = sub_cache_id(t);
+        assert_eq!(id.len(), 16, "hex 64-bit");
+        assert_eq!(sub_cache_id(t), id, "isi sama → kunci sama");
+        assert_ne!(id, sub_cache_id("WEBVTT lain"), "isi beda → kunci beda");
+    }
+
+    #[test]
+    fn llm_shapes_sintetis() {
+        // chat completions 200: teks = choices[0].message.content.
+        let ok = serde_json::json!({"choices": [{"message": {"role": "assistant", "content": "[0] Halo\n[1] Pagi"}}]});
+        assert_eq!(llm_text(&ok).as_deref(), Some("[0] Halo\n[1] Pagi"));
+        assert!(llm_text(&serde_json::json!({"choices": []})).is_none());
+        assert!(
+            llm_text(&serde_json::json!({"choices": [{"message": {"content": " "}}]})).is_none(),
+            "konten kosong dianggap gagal"
         );
+        // Rate limit: status 429 atau error.code 429 → cooldown 20 dtk.
+        assert_eq!(llm_cooldown_secs(429, &serde_json::json!({})), Some(20));
         assert_eq!(
-            gemini_cooldown_secs(
-                503,
-                &serde_json::json!({"error": {"status": "UNAVAILABLE"}})
-            ),
+            llm_cooldown_secs(429, &serde_json::json!({"error": {"code": 429}})),
+            Some(20)
+        );
+        assert_eq!(llm_cooldown_secs(200, &serde_json::json!({})), None);
+        assert_eq!(
+            llm_cooldown_secs(503, &serde_json::json!({"error": {"code": 503}})),
             None
         );
     }

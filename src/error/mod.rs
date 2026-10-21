@@ -7,7 +7,7 @@ pub enum AppError {
     Upstream(String),
     NotFound(String),
     BadRequest(String),
-    /// Rate-limit penerus (Gemini 429/RESOURCE_EXHAUSTED) → 429 ke klien, bukan 502.
+    /// Rate-limit penerus (LLM 429) → 429 ke klien, bukan 502.
     RateLimited(String),
 }
 

@@ -43,6 +43,13 @@
         {#if $detail.episodeCount}
           <p class="text-sm text-zinc-500">{$detail.episodeCount} episode</p>
         {/if}
+        {#if $detail.genres?.length}
+          <div class="mt-2 flex flex-wrap gap-1">
+            {#each $detail.genres as g (g)}
+              <span class="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">{g}</span>
+            {/each}
+          </div>
+        {/if}
         {#if $detail.description}
           <p class="mt-2 line-clamp-4 text-sm text-zinc-600 dark:text-zinc-400">{@html $detail.description}</p>
         {/if}

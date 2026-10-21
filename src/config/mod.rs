@@ -8,9 +8,11 @@ pub struct Config {
     pub api_base: &'static str,
     pub provider: &'static str,
     /// Satu atau banyak key (pisah koma/baris) → dipakai round-robin.
-    pub gemini_keys: Vec<String>,
-    /// Model Gemini (env `GEMINI_MODEL`). Default flash-lite terbaru: murah + free tier.
-    pub gemini_model: String,
+    pub llm_keys: Vec<String>,
+    /// Base URL kompatibel OpenAI (env `OPENAI_BASE_URL`), mis. `https://kenari.id/v1`.
+    pub llm_base: String,
+    /// Model (env `OPENAI_MODEL`). Default `gemma-4-31b-it`.
+    pub llm_model: String,
     /// Cache Redis (opsional): `rediss://default:<pass>@<host>:6379`. Kosong = tanpa cache.
     pub redis_url: String,
 }
@@ -32,17 +34,21 @@ impl Default for Config {
             graphql_url: "https://graphql.animex.one/graphql",
             api_base: "https://api.anistream.one/rest/api",
             provider: "yuki",
-            gemini_keys: std::env::var("GEMINI_API_KEY")
+            llm_keys: std::env::var("OPENAI_API_KEY")
                 .unwrap_or_default()
                 .split([',', '\n'])
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
                 .collect(),
-            gemini_model: std::env::var("GEMINI_MODEL")
+            llm_base: std::env::var("OPENAI_BASE_URL")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "gemini-3.5-flash-lite".to_string()),
+                .unwrap_or_else(|| "https://kenari.id/v1".to_string()),
+            llm_model: std::env::var("OPENAI_MODEL")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "gemma-4-31b-it".to_string()),
             redis_url: std::env::var("REDIS_URL").unwrap_or_default(),
         }
     }

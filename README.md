@@ -11,7 +11,7 @@ browser — gambar, subtitle, playlist, dan segmen video ditulis ulang jadi URL 
 - Upstream episode/server/sumber: `https://api.anistream.one/rest/api` (provider `yuki`, `type=sub`)
 - Host player: `https://minky.anistream.one` (dipakai anistream.one sendiri; lihat `y.txt`)
 - Skip-time: `https://api.aniskip.com`, komentar & metadata episode: `theanimecommunity.com`
-- Terjemahan subtitle: Gemini (`gemini-3.1-flash-lite`)
+- Terjemahan subtitle: `https://kenari.id/v1` (kompatibel OpenAI, `gemma-4-31b-it`)
 
 ---
 
@@ -65,7 +65,7 @@ Butuh Rust (edition 2024) dan, untuk frontend, `pnpm`.
 
 ```bash
 # 1) .env (lihat tabel di bawah)
-printf 'GEMINI_API_KEY=...\nREDIS_URL=rediss://...\n' >> .env
+printf 'OPENAI_API_KEY=...\nREDIS_URL=rediss://...\n' >> .env
 
 # 2) build + jalankan semuanya dari satu port (API + web statis) di :3000
 make build && ./zanime
@@ -96,8 +96,10 @@ Dibaca dari `.env` (via `dotenvy`) atau environment. `.env`, `.cache/`, `target/
 
 | Variabel | Wajib | Default | Keterangan |
 | --- | --- | --- | --- |
-| `GEMINI_API_KEY` | hanya untuk subtitle ID | kosong | Kosong → `POST /api/subid/batch` membalas 400 |
-| `REDIS_URL` | tidak | kosong | `rediss://default:<pass>@<host>:6379`. Kosong/gagal → cache mati, API tetap jalan |
+| `OPENAI_API_KEY` | hanya untuk subtitle ID | kosong | Key endpoint kompatibel OpenAI. Kosong → `POST /api/subid/batch` membalas 400 |
+| `OPENAI_BASE_URL` | tidak | `https://kenari.id/v1` | Base URL kompatibel OpenAI; request ke `<base>/chat/completions` |
+| `OPENAI_MODEL` | tidak | `gemma-4-31b-it` | Model terjemahan subtitle |
+| `REDIS_URL` | tidak | kosong | `rediss://default:<pass>@<host>:6379`. Cache upstream + hasil terjemahan subtitle (TTL 30 hari). Kosong/gagal → cache mati, API tetap jalan |
 | `RUST_LOG` | tidak | `info` | Level logger `env_logger` |
 
 Nilai lain (bind `127.0.0.1:3000`, UA, `Origin`/`Referer` upstream, base URL GraphQL/REST,
@@ -203,7 +205,7 @@ sehari dan diisi ulang dari upstream — tak ada data basi yang menetap.
 | key `play:*` | **Bukan** lewat TTL sehari: `/api/stream` menyimpan `{stream, sources, until}` di memori proses + Redis dengan TTL pendek, dan `until` = waktu token m3u8 **kedaluwarsa** (`?token=<b64(exp\|path)>.<sig>`; untuk URL minky token itu ada di dalam `url=` yang ter-percent-encode sehingga tetap terbaca). Tidak ada refresh berkala — entri dipakai selama token masih berlaku, baru disegarkan setelah token habis. Token tak terbaca → 120 dtk; token sudah lewat → tidak di-cache sama sekali. Token CDN sendiri terbukti **tidak** ditegakkan (URL 16 menit tetap 200), jadi ini penghemat probe, bukan perbaikan playback |
 | `/api/hls`, `/api/fetch` | Playlist/segmen/gambar: besar, bervariasi per `Range`, mengalir per-chunk |
 | `/api/anilist` | Query GraphQL bebas dari klien → jumlah key tak terbatas (cache poisoning/DOS) |
-| `/api/subid/*` | Stateful (job in-memory + cache disk `.cache/subtitles/<hash>.vtt`) |
+| `/api/subid/*` | Stateful (job in-memory + hasil terjemahan di redis `subid:<hash VTT EN>`, TTL 30 hari; tanpa salinan disk) |
 
 ---
 
