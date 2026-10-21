@@ -19,10 +19,12 @@
     onIdInactive = () => {},
     autoSkip = false,
     skips = [],
-    busy = false,
+    idSub = false,
+    subUntil = 0,
+    subDone = false,
     onEnded = () => {},
     onDuration = (d: number) => {},
-  }: { src: string; sub: string; subId?: string; subDelay?: number; startAt?: number; onProgress?: (t: number) => void; nextAt?: number; onNeedMore?: (t: number) => void; onSeek?: (t: number) => void; onIdActive?: () => void; onIdInactive?: () => void; autoSkip?: boolean; skips?: Array<{ interval: { startTime: number; endTime: number } }>; busy?: boolean; onEnded?: () => void; onDuration?: (d: number) => void } = $props();
+  }: { src: string; sub: string; subId?: string; subDelay?: number; startAt?: number; onProgress?: (t: number) => void; nextAt?: number; onNeedMore?: (t: number) => void; onSeek?: (t: number) => void; onIdActive?: () => void; onIdInactive?: () => void; autoSkip?: boolean; skips?: Array<{ interval: { startTime: number; endTime: number } }>; idSub?: boolean; subUntil?: number; subDone?: boolean; onEnded?: () => void; onDuration?: (d: number) => void } = $props();
   const url = $derived(abs(src));
   const subUrl = $derived(sub ? abs(sub) : '');
   const idUrl = $derived(subId ? abs(subId) : '');
@@ -100,9 +102,15 @@
   // Satu timer 500ms untuk durasi + auto-skip OP/ED + lanjut-dari-posisi-terakhir (dulu 2 interval).
   let lastDur = $state(0); // $state: tanda skip baru tergambar setelah durasi diketahui
   let resumed = false;
+  // Subtitle ID: tahan video hanya ketika cue terjemahan benar-benar habis (fetch
+  // berikutnya belum tiba). Prefetch yang masih punya cadangan cue tidak menjeda.
+  let heldSub = false;
+  let heldWasPlaying = false;
   $effect(() => {
     const u = url;
     resumed = false; // src baru (episode lain) → boleh lanjut dari posisi tersimpan lagi
+    heldSub = false;
+    heldWasPlaying = false;
   });
   $effect(() => {
     const list = skips;
@@ -120,6 +128,17 @@
         playerEl.store.seek?.(start);
       }
       if (st.currentTime > 0) onProgress(st.currentTime);
+      const hold =
+        idSub && !subDone && (subUntil === 0 || (st.currentTime ?? 0) >= subUntil - 0.2);
+      if (hold && !heldSub) {
+        heldSub = true;
+        heldWasPlaying = !st.paused;
+        playerEl.store.pause?.();
+      } else if (!hold && heldSub) {
+        heldSub = false;
+        if (heldWasPlaying) playerEl.store.play?.();
+        heldWasPlaying = false;
+      }
       if (!on || !list.length) return;
       const t = st.currentTime ?? 0;
       const hit = list.find((s) => t >= s.interval.startTime && t < s.interval.endTime);
@@ -156,20 +175,6 @@
       } else if (!p.store.state?.ended) endedState = false;
     });
     return un;
-  });
-
-  // Jeda selama fetch subtitle, lanjut lagi begitu selesai.
-  let wasPlaying = false;
-  $effect(() => {
-    const p = playerEl;
-    if (!p?.store) return;
-    if (busy) {
-      wasPlaying = !p.store.state?.paused;
-      p.store.pause?.();
-    } else if (wasPlaying) {
-      p.store.play?.();
-      wasPlaying = false;
-    }
   });
 
   // Mode trek ID dari player store; sekalian cek pemicu batch (time-based).

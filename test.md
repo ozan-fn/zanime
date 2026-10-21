@@ -8,6 +8,8 @@ LLM: Gemini → endpoint kompatibel OpenAI (`OPENAI_API_KEY`, `OPENAI_BASE_URL=h
 
 Player: kualitas terakhir disimpan di localStorage `zanime-quality` (tinggi rendisi, bukan id — id hls.js cuma indeks level) dan dipulihkan tiap sumber baru; `{#key url}` dipindah ke dalam `<video-skin>` supaya `media-container` (= elemen fullscreen `VIDEO-SKIN`) tidak dibongkar saat pindah episode → fullscreen bertahan di auto next; `play()` eksplisit setelah ganti media (`autoplay` tidak berlaku untuk elemen pengganti); jeda selama fetch subtitle (`busy`) lalu lanjut otomatis; `lastDur` jadi `$state` agar tanda OP/ED muncul saat durasi diketahui. Konfigurasi pembatas preload (`preload="metadata"`, `HLS_LIMITS`) sengaja tidak diubah.
 
+Jeda subtitle: video hanya ditahan saat cue terjemahan **benar-benar habis** — Player menerima `subUntil` (akhir cue terjauh yang sudah diterima, dari `lastCueEnd` di `web/src/lib/vtt.ts`) + `subDone` + `idSub`; prefetch yang masih punya cadangan cue tidak lagi mempause. Saat batch tiba `subUntil` maju → video lanjut sendiri. Kalau retry habis (`subProg` = "Subtitle gagal…") `idSub` dimatikan agar video tidak tertahan selamanya. `lastCueEnd` diuji lewat node (5/5: cue setting `align:`/`position:`, lintas jam, tanpa cue, string kosong). `pnpm check` 0/0, `pnpm build` ok.
+
 Halaman anime: chip genre (`$detail.genres`).
 
 Cache subtitle: **redis saja**, tanpa disk. Kunci `subid:<hash VTT EN>` (`upstream::sub_cache_id`), TTL 30 hari (`SUB_CACHE_TTL`); worker membaca redis saat job dibuat, VTT penuh ditulis saat job selesai (guard mutex tidak melintasi `await`). Field `SubJob.cache` (path disk) diganti `SubJob.key` (kunci redis); `.cache/subtitles/` tidak dipakai lagi. Belum diuji dengan redis hidup di environment ini.

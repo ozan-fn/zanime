@@ -31,6 +31,17 @@ function cue(l: string, off: number): string {
   return `${fmt(a)} --> ${fmt(Math.max(a, b))}${tail}`;
 }
 
+/** Detik akhir cue terakhir di teks VTT (0 bila tak ada). Cue setting setelah timestamp diabaikan. */
+export function lastCueEnd(text: string): number {
+  let end = 0;
+  for (const l of text.split('\n')) {
+    if (!l.includes('-->')) continue;
+    const t = (l.split('-->')[1] ?? '').trim().split(/\s+/)[0] ?? '';
+    end = Math.max(end, sec(t));
+  }
+  return end;
+}
+
 /** Geser semua timestamp VTT sebesar `off` detik (positif = subtitle muncul lebih lambat).
  *  `off` 0 → teks dikembalikan apa adanya. */
 export function shiftVtt(text: string, off: number): string {

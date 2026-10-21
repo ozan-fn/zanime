@@ -3,6 +3,7 @@
   import { untrack } from 'svelte';
   import { ChevronLeft, ChevronRight, LoaderCircle, TriangleAlert } from '@lucide/svelte';
   import { abs } from '../lib/api';
+  import { lastCueEnd } from '../lib/vtt';
   import { altTitles, detailTitle, fetchDetail, imgOf, type AnimeDetail } from '../features/episodes';
   import Player from '../features/watch/components/Player.svelte';
   import { error, fetchSkiptimes, getSubStatus, loadStream, loading, postSubBatch, stream, subResultUrl, type SkipTime } from '../features/watch';
@@ -16,7 +17,9 @@
   let subProg = $state('');
   let nextAt = $state(-1);
   let jobId = '';
-  let subDone = false;
+  let subDone = $state(false);
+  /** Akhir cue terjemahan terakhir yang sudah diterima (dtk) — batas sebelum video ditahan. */
+  let subUntil = $state(0);
   let fetching = $state(false);
   let lastTry = 0;
   let lastDone = -1;
@@ -30,6 +33,7 @@
     const d = delta?.trim();
     if (!d) return;
     vttCache += '\n' + d + '\n';
+    subUntil = Math.max(subUntil, lastCueEnd(d));
     if (lastBlob) URL.revokeObjectURL(lastBlob);
     lastBlob = URL.createObjectURL(new Blob([vttCache], { type: 'text/vtt' }));
     console.log('[1] pushVtt vttCache=' + vttCache.length);
@@ -44,6 +48,7 @@
       console.log('[7] loadBaseVtt len=' + t.length);
       if (t.trim().length > 'WEBVTT'.length) {
         vttCache = t.trimEnd() + '\n';
+        subUntil = Math.max(subUntil, lastCueEnd(t));
         if (lastBlob) URL.revokeObjectURL(lastBlob);
         lastBlob = URL.createObjectURL(new Blob([vttCache], { type: 'text/vtt' }));
         subId = lastBlob;
@@ -142,6 +147,7 @@
     started = false;
     idActive = false;
     vttCache = 'WEBVTT\n\n';
+    subUntil = 0;
     if (lastBlob) URL.revokeObjectURL(lastBlob);
     lastBlob = '';
     subId = '';
@@ -151,6 +157,9 @@
     console.log('[8] stream sub_id=' + jobId);
     gen += 1;
   });
+
+  /** Terjemahan menyerah (retry habis) → jangan tahan video selamanya. */
+  const subFailed = $derived(subProg.startsWith('Subtitle gagal'));
 
   let anime = $state<AnimeDetail | null>(null);
   let skips = $state<SkipTime[]>([]);
@@ -280,7 +289,7 @@
     </p>
   {/if}
   {#if $stream}
-    <Player src={$stream.stream} sub={$stream.sub_en} subId={subId} subDelay={subDelay} startAt={startAt} nextAt={nextAt} autoSkip={autoSkip} skips={skips} busy={fetching && idActive} onProgress={(t: number) => savePos(t)} onDuration={(d: number) => { if (!dur) { dur = Math.round(d); trySkip(); } }} onEnded={() => { localStorage.removeItem(posKey); if (autoNext && !$loading) location.hash = `/watch/${id}/${ep + 1}`; }} onNeedMore={(t: number) => needMore(t)} onSeek={(t: number) => needMore(t, true)} onIdActive={startId} onIdInactive={stopId} />
+    <Player src={$stream.stream} sub={$stream.sub_en} subId={subId} subDelay={subDelay} startAt={startAt} nextAt={nextAt} autoSkip={autoSkip} skips={skips} idSub={idActive && !subFailed} subUntil={subUntil} subDone={subDone} onProgress={(t: number) => savePos(t)} onDuration={(d: number) => { if (!dur) { dur = Math.round(d); trySkip(); } }} onEnded={() => { localStorage.removeItem(posKey); if (autoNext && !$loading) location.hash = `/watch/${id}/${ep + 1}`; }} onNeedMore={(t: number) => needMore(t)} onSeek={(t: number) => needMore(t, true)} onIdActive={startId} onIdInactive={stopId} />
     {#if $loading}
       <p class="flex items-center gap-2 text-sm text-zinc-500"><LoaderCircle class="size-4 animate-spin" /> memuat episode…</p>
     {/if}
