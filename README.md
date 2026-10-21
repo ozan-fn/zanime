@@ -92,7 +92,8 @@ diikuti build ulang Rust** (di mode debug, `rust-embed` membaca dari filesystem)
 ## Konfigurasi
 
 Dibaca dari `.env` (via `dotenvy`) atau environment. `.env`, `.cache/`, `target/`,
-`zanime`, dan `web/dist` sudah masuk `.gitignore`.
+dan `web/dist` sudah masuk `.gitignore`; biner `zanime` di-commit (dipakai image
+Vercel, lihat `Dockerfile.vercel`).
 
 | Variabel | Wajib | Default | Keterangan |
 | --- | --- | --- | --- |

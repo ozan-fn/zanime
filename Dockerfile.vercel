@@ -1,0 +1,18 @@
+# Biner zanime dibangun di Debian 13 (butuh glibc >= 2.38) dan frontend sudah
+# ter-embed saat `make build`. Kalau di-push dalam keadaan UPX-packed, stub UPX
+# gagal exec di container — jadi dibuka dulu di stage build.
+FROM alpine:3.20 AS unpack
+RUN apk add --no-cache upx
+COPY zanime /zanime
+RUN (upx -d /zanime -o /zanime.raw || cp /zanime /zanime.raw) && chmod +x /zanime.raw
+
+FROM debian:trixie-slim
+# OpenSSL di dalam biner pakai trust store sistem → ca-certificates wajib untuk HTTPS upstream.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=unpack /zanime.raw /usr/local/bin/zanime
+# Vercel merutekan trafik ke $PORT container (default 80). zanime baca PORT.
+ENV PORT=80
+EXPOSE 80
+ENTRYPOINT ["/usr/local/bin/zanime"]
