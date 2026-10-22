@@ -243,19 +243,9 @@
   });
 </script>
 
-<div class="relative">
-  <!-- Player full layar & sticky: video nempel di atas, konten di bawahnya slide di atasnya. -->
-  <div class="sticky top-0 z-0 h-[100dvh] w-full bg-black">
-    <div class="flex h-full items-center justify-center">
-      {#if $stream}
-        <Player src={$stream.stream} sub={$stream.sub_en} subId={subId} subDelay={subDelay} startAt={startAt} nextAt={nextAt} autoSkip={autoSkip} skips={skips} idSub={idActive && !subFailed} subUntil={subUntil} subDone={subDone} onProgress={(t: number) => savePos(t)} onDuration={(d: number) => { if (!dur) { dur = Math.round(d); trySkip(); } }} onEnded={() => { localStorage.removeItem(posKey); if (autoNext && !$loading) location.hash = `/watch/${id}/${ep + 1}`; }} onNeedMore={(t: number) => needMore(t)} onSeek={(t: number) => needMore(t, true)} onIdActive={startId} onIdInactive={stopId} />
-      {:else}
-        <LoaderCircle class="size-6 animate-spin text-zinc-500" />
-      {/if}
-    </div>
-  </div>
-
-  <div class="relative z-10 bg-white/85 backdrop-blur-sm dark:bg-zinc-950/85">
+<div class="relative flex flex-col gap-4">
+  <!-- Info anime: tetap di atas video (mobile & desktop). -->
+  <div>
   <div class="mx-auto max-w-5xl space-y-4 p-4">
   <div class="flex items-center justify-between">
     <a href="/anime/{id}" use:link class="inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
@@ -275,7 +265,7 @@
 
   <div class="flex gap-4">
     {#if cover}
-      <img src={cover} alt="" class="w-24 rounded object-cover" />
+      <img src={cover} alt="" class="w-16 rounded object-cover md:w-24" />
     {/if}
     <div class="min-w-0">
       <h1 class="text-xl font-semibold">{anime ? detailTitle(anime) : `Episode ${ep}`}</h1>
@@ -284,14 +274,14 @@
         <p class="text-sm text-zinc-500">{t}</p>
       {/each}
       {#if chips.length}
-        <div class="mt-2 flex flex-wrap gap-1">
+        <div class="mt-2 flex gap-1 overflow-x-auto md:flex-wrap">
           {#each chips as c}
-            <span class="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">{c}</span>
+            <span class="shrink-0 rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">{c}</span>
           {/each}
         </div>
       {/if}
       {#if anime?.description}
-        <p class="mt-2 line-clamp-3 text-sm text-zinc-600 dark:text-zinc-400">{@html anime.description}</p>
+        <p class="mt-2 line-clamp-2 text-sm text-zinc-600 dark:text-zinc-400 md:line-clamp-3">{@html anime.description}</p>
       {/if}
     </div>
   </div>
@@ -305,7 +295,25 @@
     {#if $loading}
       <p class="flex items-center gap-2 text-sm text-zinc-500"><LoaderCircle class="size-4 animate-spin" /> memuat episode…</p>
     {/if}
-    <div class="mt-3 flex items-center justify-between gap-2">
+  {:else if $loading}
+    <p class="flex items-center gap-2 text-sm text-zinc-500"><LoaderCircle class="size-4 animate-spin" /> memuat stream…</p>
+  {/if}
+  </div>
+  </div>
+
+  <!-- Video: mobile = full layar & sticky; desktop = blok 16:9 biasa di dalam container. -->
+  <div class="sticky top-0 z-0 flex h-[100dvh] w-full items-center justify-center bg-black md:static md:mx-auto md:h-auto md:max-w-5xl md:bg-transparent md:px-4">
+    {#if $stream}
+      <Player src={$stream.stream} sub={$stream.sub_en} subId={subId} subDelay={subDelay} startAt={startAt} nextAt={nextAt} autoSkip={autoSkip} skips={skips} idSub={idActive && !subFailed} subUntil={subUntil} subDone={subDone} onProgress={(t: number) => savePos(t)} onDuration={(d: number) => { if (!dur) { dur = Math.round(d); trySkip(); } }} onEnded={() => { localStorage.removeItem(posKey); if (autoNext && !$loading) location.hash = `/watch/${id}/${ep + 1}`; }} onNeedMore={(t: number) => needMore(t)} onSeek={(t: number) => needMore(t, true)} onIdActive={startId} onIdInactive={stopId} />
+    {:else}
+      <LoaderCircle class="size-6 animate-spin text-zinc-500" />
+    {/if}
+  </div>
+
+  <!-- Kontrol: mobile = bar melayang di bawah layar; desktop = di bawah video. -->
+  <div class="sticky bottom-0 z-20 w-full bg-white/90 backdrop-blur dark:bg-zinc-950/90 md:static md:mx-auto md:max-w-5xl md:bg-transparent md:backdrop-blur-none">
+    {#if $stream}
+    <div class="mx-auto flex max-w-5xl items-center justify-between gap-2 px-4 py-2 md:py-0">
       <div class="flex gap-2">
       <button onclick={() => { autoSkip = !autoSkip; localStorage.setItem('zanime-autoskip', autoSkip ? '1' : '0'); }} class="inline-flex items-center gap-1 rounded border px-3 py-1 text-sm {autoSkip ? 'border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100' : 'border-zinc-300 text-zinc-500 dark:border-zinc-700'}" title="Auto skip OP/ED">
         <FastForward class="size-4" /> Auto skip
@@ -325,9 +333,6 @@
       {/if}
       </div>
     </div>
-  {:else if $loading}
-    <p class="flex items-center gap-2 text-sm text-zinc-500"><LoaderCircle class="size-4 animate-spin" /> memuat stream…</p>
-  {/if}
-  </div>
+    {/if}
   </div>
 </div>
