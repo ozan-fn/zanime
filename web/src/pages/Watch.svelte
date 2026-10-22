@@ -243,7 +243,20 @@
   });
 </script>
 
-<div class="mx-auto max-w-5xl space-y-4 p-4">
+<div class="relative">
+  <!-- Player full layar & sticky: video nempel di atas, konten di bawahnya slide di atasnya. -->
+  <div class="sticky top-0 z-0 h-[100dvh] w-full bg-black">
+    <div class="flex h-full items-center justify-center">
+      {#if $stream}
+        <Player src={$stream.stream} sub={$stream.sub_en} subId={subId} subDelay={subDelay} startAt={startAt} nextAt={nextAt} autoSkip={autoSkip} skips={skips} idSub={idActive && !subFailed} subUntil={subUntil} subDone={subDone} onProgress={(t: number) => savePos(t)} onDuration={(d: number) => { if (!dur) { dur = Math.round(d); trySkip(); } }} onEnded={() => { localStorage.removeItem(posKey); if (autoNext && !$loading) location.hash = `/watch/${id}/${ep + 1}`; }} onNeedMore={(t: number) => needMore(t)} onSeek={(t: number) => needMore(t, true)} onIdActive={startId} onIdInactive={stopId} />
+      {:else}
+        <LoaderCircle class="size-6 animate-spin text-zinc-500" />
+      {/if}
+    </div>
+  </div>
+
+  <div class="relative z-10 bg-white/85 backdrop-blur-sm dark:bg-zinc-950/85">
+  <div class="mx-auto max-w-5xl space-y-4 p-4">
   <div class="flex items-center justify-between">
     <a href="/anime/{id}" use:link class="inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
       <ChevronLeft class="size-4" /> episode
@@ -289,7 +302,6 @@
     </p>
   {/if}
   {#if $stream}
-    <Player src={$stream.stream} sub={$stream.sub_en} subId={subId} subDelay={subDelay} startAt={startAt} nextAt={nextAt} autoSkip={autoSkip} skips={skips} idSub={idActive && !subFailed} subUntil={subUntil} subDone={subDone} onProgress={(t: number) => savePos(t)} onDuration={(d: number) => { if (!dur) { dur = Math.round(d); trySkip(); } }} onEnded={() => { localStorage.removeItem(posKey); if (autoNext && !$loading) location.hash = `/watch/${id}/${ep + 1}`; }} onNeedMore={(t: number) => needMore(t)} onSeek={(t: number) => needMore(t, true)} onIdActive={startId} onIdInactive={stopId} />
     {#if $loading}
       <p class="flex items-center gap-2 text-sm text-zinc-500"><LoaderCircle class="size-4 animate-spin" /> memuat episode…</p>
     {/if}
@@ -316,4 +328,6 @@
   {:else if $loading}
     <p class="flex items-center gap-2 text-sm text-zinc-500"><LoaderCircle class="size-4 animate-spin" /> memuat stream…</p>
   {/if}
+  </div>
+  </div>
 </div>

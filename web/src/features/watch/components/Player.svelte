@@ -261,7 +261,9 @@
 </script>
 
 <video-player bind:this={playerEl}>
-  <video-skin style="display: block; width: 100%; aspect-ratio: 16 / 9;">
+  <!-- Lebar dibatasi 16:9 dari tinggi layar: video selalu utuh (tanpa terpotong),
+       dan container/track subtitle ikut pas di dasar gambar seperti mode fullscreen. -->
+  <video-skin style="display: block; width: min(100%, calc(100dvh * 16 / 9)); aspect-ratio: 16 / 9;">
     <!-- Kunci hanya media, bukan <video-player>: elemen fullscreen (media-container di dalam
          skin) tetap ter-mount saat ganti episode, jadi fullscreen tak putus di auto next. -->
     {#key url}
