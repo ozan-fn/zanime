@@ -398,6 +398,43 @@ pub async fn stats() -> HttpResponse {
     }))
 }
 
+/// Penonton aktif: id klien → heartbeat terakhir. TTL 45 dtk, heartbeat tiap 20 dtk.
+/// chisle: memori proses ini saja; multi-instance butuh redis kalau dipakai >1 replika.
+static WATCHERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+const WATCHER_TTL: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// Catat heartbeat (bila `id` diisi), buang yang basi, balas jumlah penonton.
+fn watchers(id: Option<&str>) -> usize {
+    let Ok(mut m) = WATCHERS.lock() else {
+        return 0;
+    };
+    if let Some(id) = id.filter(|s| !s.is_empty()) {
+        m.insert(id.to_string(), std::time::Instant::now());
+    }
+    m.retain(|_, t| t.elapsed() < WATCHER_TTL);
+    m.len()
+}
+
+#[derive(serde::Deserialize)]
+pub struct PresenceReq {
+    #[serde(default)]
+    pub id: String,
+}
+
+/// Heartbeat penonton (halaman watch) → jumlah penonton aktif.
+#[post("/presence")]
+pub async fn presence_ping(body: web::Json<PresenceReq>) -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!({ "watching": watchers(Some(body.id.trim())) }))
+}
+
+/// Jumlah penonton aktif (dipoll navbar).
+#[get("/presence")]
+pub async fn presence() -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!({ "watching": watchers(None) }))
+}
+
 /// Proxy generik: /api/fetch?u=<base64url> (gambar, sub) dan
 /// /api/fetch/<nama>.<ext>?u=<base64url> (segmen; ekstensi dipakai player untuk deteksi tipe).
 pub async fn fetch(

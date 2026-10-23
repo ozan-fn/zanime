@@ -2,8 +2,9 @@ use actix_web::web;
 
 use crate::{
     handlers::{
-        anilist, anime, catalog, comments, episode_meta, episodes, fetch, hls, search, servers,
-        skiptimes, sources, stats, stream, subid_batch, subid_result, subid_status,
+        anilist, anime, catalog, comments, episode_meta, episodes, fetch, hls, presence,
+        presence_ping, search, servers, skiptimes, sources, stats, stream, subid_batch,
+        subid_result, subid_status,
     },
     spa,
 };
@@ -23,6 +24,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .service(episode_meta)
             .service(anilist)
             .service(stats)
+            .service(presence)
+            .service(presence_ping)
             .service(subid_batch)
             .service(subid_status)
             .service(subid_result)

@@ -106,11 +106,14 @@
   // berikutnya belum tiba). Prefetch yang masih punya cadangan cue tidak menjeda.
   let heldSub = false;
   let heldWasPlaying = false;
+  /** Interval OP/ED yang memuat titik resume → jangan di-skip (posisi tersimpan menang). */
+  let skipResumeStart = -1;
   $effect(() => {
     const u = url;
     resumed = false; // src baru (episode lain) → boleh lanjut dari posisi tersimpan lagi
     heldSub = false;
     heldWasPlaying = false;
+    skipResumeStart = -1;
   });
   $effect(() => {
     const list = skips;
@@ -126,10 +129,13 @@
       if (!resumed && start > 5 && st.duration > start + 10) {
         resumed = true;
         playerEl.store.seek?.(start);
+        skipResumeStart = list.find(
+          (s) => start >= s.interval.startTime && start < s.interval.endTime,
+        )?.interval.startTime ?? -1;
       }
       if (st.currentTime > 0) onProgress(st.currentTime);
-      const hold =
-        idSub && !subDone && (subUntil === 0 || (st.currentTime ?? 0) >= subUntil - 0.2);
+      // subUntil 0 = belum ada cue sama sekali → jangan tahan (kuota mati = video beku).
+      const hold = idSub && !subDone && subUntil > 0 && (st.currentTime ?? 0) >= subUntil - 0.2;
       if (hold && !heldSub) {
         heldSub = true;
         heldWasPlaying = !st.paused;
@@ -140,9 +146,13 @@
         heldWasPlaying = false;
       }
       if (!on || !list.length) return;
+      // Resume tersimpan belum diterapkan → biarkan posisi itu yang menang, bukan skip.
+      if (start > 5 && !resumed) return;
       const t = st.currentTime ?? 0;
       const hit = list.find((s) => t >= s.interval.startTime && t < s.interval.endTime);
-      if (hit) playerEl.store.seek?.(hit.interval.endTime + 0.05);
+      if (hit && hit.interval.startTime !== skipResumeStart) {
+        playerEl.store.seek?.(hit.interval.endTime + 0.05);
+      }
     }, 500);
     return () => clearInterval(iv);
   });
@@ -212,19 +222,13 @@
       }
       const idShowing = subs.some((t) => t.language === 'id' && t.mode === 'showing');
       if (idShowing !== idOn) {
-        console.log('[9] idShowing=' + idShowing);
         idOn = idShowing;
         idShowing ? onIdActive() : onIdInactive();
       }
       const t = p.store.state?.currentTime ?? 0;
       if (idOn) {
-        if (lastT >= 0 && Math.abs(t - lastT) > 3) {
-          console.log('[10] seek -> needMore force');
-          const tr = document.querySelector<HTMLTrackElement>('track[srclang="id"]');
-          console.log('[10b] id track mode=' + tr?.track?.mode + ' cues=' + (tr?.track?.cues?.length ?? 'n/a') + ' active=' + (tr?.track?.activeCues?.length ?? 'n/a'));
-          onSeek(t);
-        }
-        if (nextAt >= 0 && t >= nextAt - 8) { console.log('[10] t=' + t.toFixed(1) + ' >= nextAt-8=' + (nextAt - 8)); onNeedMore(t); }
+        if (lastT >= 0 && Math.abs(t - lastT) > 3) onSeek(t);
+        if (nextAt >= 0 && t >= nextAt - 8) onNeedMore(t);
       }
       lastT = t;
     });

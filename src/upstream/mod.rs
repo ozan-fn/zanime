@@ -1065,10 +1065,21 @@ async fn llm_chat(
         .json(&serde_json::json!({"model": model, "temperature": 0, "max_tokens": 1024, "messages": [{"role": "system", "content": LLM_SYS}, {"role": "user", "content": user}]}))
         .send().await.map_err(|e| AppError::Upstream(e.to_string()))?;
     let status = r.status().as_u16();
+    // Kuota 0 req/menit = plan tak aktif untuk model ini; retry tak akan pernah lolos.
+    let zero_quota = r
+        .headers()
+        .get("x-ratelimit-limit-req-minute")
+        .and_then(|v| v.to_str().ok())
+        == Some("0");
     let v: Value = r
         .json()
         .await
         .map_err(|e| AppError::Upstream(e.to_string()))?;
+    if zero_quota && llm_cooldown_secs(status, &v).is_some() {
+        return Err(AppError::BadRequest(format!(
+            "kuota LLM 0 req/menit untuk {model} (aktifkan plan / ganti OPENAI_MODEL)"
+        )));
+    }
     if let Some(wait) = llm_cooldown_secs(status, &v) {
         if let Ok(mut cd) = LLM_COOLDOWN.lock() {
             cd.insert(

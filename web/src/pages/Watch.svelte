@@ -2,7 +2,7 @@
   import { link } from 'svelte-spa-router';
   import { untrack } from 'svelte';
   import { ChevronLeft, ChevronRight, LoaderCircle, TriangleAlert } from '@lucide/svelte';
-  import { abs } from '../lib/api';
+  import { abs, post } from '../lib/api';
   import { lastCueEnd } from '../lib/vtt';
   import { altTitles, detailTitle, fetchDetail, imgOf, type AnimeDetail } from '../features/episodes';
   import Player from '../features/watch/components/Player.svelte';
@@ -24,6 +24,11 @@
   let lastTry = 0;
   let lastDone = -1;
   let failStreak = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  function clearRetry(): void {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = undefined;
+  }
 
   let vttCache = 'WEBVTT\n\n';
   let lastBlob = '';
@@ -36,7 +41,6 @@
     subUntil = Math.max(subUntil, lastCueEnd(d));
     if (lastBlob) URL.revokeObjectURL(lastBlob);
     lastBlob = URL.createObjectURL(new Blob([vttCache], { type: 'text/vtt' }));
-    console.log('[1] pushVtt vttCache=' + vttCache.length);
     subId = lastBlob;
   }
 
@@ -45,7 +49,6 @@
     try {
       const r = await fetch(subResultUrl(jobId));
       const t = await r.text();
-      console.log('[7] loadBaseVtt len=' + t.length);
       if (t.trim().length > 'WEBVTT'.length) {
         vttCache = t.trimEnd() + '\n';
         subUntil = Math.max(subUntil, lastCueEnd(t));
@@ -59,12 +62,12 @@
   /** Batch pertama langsung; berikut saat putar sisa 3 cue. Cooldown 15 dtk
    *  cegah loop timeupdate (gagal/tanpa progres tak dipanggil berulang). */
   async function needMore(at?: number, force = false): Promise<void> {
-    if (!idActive || fetching || subDone || !jobId) { console.log('[3] needMore blocked idActive=' + idActive + ' fetching=' + fetching + ' subDone=' + subDone + ' jobId=' + !!jobId); return; }
+    if (!idActive || fetching || subDone || !jobId) return;
     const now = Date.now();
-    if (!force && now - lastTry < 15000) { console.log('[3] needMore cooldown'); return; }
-    console.log('[3] needMore at=' + at + ' force=' + force);
+    if (!force && now - lastTry < 15000) return;
     lastTry = now;
     fetching = true;
+    clearRetry();
     try {
       let st: Awaited<ReturnType<typeof postSubBatch>> | null = null;
       for (let i = 0; i < 3 && !st; i++) {
@@ -76,23 +79,25 @@
           await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
         }
       }
-      if (st) {
-      failStreak = 0;
-      console.log('[4] batch done=' + st.done + ' state=' + st.state + ' next_at=' + st.next_at + ' vtt=' + (st.vtt?.length ?? 0));
-      if (st.done !== lastDone) lastDone = st.done;
-      if (st.vtt) pushVtt(st.vtt);
-      subDone = st.state === 'done';
-      nextAt = st.next_at;
-      subProg = '';
+      // Trek dialihkan ke English saat menunggu → jangan lanjutkan alur ID.
+      if (st && idActive) {
+        failStreak = 0;
+        if (st.done !== lastDone) lastDone = st.done;
+        if (st.vtt) pushVtt(st.vtt);
+        subDone = st.state === 'done';
+        nextAt = st.next_at;
+        subProg = '';
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'unknown';
-      // Retry berjeda 10 dtk (hormati cooldown rate-limit backend), maks 30 kali.
-      if (idActive && !subDone && ++failStreak <= 30) {
-        subProg = `Coba lagi ${failStreak}/30… (${msg})`;
-        setTimeout(() => void needMore(at, true), 10000);
-      } else {
+      // Permanen (kuota 0, key kosong, job hilang) → berhenti. Sementara → backoff.
+      const fatal = /kuota LLM|OPENAI_API_KEY|job tak ada|bukan VTT|belum siap/i.test(msg) || ++failStreak >= 6;
+      if (fatal || !idActive || subDone) {
         subProg = `Subtitle gagal: ${msg}`;
+      } else {
+        const wait = Math.min(10000 * 2 ** (failStreak - 1), 120000);
+        subProg = `Subtitle tertunda ${Math.round(wait / 1000)} dtk (${msg})`;
+        retryTimer = setTimeout(() => void needMore(at, true), wait);
       }
     }
     fetching = false;
@@ -104,7 +109,6 @@
 
   /** Dipicu saat user pilih trek Indonesia di player → mulai alur batch. */
   function startId(): void {
-    console.log('[5] startId');
     idActive = true;
     if (started) return;
     started = true;
@@ -112,7 +116,7 @@
     const g = gen;
     (async () => {
       try {
-        for (let i = 0; i < 30 && gen === g; i++) {
+        for (let i = 0; i < 30 && gen === g && idActive; i++) {
           const st = await getSubStatus(jobId);
           if (st.state === 'failed') {
             subProg = `Subtitle gagal: ${st.error ?? 'unknown'}`;
@@ -129,9 +133,13 @@
     })();
   }
 
+  /** Pindah ke English/off → hentikan batch, retry, dan loop status. */
   function stopId(): void {
-    console.log('[6] stopId');
     idActive = false;
+    clearRetry();
+    failStreak = 0;
+    subProg = '';
+    gen += 1;
   }
 
   $effect(() => {
@@ -144,8 +152,10 @@
     fetching = false;
     lastTry = 0;
     lastDone = -1;
+    failStreak = 0;
     started = false;
     idActive = false;
+    clearRetry();
     vttCache = 'WEBVTT\n\n';
     subUntil = 0;
     if (lastBlob) URL.revokeObjectURL(lastBlob);
@@ -154,12 +164,24 @@
     if (!s?.sub_id) return;
     jobId = s.sub_id;
     subId = subResultUrl(jobId);
-    console.log('[8] stream sub_id=' + jobId);
     gen += 1;
   });
 
   /** Terjemahan menyerah (retry habis) → jangan tahan video selamanya. */
   const subFailed = $derived(subProg.startsWith('Subtitle gagal'));
+
+  /** Heartbeat penonton (badge navbar): tiap 20 dtk selama halaman watch terbuka. */
+  $effect(() => {
+    let cid = localStorage.getItem('zanime-cid');
+    if (!cid) {
+      cid = crypto.randomUUID();
+      localStorage.setItem('zanime-cid', cid);
+    }
+    const ping = () => void post('/api/presence', { id: cid }).catch(() => {});
+    ping();
+    const iv = setInterval(ping, 20000);
+    return () => clearInterval(iv);
+  });
 
   let anime = $state<AnimeDetail | null>(null);
   let skips = $state<SkipTime[]>([]);
@@ -329,7 +351,10 @@
       </div>
       <div class="flex justify-end">
       {#if subProg}
-        <p class="flex items-center gap-2 text-sm text-zinc-500"><LoaderCircle class="size-4 animate-spin" /> {subProg}</p>
+        <p class="flex items-center gap-2 text-sm {subFailed ? 'text-amber-600 dark:text-amber-400' : 'text-zinc-500'}">
+          {#if subFailed}<TriangleAlert class="size-4" />{:else}<LoaderCircle class="size-4 animate-spin" />{/if}
+          {subProg}
+        </p>
       {/if}
       </div>
     </div>

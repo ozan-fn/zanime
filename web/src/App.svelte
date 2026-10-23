@@ -1,6 +1,6 @@
 <script lang="ts">
   import Router, { link } from 'svelte-spa-router';
-  import { Clapperboard, Moon, Sun } from '@lucide/svelte';
+  import { Clapperboard, Eye, Moon, Sun } from '@lucide/svelte';
   import { get } from './lib/api';
   import { dark } from './lib/theme';
   import { routes } from './router';
@@ -13,6 +13,24 @@
   }
 
   let stats = $state<Stats | null>(null);
+  /** Penonton aktif (heartbeat dari halaman watch, TTL 45 dtk). */
+  let watching = $state(0);
+
+  $effect(() => {
+    let alive = true;
+    const ambil = () =>
+      get<{ watching: number }>('/api/presence')
+        .then((p) => {
+          if (alive) watching = p.watching;
+        })
+        .catch(() => {});
+    void ambil();
+    const iv = setInterval(ambil, 15000);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+  });
 
   /** Resource proses zanime; backend memperbarui angkanya tiap 2 dtk. */
   $effect(() => {
@@ -38,6 +56,15 @@
       <Clapperboard class="size-5" /> Nonton
     </a>
     <div class="flex items-center gap-3">
+      {#if watching > 0}
+        <span
+          class="flex items-center gap-1 rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
+          title="Jumlah penonton aktif saat ini"
+        >
+          <Eye class="size-3.5" />
+          {watching} nonton
+        </span>
+      {/if}
       {#if stats}
         <div
           class="hidden items-center gap-2 font-mono text-[11px] text-zinc-500 md:flex"
