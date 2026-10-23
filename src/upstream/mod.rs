@@ -1138,6 +1138,12 @@ pub fn cue_lines(c: &[String]) -> Option<Vec<String>> {
         .filter(|v: &Vec<String>| !v.is_empty())
 }
 
+/// Buang penanda markdown dari jawaban LLM (`*miring*`, `**tebal**`): VTT pakai `<i>`.
+/// Semua `*` hilang, jadi pasangan yang terbelah antar baris cue ikut bersih.
+pub fn clean_sub(s: &str) -> String {
+    s.replace(['*', '`'], "").trim().to_string()
+}
+
 /// Rakit VTT dari map terjemahan; cue belum diterjemahkan fallback EN.
 pub fn build_vtt(head: &str, cues: &[Vec<String>], id: &HashMap<usize, String>) -> String {
     let mut out = vec![head.to_string()];
@@ -1145,7 +1151,11 @@ pub fn build_vtt(head: &str, cues: &[Vec<String>], id: &HashMap<usize, String>) 
         match c.iter().position(|l| l.contains("-->")) {
             Some(p) => {
                 let mut v: Vec<String> = c[..=p].to_vec();
-                v.push(id.get(&i).cloned().unwrap_or_else(|| c[p + 1..].join(" ")));
+                v.push(
+                    id.get(&i)
+                        .map(|t| clean_sub(t))
+                        .unwrap_or_else(|| c[p + 1..].join(" ")),
+                );
                 out.push(v.join("\n"));
             }
             None => out.push(c.join("\n")),
@@ -1162,7 +1172,7 @@ pub fn build_vtt_id(head: &str, cues: &[Vec<String>], id: &HashMap<usize, String
             continue;
         };
         if let Some(txt) = id.get(&i) {
-            out.push([c[p].clone(), txt.clone()].join("\n"));
+            out.push([c[p].clone(), clean_sub(txt)].join("\n"));
         }
     }
     out.join("\n\n") + "\n"
@@ -1221,7 +1231,10 @@ pub async fn translate_batch(
             });
         }
     }
-    Ok(out)
+    Ok(out
+        .into_iter()
+        .map(|(k, t)| (k, clean_sub(&t)))
+        .collect())
 }
 
 #[cfg(test)]
@@ -1522,5 +1535,95 @@ mod tests {
             llm_cooldown_secs(503, &serde_json::json!({"error": {"code": 503}})),
             None
         );
+    }
+
+    /// Jawaban LLM sering membawa markdown miring/tebal; VTT pakai <i>, jadi dibuang.
+    #[test]
+    fn markdown_llm_dibuang() {
+        assert_eq!(clean_sub("*Tch.* Jangan sombong,"), "Tch. Jangan sombong,");
+        assert_eq!(clean_sub("**Jangan** pergi!"), "Jangan pergi!");
+        assert_eq!(clean_sub("Aku *tidak* akan menyerah"), "Aku tidak akan menyerah");
+        // Kasus asli: model buka miring di baris 1, tutup di baris 2 cue yang sama.
+        assert_eq!(clean_sub("*Tunggu,\nsampai jumpa*"), "Tunggu,\nsampai jumpa");
+        assert_eq!(clean_sub("  `kode`  "), "kode");
+        assert_eq!(clean_sub("Tanpa penanda"), "Tanpa penanda");
+        assert_eq!(clean_sub(""), "");
+    }
+
+    #[test]
+    fn vtt_id_tanpa_markdown() {
+        let head = "WEBVTT";
+        let cues: Vec<Vec<String>> = vec![
+            vec![
+                "00:00:01.000 --> 00:00:02.500".to_string(),
+                "Tch. Don't get cocky.".to_string(),
+            ],
+            vec![
+                "00:00:03.000 --> 00:00:05.000".to_string(),
+                "Wait, my shoe is untied.".to_string(),
+            ],
+            vec![
+                "00:00:06.000 --> 00:00:08.000".to_string(),
+                "No translation yet.".to_string(),
+            ],
+        ];
+        let mut id = HashMap::new();
+        id.insert(0usize, "*Tch.* Jangan sombong.".to_string());
+        id.insert(1usize, "*Tunggu,\nsepatuku terlepas*".to_string());
+        let vtt = build_vtt_id(head, &cues, &id);
+        assert!(!vtt.contains('*'), "sisa markdown: {vtt}");
+        assert!(
+            vtt.contains("00:00:01.000 --> 00:00:02.500\nTch. Jangan sombong."),
+            "{vtt}"
+        );
+        // Baris cue dipertahankan walau tanda miring terbelah dua baris.
+        assert!(
+            vtt.contains("00:00:03.000 --> 00:00:05.000\nTunggu,\nsepatuku terlepas"),
+            "{vtt}"
+        );
+        assert!(!vtt.contains("No translation yet."), "{vtt}");
+    }
+
+    #[test]
+    fn vtt_penuh_markdown_id_dibuang_en_utuh() {
+        let head = "WEBVTT";
+        let cues: Vec<Vec<String>> = vec![
+            vec![
+                "00:00:01.000 --> 00:00:02.000".to_string(),
+                "Hello *world*".to_string(),
+            ],
+            vec![
+                "00:00:03.000 --> 00:00:04.000".to_string(),
+                "Tch. *Don't* get cocky.".to_string(),
+            ],
+        ];
+        let mut id = HashMap::new();
+        id.insert(1usize, "*Tch.* Jangan sombong".to_string());
+        let vtt = build_vtt(&head, &cues, &id);
+        // Cue belum diterjemah: teks EN apa adanya (bintang asli dipertahankan).
+        assert!(vtt.contains("Hello *world*"), "{vtt}");
+        // Cue terjemahan: markdown dibuang.
+        assert!(
+            vtt.contains("00:00:03.000 --> 00:00:04.000\nTch. Jangan sombong"),
+            "{vtt}"
+        );
+        // Sisa bintang hanya dari cue EN yang belum diterjemah (2 dari *world*).
+        assert_eq!(vtt.matches('*').count(), 2, "{vtt}");
+    }
+
+    /// Cache redis lama (dibuat sebelum sanitasi) tetap tampil bersih saat disajikan.
+    #[test]
+    fn cache_lama_bermarkdown_tetap_bersih() {
+        let lama = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n*Tch.* Jangan sombong\n\n00:00:03.000 --> 00:00:04.000\n*Pergi,\nsekarang!*\n";
+        let (head, cues) = parse_vtt(lama);
+        let id: HashMap<usize, String> = cues
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| cue_lines(c).map(|ls| (i, ls.join("\n"))))
+            .collect();
+        let out = build_vtt_id(&head, &cues, &id);
+        assert!(!out.contains('*'), "{out}");
+        assert!(out.contains("Tch. Jangan sombong"), "{out}");
+        assert!(out.contains("Pergi,\nsekarang!"), "{out}");
     }
 }
