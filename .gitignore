@@ -1,7 +1,0 @@
-/target
-/.cache
-/.env
-web/dist
-web/node_modules
-y.txt
-zanime
