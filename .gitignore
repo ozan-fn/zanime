@@ -1,0 +1,5 @@
+tmp/
+
+# hasil build frontend (di-embed ke binary) — .gitkeep tetap dilacak
+/internal/web/dist/*
+!/internal/web/dist/.gitkeep

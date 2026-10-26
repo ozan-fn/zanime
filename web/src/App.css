@@ -1,0 +1,84 @@
+@import 'tailwindcss';
+
+/* shadcn-style tokens (dark) — radius 2px sesuai permintaan */
+@theme {
+  --radius: 2px;
+  --color-background: #09090b;
+  --color-foreground: #fafafa;
+  --color-card: #111113;
+  --color-card-foreground: #fafafa;
+  --color-muted: #27272a;
+  --color-muted-foreground: #a1a1aa;
+  --color-border: #27272a;
+  --color-input: #3f3f46;
+  --color-primary: #fafafa;
+  --color-primary-foreground: #18181b;
+  --color-accent: #27272a;
+  --color-accent-foreground: #fafafa;
+  --color-destructive: #ef4444;
+  --color-ring: #52525b;
+}
+
+html {
+  color-scheme: dark;
+}
+
+/* dropdown native: daftar opsi harus ikut tema gelap (bukan putih bawaan OS) */
+select {
+  color-scheme: dark;
+}
+
+select option,
+select optgroup {
+  background-color: #18181b;
+  color: #fafafa;
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* scrollbar tipis ala shadcn */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f46 transparent;
+}
+
+/* video element */
+video::cue {
+  background: rgba(0, 0, 0, 0.75);
+}
+
+/* garis putus-putus berjalan untuk alur kecepatan */
+@keyframes flow-dash {
+  to {
+    background-position: 16px 0;
+  }
+}
+
+.flow-dash {
+  height: 2px;
+  background-image: repeating-linear-gradient(
+    90deg,
+    currentColor 0 8px,
+    transparent 8px 16px
+  );
+  background-size: 16px 2px;
+  animation: flow-dash 0.7s linear infinite;
+}
+
+/* diam saat tidak ada aliran data */
+.flow-dash.flow-idle {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-dash {
+    animation: none;
+  }
+}
