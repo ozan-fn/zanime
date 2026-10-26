@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Zanime — Sousou no Frieren S2E09</title>
+<script type="module" src="https://cdn.jsdelivr.net/npm/movi-player/dist/element.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #0b0b0f; color: #e8e8ef;
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; padding: 24px;
+  }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; text-align: center; color: #cfcfe0; }
+  movi-player { width: min(1280px, 100%); aspect-ratio: 16/9; background: #000; border-radius: 12px; overflow: hidden; }
+  .meta { font-size: 12px; color: #6f6f85; text-align: center; word-break: break-all; max-width: min(1280px, 100%); }
+  form { display: flex; gap: 8px; width: min(1280px, 100%); }
+  input {
+    flex: 1; min-width: 0; padding: 9px 12px; border-radius: 8px;
+    border: 1px solid #2a2a3a; background: #14141c; color: #e8e8ef;
+    font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  input:focus { outline: none; border-color: #7c75ff; }
+  button {
+    padding: 9px 16px; border: 0; border-radius: 8px; cursor: pointer;
+    background: #7c75ff; color: #fff; font-weight: 600; white-space: nowrap;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  #load-status:empty { display: none; }
+</style>
+</head>
+<body>
+  <h1 id="judul">[Erai-raws] Sousou no Frieren 2nd Season - 09 [1080p CR WEBRip HEVC AAC][MultiSub][D9A6C94A]</h1>
+
+  <form id="form-magnet">
+    <input id="magnet-input" type="text" spellcheck="false" autocomplete="off"
+           value="{{MAGNET_HTML}}" placeholder="magnet:?xt=urn:btih:...">
+    <button type="submit">Load magnet</button>
+  </form>
+  <p id="load-status" class="meta"></p>
+
+  <movi-player
+    src="/stream"
+    controls
+    fastseek
+    resume
+    subtitlepicker
+    buffersize="64"
+    smoothwarning
+    nolinkwarning
+    theme="dark"
+    themecolor="#7c75ff #4f86ff"
+  ></movi-player>
+
+  <p class="meta">
+    Stream langsung dari magnet (librqbit) · seek tanpa menunggu unduh penuh ·
+    subtitle embedded + <code>subtitlepicker</code>
+  </p>
+  <p class="meta">
+    HEVC 10-bit di-decode di browser (WebCodecs). Tekan <kbd>I</kbd> di player
+    untuk melihat decoder (hardware/software) dan frame drop.
+  </p>
+
+  <script type="module">
+    const player = document.querySelector("movi-player");
+    const form = document.getElementById("form-magnet");
+    const input = document.getElementById("magnet-input");
+    const status = document.getElementById("load-status");
+    const title = document.getElementById("judul");
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const magnet = input.value.trim();
+      if (!magnet) return;
+
+      const button = form.querySelector("button");
+      button.disabled = true;
+      status.textContent = "Menambahkan torrent… (menunggu metadata bisa butuh waktu)";
+
+      try {
+        const res = await fetch("/load", {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body: magnet,
+        });
+        const data = await res.json().catch(() => ({ error: res.statusText }));
+        if (!res.ok) throw new Error(data.error || "gagal memuat magnet");
+
+        title.textContent = data.name;
+        document.title = "Zanime — " + data.name;
+        status.textContent = "Memuat: " + data.name;
+        // paksa player membuka stream baru (torrent sudah diganti di server)
+        player.src = "/stream?t=" + Date.now();
+      } catch (err) {
+        status.textContent = "Gagal: " + err.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
