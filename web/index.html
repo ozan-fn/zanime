@@ -136,10 +136,12 @@
             persist: hanya yang terdaftar yang diingat (bahasa subtitle sengaja tidak
             dimasukkan — ditangani script di bawah lewat API player, lihat applySubtitle).
           -->
-          <movi-player id="player"
+          <!-- probesize/probeduration dipasang capping untuk MKV multi-sub: tanpa batas, ffmpeg membaca hampir seluruh file demi paket pertama tiap track subtitle. -->
+<movi-player id="player"
             controls autoplay playsinline thumb
             theme="dark" themecolor="#818cf8"
             buffersize="64"
+            probesize="2mb" probeduration="1000"
             persist="loop muted volume speed ambient stablevolume hdr aspect cropbars audiolang"
             persistkey="zanime"></movi-player>
           <div id="now-playing" class="hidden items-center justify-between gap-3 border-t border-white/10 bg-white/[0.03] px-4 py-3">
