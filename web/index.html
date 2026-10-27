@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>zanime — torrent streaming</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html, body { height: 100%; }
+    body {
+      background:
+        radial-gradient(900px 500px at 15% -10%, rgba(99, 102, 241, .16), transparent 60%),
+        radial-gradient(700px 420px at 95% 0%, rgba(139, 92, 246, .12), transparent 55%),
+        #08090c;
+    }
+    movi-player { display: block; width: 100%; height: 100%; background: #000; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: #2a2b33; border-radius: 999px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    .file-row[aria-current="true"] { box-shadow: inset 3px 0 0 #818cf8; }
+  </style>
+</head>
+<body class="min-h-full text-zinc-200 antialiased selection:bg-indigo-500/30">
+  <div class="mx-auto flex min-h-screen max-w-7xl flex-col px-4 py-6 sm:px-6 lg:px-8">
+    <header class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <div class="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 shadow-lg shadow-indigo-500/25">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 text-white" fill="currentColor" aria-hidden="true">
+            <path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.1-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14Z"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="text-lg font-semibold tracking-tight text-white">zanime</h1>
+          <p class="text-xs text-zinc-500">torrent video streaming · cache RAM-only</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 text-[11px] font-medium text-emerald-300">
+          <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> zero disk
+        </span>
+        <span class="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-400">
+          <span class="h-1.5 w-1.5 rounded-full bg-indigo-400"></span> movi-player
+        </span>
+      </div>
+    </header>
+
+    <main class="mt-6 grid flex-1 items-start gap-5 lg:grid-cols-[390px_minmax(0,1fr)]">
+      <section class="flex min-w-0 flex-col gap-4">
+        <div class="rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-2xl shadow-black/30 backdrop-blur">
+          <form id="magnet-form" class="space-y-3">
+            <div class="flex items-center justify-between">
+              <label for="magnet" class="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Magnet link</label>
+              <span class="text-[11px] text-zinc-600">BitTorrent</span>
+            </div>
+            <textarea id="magnet" rows="3" spellcheck="false" autocomplete="off"
+              class="w-full resize-none rounded-xl border border-white/10 bg-black/40 px-3 py-2.5 font-mono text-xs leading-relaxed text-zinc-200 outline-none transition placeholder:text-zinc-600 focus:border-indigo-400/50 focus:ring-2 focus:ring-indigo-500/20"
+              placeholder="magnet:?xt=urn:btih:..."></textarea>
+            <button id="load-btn" type="submit"
+              class="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-indigo-400/50 disabled:cursor-not-allowed disabled:opacity-60">
+              <svg id="load-spinner" class="hidden h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-80" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4Z"></path>
+              </svg>
+              <span>Muat torrent</span>
+            </button>
+          </form>
+
+          <div id="status" class="mt-3 hidden rounded-xl border px-3 py-2 text-xs leading-relaxed" role="status"></div>
+        </div>
+
+        <div id="files-card" class="hidden rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-2xl shadow-black/30 backdrop-blur">
+          <div class="flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <h2 class="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Pilih video</h2>
+              <p id="torrent-name" class="mt-1 truncate text-sm font-medium text-zinc-200"></p>
+            </div>
+            <span id="file-count" class="shrink-0 rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[11px] text-zinc-400"></span>
+          </div>
+          <div id="files" class="mt-3 max-h-[380px] space-y-1.5 overflow-y-auto pr-1"></div>
+        </div>
+
+        <div id="stats-card" class="hidden rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-2xl shadow-black/30 backdrop-blur">
+          <div class="flex items-center justify-between">
+            <h2 class="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Status</h2>
+            <span id="peers-wrap" class="text-[11px] text-zinc-500"><span id="peers" class="font-semibold text-zinc-300">0</span> peer</span>
+          </div>
+
+          <div class="mt-3 space-y-3">
+            <div>
+              <div class="flex items-center justify-between text-[11px] text-zinc-500">
+                <span>Cache RAM</span>
+                <span><span id="cache-text" class="text-zinc-300">0 B</span> · <span id="evictions" class="text-zinc-300">0</span> evict</span>
+              </div>
+              <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                <div id="cache-bar" class="h-full w-0 rounded-full bg-gradient-to-r from-indigo-400 to-violet-500 transition-[width] duration-500"></div>
+              </div>
+            </div>
+            <div>
+              <div class="flex items-center justify-between text-[11px] text-zinc-500">
+                <span>Tersedia dari torrent</span>
+                <span id="dl-text" class="text-zinc-300">0 B</span>
+              </div>
+              <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                <div id="dl-bar" class="h-full w-0 rounded-full bg-gradient-to-r from-emerald-400 to-teal-500 transition-[width] duration-500"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="flex min-w-0 flex-col gap-3">
+        <div class="overflow-hidden rounded-2xl border border-white/10 bg-black shadow-2xl shadow-black/50">
+          <div class="aspect-video w-full">
+            <movi-player id="player" controls playsinline buffersize="64" thumb></movi-player>
+          </div>
+          <div id="now-playing" class="hidden items-center justify-between gap-3 border-t border-white/10 bg-white/[0.03] px-4 py-3">
+            <div class="min-w-0">
+              <p id="np-title" class="truncate text-sm font-medium text-zinc-100"></p>
+              <p id="np-sub" class="mt-0.5 text-[11px] text-zinc-500"></p>
+            </div>
+            <span class="hidden shrink-0 rounded-full border border-indigo-400/20 bg-indigo-400/10 px-2.5 py-1 text-[11px] font-medium text-indigo-300 sm:inline">streaming</span>
+          </div>
+        </div>
+        <div class="flex items-start gap-2 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-[11px] leading-relaxed text-zinc-500">
+          <svg viewBox="0 0 24 24" class="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-600" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path>
+          </svg>
+          <span>MKV, HEVC, AV1, dan subtitle di dalam file diputar lokal oleh MoviPlayer (WebCodecs + FFmpeg WASM). Server hanya mengirim byte lewat Range request; tidak ada transcoding.</span>
+        </div>
+      </section>
+    </main>
+
+    <footer class="mt-6 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] pt-4 text-[11px] text-zinc-600">
+      <span>zanime · Gin + anacrolix/torrent</span>
+      <span>cache maksimal <span id="footer-cache">200 MiB</span> · tanpa file data di disk</span>
+    </footer>
+  </div>
+
+  <script type="module" src="https://moviplayer.com/dist/element.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const player = $('player');
+    const form = $('magnet-form');
+    const magnetInput = $('magnet');
+    const loadBtn = $('load-btn');
+    const statusEl = $('status');
+    const filesCard = $('files-card');
+    const filesEl = $('files');
+    const statsCard = $('stats-card');
+    const nowPlaying = $('now-playing');
+
+    let lastFileKey = '';
+    let lastSize = 0;
+
+    const fmt = (n) => {
+      if (!n || n < 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0;
+      let v = n;
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+      const digits = i === 0 || v >= 10 ? 0 : 1;
+      return `${v.toFixed(digits)} ${units[i]}`;
+    };
+
+    function setStatus(message, kind = 'info') {
+      const styles = {
+        info: 'border-indigo-400/20 bg-indigo-400/[0.07] text-indigo-200',
+        ok: 'border-emerald-400/20 bg-emerald-400/[0.07] text-emerald-200',
+        error: 'border-rose-400/20 bg-rose-400/[0.07] text-rose-200',
+      };
+      statusEl.className = `mt-3 rounded-xl border px-3 py-2 text-xs leading-relaxed ${styles[kind] || styles.info}`;
+      statusEl.textContent = message;
+      statusEl.classList.remove('hidden');
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      const text = await res.text();
+      let body = {};
+      try { body = text ? JSON.parse(text) : {}; } catch { /* non-JSON error */ }
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      return body;
+    }
+
+    function renderFiles(files, selected) {
+      filesEl.replaceChildren();
+      for (const file of files) {
+        const active = file.index === selected;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.dataset.index = String(file.index);
+        btn.setAttribute('aria-current', active ? 'true' : 'false');
+        btn.className = [
+          'file-row group flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition',
+          active
+            ? 'border-indigo-400/30 bg-indigo-500/10'
+            : 'border-transparent hover:border-white/10 hover:bg-white/[0.04]',
+        ].join(' ');
+
+        const icon = document.createElement('span');
+        icon.className = active
+          ? 'grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-indigo-500/20 text-indigo-300'
+          : 'grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-white/[0.05] text-zinc-500 group-hover:text-zinc-300';
+        icon.innerHTML = '<svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="currentColor" aria-hidden="true"><path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.1-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14Z"/></svg>';
+
+        const body = document.createElement('span');
+        body.className = 'min-w-0 flex-1';
+        const name = document.createElement('span');
+        name.className = active ? 'block truncate text-sm font-medium text-white' : 'block truncate text-sm text-zinc-300';
+        name.textContent = file.name;
+        const sub = document.createElement('span');
+        sub.className = 'mt-0.5 block truncate text-[11px] text-zinc-500';
+        sub.textContent = file.path && file.path !== file.name ? file.path : fmt(file.size);
+        body.append(name, sub);
+
+        const size = document.createElement('span');
+        size.className = 'ml-2 shrink-0 text-[11px] tabular-nums text-zinc-500';
+        size.textContent = fmt(file.size);
+
+        btn.append(icon, body, size);
+        btn.addEventListener('click', () => selectFile(file));
+        filesEl.appendChild(btn);
+      }
+    }
+
+    function applyState(state) {
+      lastSize = state.length || lastSize;
+      $('footer-cache').textContent = state.cache ? fmt(state.cache.limit) : '200 MiB';
+
+      const files = Array.isArray(state.files) ? state.files : [];
+      filesCard.classList.toggle('hidden', files.length === 0);
+      statsCard.classList.toggle('hidden', !state.name);
+      nowPlaying.classList.toggle('hidden', files.length === 0);
+      nowPlaying.classList.toggle('flex', files.length > 0);
+
+      if (state.name) $('torrent-name').textContent = state.name;
+      $('file-count').textContent = `${files.length} file`;
+
+      const key = files.map((f) => `${f.index}:${f.name}:${f.size}`).join('|') + '#' + state.selected;
+      if (key !== lastFileKey) {
+        lastFileKey = key;
+        renderFiles(files, state.selected);
+      }
+
+      if (state.cache) {
+        const used = state.cache.used || 0;
+        const limit = state.cache.limit || 1;
+        $('cache-text').textContent = `${fmt(used)} / ${fmt(limit)}`;
+        $('cache-bar').style.width = `${Math.min(100, (used / limit) * 100)}%`;
+        $('evictions').textContent = String(state.cache.evictions || 0);
+      }
+      $('peers').textContent = String(state.peers || 0);
+
+      const dl = state.downloaded || 0;
+      const total = state.length || 0;
+      $('dl-text').textContent = total ? `${fmt(dl)} / ${fmt(total)}` : fmt(dl);
+      $('dl-bar').style.width = total ? `${Math.min(100, (dl / total) * 100)}%` : '0%';
+    }
+
+    function playFile(file) {
+      $('np-title').textContent = file.name;
+      $('np-sub').textContent = `${fmt(file.size)} · ${file.path || file.name}`;
+      player.src = file.url;
+      const attempt = () => {
+        const playing = player.play?.();
+        if (playing && typeof playing.catch === 'function') playing.catch(() => {});
+      };
+      player.addEventListener('canplay', attempt, { once: true });
+      attempt();
+    }
+
+    async function selectFile(file) {
+      try {
+        const state = await api('/api/select', {
+          method: 'POST',
+          body: JSON.stringify({ index: file.index }),
+        });
+        applyState(state);
+        playFile(file);
+      } catch (err) {
+        setStatus(err.message, 'error');
+      }
+    }
+
+    async function refresh() {
+      try {
+        applyState(await api('/api/state'));
+      } catch { /* server restarting */ }
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const magnet = magnetInput.value.trim();
+      if (!magnet) {
+        setStatus('Tempel magnet link dulu.', 'error');
+        return;
+      }
+
+      loadBtn.disabled = true;
+      $('load-spinner').classList.remove('hidden');
+      setStatus('Menghubungi tracker dan menunggu metadata torrent…', 'info');
+
+      try {
+        const state = await api('/api/magnet', {
+          method: 'POST',
+          body: JSON.stringify({ magnet }),
+        });
+        applyState(state);
+        setStatus(`Torrent siap: ${state.name || 'tanpa nama'}. Pilih video untuk diputar.`, 'ok');
+        const first = (state.files || [])[state.selected] || (state.files || [])[0];
+        if (first) playFile(first);
+      } catch (err) {
+        setStatus(err.message, 'error');
+      } finally {
+        loadBtn.disabled = false;
+        $('load-spinner').classList.add('hidden');
+      }
+    });
+
+    player.addEventListener('error', (event) => {
+      const message = event?.detail?.message || event?.detail?.error || event?.message;
+      if (message) setStatus(`Player: ${message}`, 'error');
+    });
+
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>
