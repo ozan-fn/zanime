@@ -19,6 +19,7 @@ import (
 
 	"github.com/anacrolix/torrent"
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 
 	"zanime/internal/config"
 	"zanime/internal/memstorage"
@@ -31,6 +32,9 @@ var webFiles embed.FS
 const defaultMagnet = "magnet:?xt=urn:btih:3c5356a2834c80305e18479ad39d16a4f8b8682b&dn=%5BErai-raws%5D%20Gabriel%20DropOut%20-%2001%20~%2012%20%5B1080p%5D%5BMultiple%20Subtitle%5D&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce"
 
 const metadataTimeout = 45 * time.Second
+
+// wsDelay is how often /api/ws pushes the state the UI used to poll for.
+const wsDelay = 700 * time.Millisecond
 
 var errMetadataTimeout = errors.New("metadata timeout")
 
@@ -81,6 +85,7 @@ func main() {
 	r.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 	r.GET("/info", srv.info)
 	r.GET("/api/state", srv.apiState)
+	r.GET("/api/ws", srv.apiWS)
 	r.POST("/api/magnet", srv.apiMagnet)
 	r.POST("/api/select", srv.apiSelect)
 	r.GET("/stream", srv.stream)
@@ -280,6 +285,56 @@ func (s *server) apiMagnet(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, s.state())
+}
+
+// wsUpgrader accepts any origin: the UI is served by this same server, but a
+// page opened from another host or from a file:// path should still be able to
+// watch the status.
+var wsUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+
+// apiWS pushes the same payload as /api/state every wsDelay, so the UI does not
+// have to poll. The browser may send anything; incoming frames are read only to
+// notice the connection closing.
+func (s *server) apiWS(c *gin.Context) {
+	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return // Upgrade already wrote the HTTP error
+	}
+	defer func() { _ = conn.Close() }()
+
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	ticker := time.NewTicker(wsDelay)
+	defer ticker.Stop()
+	for {
+		if err := writeWSState(conn, s.state()); err != nil {
+			return
+		}
+		select {
+		case <-closed:
+			return
+		case <-c.Request.Context().Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// writeWSState is only ever called from the API handler's own goroutine: the
+// gorilla connection allows one concurrent writer.
+func writeWSState(conn *websocket.Conn, state gin.H) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
+	return conn.WriteJSON(state)
 }
 
 func (s *server) apiSelect(c *gin.Context) {

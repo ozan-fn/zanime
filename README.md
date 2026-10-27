@@ -76,7 +76,8 @@ Buka `http://localhost:8080`:
 
 1. Tempel magnet, klik **Muat torrent**. Server menunggu metadata lalu menampilkan daftar file video, urut nama.
 2. Klik salah satu file. `src` player diarahkan ke `/stream/<index>/<nama>` dan playback langsung dicoba.
-3. Panel status menampilkan cache RAM, eviction, peer, dan byte yang tersedia.
+3. Panel status menampilkan cache RAM, eviction, peer, dan byte yang tersedia. UI tidak polling: ia membuka `GET /api/ws` dan server mendorong payload `/api/state` tiap 0,7 detik (`wsDelay` di `main.go`). Socket yang putus disambung ulang otomatis oleh UI.
+4. Tombol **FFmpeg** di header menyalakan/mematikan pipeline FFmpeg WASM. Saat dimatikan, UI memasang `engine="native"` sehingga `<movi-player>` menyerahkan `src` ke `<video>` bawaan dan `movi.wasm` tidak diunduh; file yang codec-nya tidak didukung browser (umumnya MKV/HEVC) akan gagal diputar, jadi pilihan ini untuk file MP4/WebM atau browser yang sudah punya decoder-nya. Preferensi disimpan di `localStorage` (`zanime.last.ffmpeg`) dan file yang sedang diputar dimuat ulang saat toggle diubah.
 
 Magnet dan episode terakhir disimpan di `localStorage` (`zanime.last`), jadi membuka ulang UI langsung memuat torrent dan video yang sama. Bahasa subtitle terakhir diingat oleh atribut `persist` MoviPlayer (`persistkey="zanime"`) dan diterapkan ulang oleh UI setiap ganti video. Penerapan ulang mencocokkan tag lewat alias (`id`/`in`/`ind`/`indonesian`, dst.), dan kalau file baru hanya punya satu track subtitle tanpa tag yang cocok, track itu yang dipilih — jadi tidak perlu memilih manual lagi.
 
@@ -88,6 +89,7 @@ Player di-load dari `https://moviplayer.com/dist/element.js`; Tailwind dari `htt
 |------|--------|
 | `GET /` | UI (embedded `web/index.html`) |
 | `GET /api/state` | status torrent, daftar file video, file terpilih, cache, peer |
+| `GET /api/ws` | WebSocket; payload sama dengan `/api/state`, dikirim tiap 0,7 detik |
 | `POST /api/magnet` | `{"magnet":"..."}` — ganti torrent aktif, tunggu metadata |
 | `POST /api/select` | `{"index":N}` — pilih file video |
 | `GET /stream` | file terpilih; dukung `HEAD` dan `Range` |

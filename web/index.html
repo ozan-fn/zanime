@@ -24,7 +24,8 @@
         radial-gradient(700px 420px at 95% 0%, rgba(139, 92, 246, .12), transparent 55%),
         #08090c;
     }
-    movi-player { display: block; width: 100%; height: 100%; background: #000; }
+    /* Pola "Full Width Responsive" dari docs MoviPlayer. */
+    movi-player { width: 100%; aspect-ratio: 16 / 9; background: #000; }
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-thumb { background: #2a2b33; border-radius: 2px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -52,6 +53,11 @@
         <span class="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-400">
           <span class="h-1.5 w-1.5 rounded-full bg-indigo-400"></span> movi-player
         </span>
+        <label for="ffmpeg" title="Matikan untuk memakai decoder native browser (tanpa pipeline FFmpeg WASM; MKV/HEVC dan subtitle di dalam file biasanya tidak didukung)"
+          class="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-400 transition hover:border-white/20">
+          <input id="ffmpeg" type="checkbox" class="h-3 w-3 cursor-pointer accent-indigo-500" checked />
+          <span>FFmpeg</span>
+        </label>
       </div>
     </header>
 
@@ -121,11 +127,17 @@
 
       <section class="flex min-w-0 flex-col gap-3">
         <div class="overflow-hidden rounded-2xl border border-white/10 bg-black shadow-2xl shadow-black/50">
-          <div class="aspect-video w-full">
-            <movi-player id="player" controls playsinline buffersize="64" thumb
-              persist="loop muted volume speed ambient stablevolume hdr aspect cropbars audiolang subtitlelang"
-              persistkey="zanime"></movi-player>
-          </div>
+          <!--
+            Semua atribut di bawah ada di docs MoviPlayer (MoviElement → Attributes).
+            persist: hanya yang terdaftar yang diingat (bahasa subtitle sengaja tidak
+            dimasukkan — ditangani script di bawah lewat API player, lihat applySubtitle).
+          -->
+          <movi-player id="player"
+            controls autoplay playsinline thumb
+            theme="dark" themecolor="#818cf8"
+            buffersize="64"
+            persist="loop muted volume speed ambient stablevolume hdr aspect cropbars audiolang"
+            persistkey="zanime"></movi-player>
           <div id="now-playing" class="hidden items-center justify-between gap-3 border-t border-white/10 bg-white/[0.03] px-4 py-3">
             <div class="min-w-0">
               <p id="np-title" class="truncate text-sm font-medium text-zinc-100"></p>
@@ -149,7 +161,12 @@
     </footer>
   </div>
 
-  <script type="module" src="https://moviplayer.com/dist/element.js"></script>
+  <!--
+    Build slim sesuai docs MoviPlayer (v0.4.1): movi.wasm dimuat sebagai file
+    terpisah dari samping bundle JS, bukan tertanam di dalamnya. Jangan set
+    atribut wasmurl — itu mematikan fallback native otomatis milik build slim.
+  -->
+  <script type="module" src="https://cdn.jsdelivr.net/npm/movi-player@0.4.1/dist/element.slim.js"></script>
   <script>
     const $ = (id) => document.getElementById(id);
     const player = $('player');
@@ -163,81 +180,98 @@
     const nowPlaying = $('now-playing');
 
     let lastFileKey = '';
-    let lastSize = 0;
 
-    // Magnet + chosen episode survive reloads; the subtitle language is kept by
-    // the player's persist attribute above and re-applied below on every file
-    // switch.
+    // Magnet + episode terakhir bertahan setelah reload.
     const LAST_KEY = 'zanime.last';
     const lastSaved = () => {
       try { return JSON.parse(localStorage.getItem(LAST_KEY)) || {}; } catch { return {}; }
     };
     const saveLast = (patch) => localStorage.setItem(LAST_KEY, JSON.stringify({ ...lastSaved(), ...patch }));
 
-    // The element's own persist only matches the same language tag, so a file
-    // tagged `id` after one tagged `ind` (or an untagged track) comes up with
-    // subtitles off and the viewer has to pick again. These aliases close that
-    // gap.
-    const SUB_ALIASES = {
-      id: ['id', 'in', 'ind', 'indonesian'],
-      ms: ['ms', 'msa', 'may', 'malay', 'melayu'],
-      en: ['en', 'eng', 'english'],
-      ja: ['ja', 'jpn', 'japanese'],
-      ko: ['ko', 'kor', 'korean'],
-      zh: ['zh', 'zho', 'chi', 'chinese', 'mandarin'],
-      tl: ['tl', 'tgl', 'fil', 'tagalog', 'filipino'],
-      es: ['es', 'spa', 'spanish'],
-      fr: ['fr', 'fra', 'fre', 'french'],
-      de: ['de', 'deu', 'ger', 'german'],
-      pt: ['pt', 'por', 'portuguese'],
-      ru: ['ru', 'rus', 'russian'],
-      ar: ['ar', 'ara', 'arabic'],
-      th: ['th', 'tha', 'thai'],
-      vi: ['vi', 'vie', 'vietnamese'],
+    /* ------------------------------------------------------------------ *
+     * Subtitle auto-load — hanya pakai API yang ada di docs:
+     *   - player.player.getSubtitleTracks()            (MoviPlayer, semua track)
+     *   - player.player.selectSubtitleTrack(id | null)
+     *   - event DOM loadstart / loadedmetadata / trackschange / loadeddata
+     *   - event inti subtitleTrackChange { lang, label } | { lang: null }
+     *
+     * Kenapa tidak getSubtitleLangs() di element: docs element mendefinisikannya
+     * sebagai daftar subtitle eksternal, jadi subtitle yang tertanam di MKV
+     * tidak muncul di sana dan auto-load tidak pernah menemukan apa-apa.
+     *
+     * Aturan:
+     *   - belum pernah memilih  -> Indonesia, lalu English, lalu track pertama
+     *   - terakhir memilih bahasa X -> track dengan bahasa/label sama dinyalakan
+     *   - terakhir mematikan subtitle -> tetap mati
+     *   - file tanpa bahasa pilihan itu -> jatuh ke urutan Indonesia > English > sisanya
+     * ------------------------------------------------------------------ */
+    const SUB_KEY = 'zanime.subtitle';
+    const readSubPref = () => {
+      try { return JSON.parse(localStorage.getItem(SUB_KEY)); } catch { return null; }
+    };
+    const writeSubPref = (pref) => {
+      try { localStorage.setItem(SUB_KEY, JSON.stringify(pref)); } catch { /* storage penuh/diblokir */ }
     };
 
-    const canonLang = (lang) => {
-      const tag = String(lang || '').trim().toLowerCase().replace(/[_.]/g, '-').split('-')[0];
-      if (!tag || ['und', 'unknown', 'mis', 'zxx'].includes(tag)) return '';
-      for (const [code, tags] of Object.entries(SUB_ALIASES)) {
-        if (tags.includes(tag)) return code;
+    // Urutan prioritas: Indonesia -> English -> sisanya (track pertama).
+    // Dicocokkan ke kode bahasa track DAN labelnya.
+    const SUB_PRIORITY = [
+      { lang: /^(id|ind|in)([-_]|$)/i, label: /indonesia|bahasa/i },
+      { lang: /^(en|eng)([-_]|$)/i, label: /english|inggris/i },
+    ];
+    const pickByPriority = (tracks) => {
+      for (const rule of SUB_PRIORITY) {
+        const hit = tracks.find((t) => rule.lang.test(t.language || '') || rule.label.test(t.label || ''));
+        if (hit) return hit;
       }
-      return tag;
+      return tracks[0];
     };
 
-    const subLangs = () => {
-      try { return player.getSubtitleLangs?.() || []; } catch { return []; }
-    };
+    let subtitleDone = false;
+    let applyingSubtitle = false;
 
-    // Current choice: '' = subtitles off, undefined = tracks not known yet
-    // (keep the stored preference).
-    const rememberSubtitle = () => {
-      const langs = subLangs();
-      if (!langs.length) return undefined;
-      const lang = langs.find((l) => l.active)?.lang || '';
-      saveLast({ subtitleLang: lang });
-      return lang;
-    };
+    async function applySubtitle() {
+      if (subtitleDone) return;
+      const core = player.player;
+      const tracks = core?.getSubtitleTracks?.() || [];
+      if (!tracks.length) return; // belum siap / file tanpa subtitle — dicoba lagi di event berikutnya
+      subtitleDone = true;
 
-    let restoreToken = 0;
-    const restoreSubtitle = (lang) => {
-      const token = ++restoreToken;
-      const want = canonLang(lang);
-      if (!want) return;
-      const deadline = Date.now() + 10000;
-      const attempt = () => {
-        if (token !== restoreToken) return;
-        const langs = subLangs();
-        if (langs.length) {
-          const pick = langs.find((l) => canonLang(l.lang) === want)
-            || (langs.length === 1 ? langs[0] : null);
-          if (pick) Promise.resolve(player.selectSubtitleLang?.(pick.lang)).catch(() => {});
-          return;
+      const pref = readSubPref();
+      let target = null;
+      if (!pref) {
+        target = pickByPriority(tracks);
+      } else if (!pref.off) {
+        target = tracks.find((t) => pref.lang && pref.lang !== 'und' && t.language === pref.lang)
+          || tracks.find((t) => pref.label && t.label === pref.label)
+          || pickByPriority(tracks);
+      }
+
+      if (target) {
+        applyingSubtitle = true;
+        try {
+          await core.selectSubtitleTrack(target.id);
+        } catch (err) {
+          console.warn('Subtitle gagal dipilih:', err);
+        } finally {
+          applyingSubtitle = false;
         }
-        if (Date.now() < deadline) setTimeout(attempt, 300);
-      };
-      attempt();
-    };
+      }
+
+      // Dipasang setelah pemilihan awal, supaya hanya pilihan penonton
+      // (menu subtitle player) yang disimpan, bukan pemilihan otomatis di atas.
+      core.on('subtitleTrackChange', ({ lang, label }) => {
+        if (applyingSubtitle) return;
+        writeSubPref(lang ? { lang, label } : { off: true });
+      });
+    }
+
+    player.addEventListener('loadstart', () => { subtitleDone = false; });
+    for (const name of ['loadedmetadata', 'trackschange', 'loadeddata']) {
+      player.addEventListener(name, applySubtitle);
+    }
+
+    /* ------------------------------------------------------------------ */
 
     const fmt = (n) => {
       if (!n || n < 0) return '0 B';
@@ -314,7 +348,6 @@
     }
 
     function applyState(state) {
-      lastSize = state.length || lastSize;
       $('footer-cache').textContent = state.cache ? fmt(state.cache.limit) : '200 MiB';
 
       const files = Array.isArray(state.files) ? state.files : [];
@@ -347,18 +380,13 @@
       $('dl-bar').style.width = total ? `${Math.min(100, (dl / total) * 100)}%` : '0%';
     }
 
+    // Cukup set src; atribut `autoplay` di <movi-player> yang menjalankan playback.
+    let currentFile = null;
     function playFile(file) {
+      currentFile = file;
       $('np-title').textContent = file.name;
       $('np-sub').textContent = `${fmt(file.size)} · ${file.path || file.name}`;
-      const subtitle = rememberSubtitle() ?? lastSaved().subtitleLang;
       player.src = file.url;
-      restoreSubtitle(subtitle);
-      const attempt = () => {
-        const playing = player.play?.();
-        if (playing && typeof playing.catch === 'function') playing.catch(() => {});
-      };
-      player.addEventListener('canplay', attempt, { once: true });
-      attempt();
     }
 
     async function selectFile(file) {
@@ -380,6 +408,57 @@
         applyState(await api('/api/state'));
       } catch { /* server restarting */ }
     }
+
+    /* ------------------------------------------------------------------ *
+     * Status lewat WebSocket: server mendorong payload yang sama dengan
+     * /api/state tiap 0,7 detik, jadi UI tidak polling. Reconnect otomatis
+     * kalau server restart atau koneksi putus.
+     * ------------------------------------------------------------------ */
+    function connectStatus() {
+      const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+      const socket = new WebSocket(`${scheme}://${location.host}/api/ws`);
+      socket.addEventListener('message', (event) => {
+        try { applyState(JSON.parse(event.data)); } catch { /* frame rusak, tunggu yang berikutnya */ }
+      });
+      socket.addEventListener('close', () => setTimeout(connectStatus, 1000));
+      socket.addEventListener('error', () => socket.close());
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Toggle FFmpeg: pipeline WASM (demux + decode MKV/HEVC di browser) vs
+     * decoder native. Mematikan FFmpeg memasang engine="native" (docs:
+     * atribut `engine`), sehingga elemen menyerahkan src ke <video> bawaan
+     * dengan UI Movi tetap di atasnya. Nilai satu nama = tanpa fallback.
+     * ------------------------------------------------------------------ */
+    const ffmpegToggle = $('ffmpeg');
+    const ffmpegEnabled = () => lastSaved().ffmpeg !== false;
+
+    function applyEngine() {
+      if (ffmpegEnabled()) player.removeAttribute('engine');
+      else player.setAttribute('engine', 'native');
+    }
+
+    // engine hanya dibaca saat load. Docs: `src = null` mengosongkan source,
+    // jadi mengosongkan lalu mengisi ulang menjamin load baru dengan engine baru
+    // (mengisi URL yang sama saja tidak dijamin memicu load ulang).
+    function reloadCurrent() {
+      if (!currentFile) return;
+      const url = currentFile.url;
+      player.src = null;
+      player.src = url;
+    }
+
+    ffmpegToggle.checked = ffmpegEnabled();
+    ffmpegToggle.addEventListener('change', () => {
+      saveLast({ ffmpeg: ffmpegToggle.checked });
+      applyEngine();
+      reloadCurrent();
+      setStatus(ffmpegToggle.checked
+        ? 'FFmpeg WASM aktif: MKV/HEVC dan subtitle di dalam file diputar lewat WebCodecs.'
+        : 'Decoder native aktif: pipeline FFmpeg WASM tidak dipakai. File yang codec-nya tidak didukung browser akan gagal diputar, dan subtitle di dalam file tidak tampil.',
+      'info');
+    });
+    applyEngine();
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -414,17 +493,19 @@
       }
     });
 
+    // Docs: event `error` membawa Error di `detail`.
     player.addEventListener('error', (event) => {
-      const message = event?.detail?.message || event?.detail?.error || event?.message;
+      const message = event.detail?.message;
       if (message) setStatus(`Player: ${message}`, 'error');
     });
 
     const saved = lastSaved();
     if (saved.magnet) magnetInput.value = saved.magnet;
-    refresh();
-    setInterval(refresh, 3000);
-    // Wait for the element to upgrade, or a fast restore would set `src` on the
-    // un-upgraded tag and shadow the player's own accessor.
+    refresh(); // sekali supaya UI langsung terisi walau socket belum tersambung
+    connectStatus();
+
+    // Script module jalan setelah script biasa: tunggu elemen ter-upgrade
+    // sebelum menyentuh `src`, kalau tidak setter-nya belum ada.
     if (saved.magnet) customElements.whenDefined('movi-player').then(() => form.requestSubmit());
   </script>
 </body>
