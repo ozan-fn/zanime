@@ -384,7 +384,8 @@ func (s *server) state() gin.H {
 
 func (s *server) apiMagnet(c *gin.Context) {
 	var req struct {
-		Magnet string `json:"magnet"`
+		Magnet    string `json:"magnet"`
+		FileIndex *int   `json:"fileIndex"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "body harus {\"magnet\": \"...\"}"})
@@ -410,6 +411,17 @@ func (s *server) apiMagnet(c *gin.Context) {
 		}
 		c.JSON(status, gin.H{"error": err.Error()})
 		return
+	}
+
+	// fileIndex = urutan file di torrent (dari index Torrentio), bukan urutan
+	// daftar video yang disortir; dipetakan lewat identitas *torrent.File.
+	if req.FileIndex != nil {
+		i, err := s.selectTorrentFile(*req.FileIndex)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		log.Printf("fileIndex %d -> video %d", *req.FileIndex, i)
 	}
 	c.JSON(http.StatusOK, s.state())
 }
@@ -514,7 +526,7 @@ func (s *server) stream(c *gin.Context) {
 
 	reader := f.NewReader()
 	defer func() { _ = reader.Close() }()
-	reader.SetReadahead(8 << 20)
+	reader.SetReadahead(32 << 20) // supaya byte tidak "berhenti-henti": stalling pembacaan membuat clock player diam di 00:00
 	stream.Serve(c, path.Base(f.Path()), reader)
 }
 
@@ -522,6 +534,32 @@ func (s *server) currentIndex() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.selected
+}
+
+// selectTorrentFile selects file number idx in torrent order and returns its
+// index in the sorted video list. Only video files map; anything else (sample,
+// nfo) is rejected rather than silently playing the wrong episode.
+func (s *server) selectTorrentFile(idx int) (int, error) {
+	s.mu.RLock()
+	t, files := s.t, s.files
+	s.mu.RUnlock()
+	if t == nil {
+		return 0, errors.New("torrent belum siap")
+	}
+	all := t.Files()
+	if idx < 0 || idx >= len(all) {
+		return 0, fmt.Errorf("fileIndex %d di luar jangkauan torrent", idx)
+	}
+	f := all[idx]
+	for i, vf := range files {
+		if vf == f {
+			s.mu.Lock()
+			s.selected = i
+			s.mu.Unlock()
+			return i, nil
+		}
+	}
+	return 0, fmt.Errorf("file %d bukan video", idx)
 }
 
 func (s *server) fileAt(index int) *torrent.File {

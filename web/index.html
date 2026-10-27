@@ -4,80 +4,112 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
-  <title>zanime — torrent streaming</title>
+  <title>kafuu — torrent streaming</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.min.js"></script>
   <script>
-    // Semua sudut UI pakai radius 2px, termasuk pill dan progress bar.
+    // Radius 2px di semua sudut, sesuai tampilan rata yang dipilih.
     tailwind.config = {
       theme: {
         extend: {
-          borderRadius: { DEFAULT: '2px', sm: '2px', md: '2px', lg: '2px', xl: '2px', '2xl': '2px', '3xl': '2px', full: '2px' },
+          borderRadius: {
+            DEFAULT: '2px', sm: '2px', md: '2px', lg: '2px',
+            xl: '2px', '2xl': '2px', '3xl': '2px', full: '2px',
+          },
+          colors: {
+            border: '#27272a',
+            muted: '#3f3f46',
+            card: '#111113',
+            primary: '#fafafa',
+            'primary-contrast': '#18181b',
+          },
         },
       },
     };
   </script>
   <style>
     html, body { height: 100%; }
-    body {
-      background:
-        radial-gradient(900px 500px at 15% -10%, rgba(99, 102, 241, .16), transparent 60%),
-        radial-gradient(700px 420px at 95% 0%, rgba(139, 92, 246, .12), transparent 55%),
-        #08090c;
-    }
+    body { background: #09090b; }
     /* Pola "Full Width Responsive" dari docs MoviPlayer. */
     movi-player { width: 100%; aspect-ratio: 16 / 9; background: #000; }
     ::-webkit-scrollbar { width: 8px; height: 8px; }
-    ::-webkit-scrollbar-thumb { background: #2a2b33; border-radius: 2px; }
+    ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    .file-row[aria-current="true"] { box-shadow: inset 3px 0 0 #818cf8; }
+    .file-row[aria-current="true"] { box-shadow: inset 3px 0 0 #fafafa; }
+    dialog::backdrop { background: rgba(9, 9, 11, .78); }
+    .chip {
+      display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none;
+      border: 1px solid #27272a; background: #111113; color: #a1a1aa;
+      padding: 4px 10px; border-radius: 2px; font-size: 12px; line-height: 16px; white-space: nowrap;
+      transition: all .15s;
+    }
+    .chip:hover { border-color: #3f3f46; color: #e4e4e7; }
+    .chip.on { background: #fafafa; border-color: #fafafa; color: #18181b; font-weight: 500; }
+    .chip[disabled] { opacity: .4; cursor: default; }
+    button:focus-visible, input:focus-visible { outline: 2px solid #52525b; outline-offset: 1px; }
+    /* Teks terpotong (ellipsis) bergeser melebar saat hover + tooltip teks
+       lengkap, jadi judul/path file panjang tetap terbaca tanpa menggeser list. */
+    .sq { overflow: hidden; min-width: 0; white-space: nowrap; text-overflow: ellipsis; }
+    .sq-inner { display: inline-block; white-space: nowrap; }
+    .sq:hover { text-overflow: clip; }
+    .sq:hover .sq-inner { animation: sq-slide var(--sq-dur, 6s) linear .5s infinite alternate; }
+    @keyframes sq-slide {
+      from { transform: translateX(0); }
+      to { transform: translateX(var(--sq-shift, 0px)); }
+    }
   </style>
 </head>
-<body class="min-h-full text-zinc-200 antialiased selection:bg-indigo-500/30">
+<body class="min-h-full text-zinc-200 antialiased selection:bg-zinc-500/40">
   <div class="mx-auto flex min-h-screen max-w-7xl flex-col px-4 py-6 sm:px-6 lg:px-8">
     <header class="flex flex-wrap items-center justify-between gap-3">
       <div class="flex items-center gap-3">
-        <div class="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 shadow-lg shadow-indigo-500/25">
-          <svg viewBox="0 0 24 24" class="h-5 w-5 text-white" fill="currentColor" aria-hidden="true">
-            <path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.1-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14Z"/>
-          </svg>
+        <div class="grid h-10 w-10 place-items-center rounded-lg border border-border bg-card text-zinc-200">
+          <i data-lucide="clapperboard" class="h-5 w-5"></i>
         </div>
         <div>
-          <h1 class="text-lg font-semibold tracking-tight text-white">zanime</h1>
-          <p class="text-xs text-zinc-500">torrent video streaming · cache RAM-only</p>
+          <h1 class="text-lg font-semibold tracking-tight text-white">kafuu</h1>
+          <p class="text-xs text-zinc-500">torrent streaming · RAM-only cache</p>
         </div>
       </div>
       <div class="flex items-center gap-2">
-        <span class="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 text-[11px] font-medium text-emerald-300">
-          <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> zero disk
+        <button id="search-btn" type="button"
+          class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-zinc-300 transition hover:bg-zinc-800 hover:text-white">
+          <i data-lucide="search" class="h-3.5 w-3.5"></i>
+          Cari
+        </button>
+        <span class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[11px] text-zinc-400">
+          <i data-lucide="hard-drive" class="h-3 w-3"></i> zero disk
         </span>
-        <span class="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-400">
-          <span class="h-1.5 w-1.5 rounded-full bg-indigo-400"></span> movi-player
+        <span class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[11px] text-zinc-400">
+          <i data-lucide="play-square" class="h-3 w-3"></i> movi-player
         </span>
       </div>
     </header>
 
     <main class="mt-6 grid flex-1 items-start gap-5 lg:grid-cols-[390px_minmax(0,1fr)]">
       <section class="flex min-w-0 flex-col gap-4">
-        <div class="rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-2xl shadow-black/30 backdrop-blur">
+        <div class="rounded-xl border border-border bg-card p-4">
           <form id="magnet-form" class="space-y-3">
             <div class="flex items-center justify-between">
               <label for="magnet" class="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Magnet link</label>
               <span class="text-[11px] text-zinc-600">BitTorrent</span>
             </div>
             <textarea id="magnet" rows="3" spellcheck="false" autocomplete="off"
-              class="w-full resize-none rounded-xl border border-white/10 bg-black/40 px-3 py-2.5 font-mono text-xs leading-relaxed text-zinc-200 outline-none transition placeholder:text-zinc-600 focus:border-indigo-400/50 focus:ring-2 focus:ring-indigo-500/20"
+      class="w-full resize-none rounded-lg border border-border bg-zinc-900 px-3 py-2.5 font-mono text-xs leading-relaxed text-zinc-200 outline-none transition placeholder:text-zinc-600 focus:border-zinc-600"
               placeholder="magnet:?xt=urn:btih:..."></textarea>
             <div class="flex items-stretch gap-2">
               <button id="load-btn" type="submit"
-                class="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-indigo-400/50 disabled:cursor-not-allowed disabled:opacity-60">
+                class="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-contrast transition hover:bg-zinc-200 focus:outline-none focus:ring-2 focus:ring-zinc-500/50 disabled:cursor-not-allowed disabled:opacity-60">
                 <svg id="load-spinner" class="hidden h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                   <path class="opacity-80" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4Z"></path>
                 </svg>
+                <i data-lucide="download" class="h-4 w-4"></i>
                 <span>Muat torrent</span>
               </button>
               <button id="cancel-btn" type="button"
-                class="hidden shrink-0 rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 focus:outline-none focus:ring-2 focus:ring-rose-400/40 disabled:cursor-not-allowed disabled:opacity-60">
+                class="hidden shrink-0 items-center justify-center gap-1.5 rounded-lg border border-rose-400/30 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 focus:outline-none focus:ring-2 focus:ring-rose-400/40 disabled:cursor-not-allowed disabled:opacity-60 [&:not(.hidden)]:inline-flex">
+                <i data-lucide="x" class="h-4 w-4 shrink-0"></i>
                 Batalkan
               </button>
             </div>
@@ -86,18 +118,18 @@
           <div id="status" class="mt-3 hidden rounded-xl border px-3 py-2 text-xs leading-relaxed" role="status"></div>
         </div>
 
-        <div id="files-card" class="hidden rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-2xl shadow-black/30 backdrop-blur">
+        <div id="files-card" class="hidden rounded-xl border border-border bg-card p-4">
           <div class="flex items-center justify-between gap-3">
             <div class="min-w-0">
               <h2 class="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Pilih video</h2>
               <p id="torrent-name" class="mt-1 truncate text-sm font-medium text-zinc-200"></p>
             </div>
-            <span id="file-count" class="shrink-0 rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[11px] text-zinc-400"></span>
+            <span id="file-count" class="shrink-0 rounded-full border border-border bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-400"></span>
           </div>
           <div id="files" class="mt-3 max-h-[380px] space-y-1.5 overflow-y-auto pr-1"></div>
         </div>
 
-        <div id="stats-card" class="hidden rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-2xl shadow-black/30 backdrop-blur">
+        <div id="stats-card" class="hidden rounded-xl border border-border bg-card p-4">
           <div class="flex items-center justify-between">
             <h2 class="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
               Status
@@ -113,7 +145,7 @@
                 <span><span id="cache-text" class="text-zinc-300">0 B</span> · <span id="evictions" class="text-zinc-300">0</span> evict</span>
               </div>
               <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
-                <div id="cache-bar" class="h-full w-0 rounded-full bg-gradient-to-r from-indigo-400 to-violet-500 transition-[width] duration-500"></div>
+                <div id="cache-bar" class="h-full w-0 rounded-full bg-zinc-100 transition-[width] duration-500"></div>
               </div>
             </div>
             <div>
@@ -122,7 +154,7 @@
                 <span id="dl-text" class="text-zinc-300">0 B</span>
               </div>
               <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
-                <div id="dl-bar" class="h-full w-0 rounded-full bg-gradient-to-r from-emerald-400 to-teal-500 transition-[width] duration-500"></div>
+                <div id="dl-bar" class="h-full w-0 rounded-full bg-zinc-100 transition-[width] duration-500"></div>
               </div>
             </div>
           </div>
@@ -130,26 +162,30 @@
       </section>
 
       <section class="flex min-w-0 flex-col gap-3">
-        <div class="overflow-hidden rounded-2xl border border-white/10 bg-black shadow-2xl shadow-black/50">
+        <div class="overflow-hidden rounded-xl border border-border bg-black">
           <!--
             Semua atribut di bawah ada di docs MoviPlayer (MoviElement → Attributes).
             persist: hanya yang terdaftar yang diingat (bahasa subtitle sengaja tidak
             dimasukkan — ditangani script di bawah lewat API player, lihat applySubtitle).
           -->
           <!-- probesize/probeduration dipasang capping untuk MKV multi-sub: tanpa batas, ffmpeg membaca hampir seluruh file demi paket pertama tiap track subtitle. -->
+<!-- probesize/probeduration dipasang capping untuk MKV multi-sub: tanpa batas, ffmpeg membaca hampir seluruh file demi paket pertama tiap track subtitle. -->
 <movi-player id="player"
             controls autoplay playsinline thumb
-            theme="dark" themecolor="#818cf8"
+            theme="dark"
             buffersize="64"
             probesize="2mb" probeduration="1000"
+            bindav="false"
             persist="loop muted volume speed ambient stablevolume hdr aspect cropbars audiolang"
             persistkey="zanime"></movi-player>
-          <div id="now-playing" class="hidden items-center justify-between gap-3 border-t border-white/10 bg-white/[0.03] px-4 py-3">
+          <div id="now-playing" class="hidden items-center justify-between gap-3 border-t border-border bg-card px-4 py-3">
             <div class="min-w-0">
-              <p id="np-title" class="truncate text-sm font-medium text-zinc-100"></p>
-              <p id="np-sub" class="mt-0.5 text-[11px] text-zinc-500"></p>
+              <p id="np-title" class="sq text-sm font-medium text-zinc-100"></p>
+              <p id="np-sub" class="sq mt-0.5 text-[11px] text-zinc-500"></p>
             </div>
-            <span class="hidden shrink-0 rounded-full border border-indigo-400/20 bg-indigo-400/10 px-2.5 py-1 text-[11px] font-medium text-indigo-300 sm:inline">streaming</span>
+            <span class="hidden shrink-0 items-center gap-1 rounded-full border border-border bg-zinc-900 px-2.5 py-1 text-[11px] text-zinc-400 sm:inline-flex">
+              <i data-lucide="radio" class="h-3 w-3"></i> streaming
+            </span>
           </div>
         </div>
         <div class="flex items-start gap-2 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-[11px] leading-relaxed text-zinc-500">
@@ -161,8 +197,37 @@
       </section>
     </main>
 
-    <footer class="mt-6 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] pt-4 text-[11px] text-zinc-600">
-      <span>zanime · Gin + anacrolix/torrent</span>
+    <dialog id="search-dlg"
+    class="mx-auto w-[min(860px,94vw)] h-[min(720px,86vh)] max-h-[86vh] rounded-xl border border-border bg-zinc-950 p-0 text-zinc-200 shadow-xl shadow-black/50">
+    <div class="flex h-full min-h-0 flex-col">
+      <div class="flex items-center gap-2 border-b border-border px-4 py-3">
+        <input id="search-q" autocomplete="off" spellcheck="false" placeholder="Cari judul, mis. frieren"
+          class="min-w-0 flex-1 rounded-lg border border-border bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-zinc-600" />
+        <button id="search-go" type="button"
+          class="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-sm font-semibold text-primary-contrast transition hover:bg-zinc-200">
+          <i data-lucide="search" class="h-4 w-4 shrink-0"></i>
+          Cari
+        </button>
+        <button id="search-close" type="button"
+          class="rounded-lg border border-border p-2 text-zinc-400 transition hover:bg-zinc-800 hover:text-white">
+          <i data-lucide="x" class="h-4 w-4"></i>
+        </button>
+      </div>
+      <div id="search-tabs" class="flex flex-wrap items-center gap-1.5 border-b border-border px-4 py-2.5">
+        <button type="button" data-tab="all" class="chip on">All</button>
+        <button type="button" data-tab="movie" class="chip">Movie</button>
+        <button type="button" data-tab="series" class="chip">Series</button>
+        <button type="button" id="search-back" class="chip ml-auto" disabled>
+          <i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>
+          Kembali
+        </button>
+      </div>
+      <div id="search-body" class="min-h-0 flex-1 overflow-y-auto px-4 py-3"></div>
+    </div>
+  </dialog>
+
+  <footer class="mt-6 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] pt-4 text-[11px] text-zinc-600">
+      <span>kafuu · torrent streaming · Gin + anacrolix/torrent</span>
       <span>cache maksimal <span id="footer-cache">200 MiB</span> · tanpa file data di disk</span>
     </footer>
   </div>
@@ -285,13 +350,34 @@
       return `${v.toFixed(digits)} ${units[i]}`;
     };
 
+    // setSq: teks satu baris terpotong; saat hover, teks meluncur ke kiri
+    // memperlihatkan bagian terpotongnya (marquee alternating) dan teks
+    // lengkapnya jadi tooltip title=.
+    function setSq(el, text) {
+      el.textContent = '';
+      const inner = document.createElement('span');
+      inner.className = 'sq-inner';
+      inner.textContent = text;
+      el.append(inner);
+      el.title = text;
+      requestAnimationFrame(() => {
+        const over = inner.scrollWidth - el.clientWidth;
+        if (over > 4) {
+          el.style.setProperty('--sq-shift', `-${over}px`);
+          el.style.setProperty('--sq-dur', `${Math.max(2, Math.round(over / 30))}s`);
+        }
+      });
+    }
+
     function setStatus(message, kind = 'info') {
       const styles = {
-        info: 'border-indigo-400/20 bg-indigo-400/[0.07] text-indigo-200',
-        ok: 'border-emerald-400/20 bg-emerald-400/[0.07] text-emerald-200',
+        info: 'border-border bg-card text-zinc-300',
+        ok: 'border-zinc-700 bg-zinc-900 text-zinc-100',
         error: 'border-rose-400/20 bg-rose-400/[0.07] text-rose-200',
       };
-      statusEl.className = `mt-3 rounded-xl border px-3 py-2 text-xs leading-relaxed ${styles[kind] || styles.info}`;
+      // break-all: nama file panjang (satu token tanpa spasi) dibungkus per
+      // karakter, jadi tidak mendorong kartu lain melebar / tidak sejajar.
+      statusEl.className = `mt-3 min-w-0 break-all rounded-xl border px-3 py-2 text-xs leading-relaxed ${styles[kind] || styles.info}`;
       statusEl.textContent = message;
       statusEl.classList.remove('hidden');
     }
@@ -317,26 +403,24 @@
         btn.dataset.index = String(file.index);
         btn.setAttribute('aria-current', active ? 'true' : 'false');
         btn.className = [
-          'file-row group flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition',
+          'file-row group flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition',
           active
-            ? 'border-indigo-400/30 bg-indigo-500/10'
-            : 'border-transparent hover:border-white/10 hover:bg-white/[0.04]',
+            ? 'border-border bg-zinc-800/60'
+            : 'border-transparent hover:border-border hover:bg-zinc-800/40',
         ].join(' ');
 
         const icon = document.createElement('span');
-        icon.className = active
-          ? 'grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-indigo-500/20 text-indigo-300'
-          : 'grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-white/[0.05] text-zinc-500 group-hover:text-zinc-300';
-        icon.innerHTML = '<svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="currentColor" aria-hidden="true"><path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.1-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14Z"/></svg>';
+        icon.className = 'grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-800 text-zinc-300 group-hover:text-zinc-100';
+        icon.innerHTML = '<i data-lucide="play" class="h-3.5 w-3.5"></i>';
 
         const body = document.createElement('span');
         body.className = 'min-w-0 flex-1';
         const name = document.createElement('span');
-        name.className = active ? 'block truncate text-sm font-medium text-white' : 'block truncate text-sm text-zinc-300';
-        name.textContent = file.name;
+        name.className = active ? 'block sq text-sm font-medium text-white' : 'block sq text-sm text-zinc-300';
+        setSq(name, file.name);
         const sub = document.createElement('span');
-        sub.className = 'mt-0.5 block truncate text-[11px] text-zinc-500';
-        sub.textContent = file.path && file.path !== file.name ? file.path : fmt(file.size);
+        sub.className = 'mt-0.5 block sq text-[11px] text-zinc-500';
+        setSq(sub, file.path && file.path !== file.name ? file.path : fmt(file.size));
         body.append(name, sub);
 
         const size = document.createElement('span');
@@ -360,7 +444,10 @@
       nowPlaying.classList.toggle('hidden', files.length === 0);
       nowPlaying.classList.toggle('flex', files.length > 0);
 
-      if (state.name) $('torrent-name').textContent = state.name;
+      if (state.name) {
+        $('torrent-name').textContent = state.name;
+        $('torrent-name').title = state.name; // path panjang: teks lengkap via hover
+      }
       $('file-count').textContent = `${files.length} file`;
 
       const key = files.map((f) => `${f.index}:${f.name}:${f.size}`).join('|') + '#' + state.selected;
@@ -386,8 +473,8 @@
 
     // Cukup set src; atribut `autoplay` di <movi-player> yang menjalankan playback.
     function playFile(file) {
-      $('np-title').textContent = file.name;
-      $('np-sub').textContent = `${fmt(file.size)} · ${file.path || file.name}`;
+      setSq($('np-title'), file.name);
+      setSq($('np-sub'), `${fmt(file.size)} · ${file.path || file.name}`);
       player.src = file.url;
     }
 
@@ -430,7 +517,7 @@
       el.dataset.source = source;
       el.textContent = source === 'ws' ? 'live' : 'poll';
       el.className = source === 'ws'
-        ? 'font-normal normal-case tracking-normal text-emerald-400'
+        ? 'font-normal normal-case tracking-normal text-zinc-400'
         : 'font-normal normal-case tracking-normal text-amber-400';
     }
 
@@ -535,6 +622,375 @@
       }
     });
 
+    /* ------------------------------------------------------------------ *
+     * Dialog pencarian: Cinemeta (judul/seri/episode) → streams Torrentio.
+     *   - Tab All/Movie/Series memilih sumber Cinemeta.
+     *   - Series: tab S1, S2… lalu daftar episode; movie langsung ke streams.
+     *   - Streams: chips filter diturunkan dari teks stream-nya sendiri:
+     *     provider (Torrentio/…), kualitas 480p…, bahasa dari emoji bendera,
+     *     dan toggle HEVC. Klik stream = magnet infoHash-nya ke /api/magnet,
+     *     dengan fileIndex bila Torrentio memberikannya (season pack).
+     *   - Reset filter setiap ganti judul/episode.
+     * ------------------------------------------------------------------ */
+    const TIO = 'https://torrentio.strem.fun/sort=seeders|language=indonesian';
+    const CINEMETA = 'https://v3-cinemeta.strem.io';
+    const searchDlg = $('search-dlg'), searchQ = $('search-q'), searchBody = $('search-body');
+    const searchGo = $('search-go'), searchBack = $('search-back'), searchBtn = $('search-btn');
+
+    let sv = {
+      tab: 'all',
+      results: [],
+      cur: null,    // meta judul yang dipilih (movie) / series
+      videos: [],   // episode lengkap dari meta series
+      season: null,
+      streams: [],
+      qs: new Set(), // kualitas terpilih
+      ls: new Set(), // bahasa (emoji) terpilih
+      provs: new Set(),
+      hevc: false,
+    };
+
+    async function jget(url) {
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(res.status === 429
+          ? 'Terlalu sering menghubungi ' + new URL(url).host + ', tunggu sebentar'
+          : `HTTP ${res.status} dari ${new URL(url).host}`);
+      }
+      return res.json();
+    }
+
+    const cineSearch = (type, q) => `${CINEMETA}/catalog/${type}/top/search=${encodeURIComponent(q)}.json`;
+
+    async function doSearch(q) {
+      const body = (html) => { searchBody.innerHTML = html; };
+      body('<p class="p-6 text-center text-sm text-zinc-500">Mencari…</p>');
+      const types = sv.tab === 'all' ? ['series', 'movie'] : [sv.tab];
+      try {
+        const metas = (await Promise.allSettled(types.map((t) => jget(cineSearch(t, q)))))
+          .flatMap((r) => (r.status === 'fulfilled' ? r.value.metas || [] : []));
+        // Tab All bisa memuat satu judul dua kali (movie + series).
+        const seen = new Set();
+        sv.results = metas.filter((m) => m.id && m.poster && !seen.has(m.id) && seen.add(m.id));
+        sv.cur = null;
+        sv.videos = [];
+        syncBack();
+        body(sv.results.length ? '' : '<p class="p-6 text-center text-sm text-zinc-500">Tidak ada hasil.</p>');
+        renderResults();
+      } catch (err) {
+        body(`<p class="p-6 text-center text-sm text-rose-300">${err.message}</p>`);
+      }
+    }
+
+    function renderResults() {
+      const grid = document.createElement('div');
+      grid.className = 'grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3';
+      for (const m of sv.results) {
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'group text-left transition hover:-translate-y-0.5';
+        const img = document.createElement('img');
+        img.src = m.poster;
+        img.alt = m.name || m.id;
+        img.loading = 'lazy';
+        img.className = 'aspect-[2/3] w-full rounded-lg border border-border bg-zinc-900 object-cover';
+        const badge = document.createElement('span');
+        badge.textContent = (m.type === 'series' ? 'Series' : 'Movie') + (m.releaseInfo ? ` · ${String(m.releaseInfo).split('–')[0]}` : '');
+        badge.className = 'absolute left-1 top-1 z-10 rounded bg-black/80 px-1 text-[9px] font-medium text-zinc-300';
+        const wrap = document.createElement('span');
+        wrap.className = 'relative block';
+        wrap.append(img, badge);
+        const name = document.createElement('span');
+        // Satu baris: judul cinemeta bisa sangat panjang; bergulir saat hover.
+        name.className = 'mt-1 block sq text-[11px] leading-tight text-zinc-300 group-hover:text-white';
+        setSq(name, m.name || m.id);
+        card.append(wrap, name);
+        card.addEventListener('click', () => openTitle(m));
+        grid.append(card);
+      }
+      searchBody.replaceChildren(grid);
+      window.lucide?.createIcons();
+    }
+
+    async function openTitle(m) {
+      try {
+        searchBody.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Memuat detail…</p>';
+        if (m.type === 'movie') {
+          sv.cur = m; sv.videos = []; syncBack();
+          return loadStreams(m.id, 'movie');
+        }
+        const meta = await jget(`${CINEMETA}/meta/series/${m.id}.json`);
+        sv.cur = m;
+        sv.videos = (meta.meta?.videos || []).filter((v) => v.season != null);
+        sv.season = sv.videos[0]?.season ?? 1;
+        syncBack();
+        renderSeasons();
+      } catch (err) {
+        searchBody.innerHTML = `<p class="p-6 text-center text-sm text-rose-300">${err.message}</p>`;
+      }
+    }
+
+    function seasons() {
+      return [...new Set(sv.videos.map((v) => v.season))].sort((a, b) => a - b);
+    }
+
+    function renderSeasons() {
+      const tabs = document.createElement('div');
+      tabs.className = 'flex flex-wrap gap-1.5';
+      for (const s of seasons()) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'chip' + (s === sv.season ? ' on' : '');
+        b.textContent = s === 0 ? 'Specials' : 'S' + s;
+        b.addEventListener('click', () => { sv.season = s; renderSeasons(); });
+        tabs.append(b);
+      }
+      const list = document.createElement('div');
+      list.className = 'mt-3 space-y-1.5';
+      const eps = sv.videos.filter((v) => v.season === sv.season).sort((a, b) => (a.episode ?? 0) - (b.episode ?? 0));
+      for (const v of eps) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'file-row group flex w-full items-center gap-3 rounded-lg border border-border bg-zinc-900 px-3 py-2.5 text-left transition hover:bg-zinc-800';
+        const label = document.createElement('span');
+        label.textContent = 'E' + (v.episode ?? '?');
+        label.className = 'grid h-8 w-9 shrink-0 place-items-center rounded-md bg-zinc-800 text-[11px] font-semibold text-zinc-300';
+        const name = document.createElement('span');
+        name.className = 'min-w-0 flex-1 truncate text-sm text-zinc-300 group-hover:text-white';
+        name.title = v.name || v.title || '';
+        name.textContent = v.name || v.title || '';
+        row.append(label, name);
+        row.addEventListener('click', () => loadStreams(v.id || `${sv.cur.id}:${v.season}:${v.episode}`, 'series'));
+        list.append(row);
+      }
+      searchBody.replaceChildren(tabs, list);
+      window.lucide?.createIcons();
+    }
+
+    const FLAG = /\p{Regional_Indicator}{2}/gu;
+
+    // Flag emoji → kode 2 huruf → nama bahasa. Windows tidak punya font bendera,
+    // jadi emoji flag tampil sebagai "ID"/"GB" — dipetakan biar jelas.
+    const LANG_NAMES = {
+      id: 'Indonesia', en: 'Inggris', gb: 'Inggris', us: 'Inggris',
+      ru: 'Rusia', it: 'Italia', pt: 'Portugis', br: 'Portugis', es: 'Spanyol', mx: 'Latino',
+      cn: 'Mandarin', tw: 'Mandarin', hk: 'Kanton', fr: 'Prancis', de: 'Jerman', sa: 'Arab',
+      my: 'Melayu', th: 'Thai', vn: 'Vietnam', nl: 'Belanda', jp: 'Jepang', kr: 'Korea',
+      in: 'Hindi', pk: 'Urdu', tr: 'Turki', pl: 'Polandia', dk: 'Denmark', se: 'Swedia',
+      no: 'Norwegia', fi: 'Finlandia', il: 'Ibrani', gr: 'Yunani', ro: 'Rumania',
+      hu: 'Hongaria', cz: 'Ceko', ph: 'Filipina',
+    };
+
+    function flagName(f) {
+      const cp = [...f];
+      const code = (String.fromCodePoint(cp[0].codePointAt(0) - 127397)
+        + String.fromCodePoint(cp[1].codePointAt(0) - 127397)).toLowerCase();
+      return LANG_NAMES[code] || code.toUpperCase();
+    }
+
+    // "1.4K" / "980" di sebelah 👤 diubah ke angka untuk pengurutan.
+    function parseCount(s) {
+      const m = (s || '').match(/[\d.,]+/);
+      if (!m) return -1;
+      let n = parseFloat(m[0].replace(/,/g, ''));
+      if (/K$/i.test(s)) n *= 1e3;
+      else if (/M$/i.test(s)) n *= 1e6;
+      return n;
+    }
+
+    function parseStream(s) {
+      const text = (s.name || '') + ' ' + (s.title || '');
+      const q = (text.match(/\b(\d{3,4})p\b/i) || [])[1]?.toLowerCase() || '';
+      const t = s.title || '';
+      const prov = (t.match(/⚙️\s*([^\n]+)/) || ['Torrentio'])[1]?.trim() || 'Torrentio';
+      const seed = (t.match(/👤\s*([\d.,]+[KkMm]?)/) || [''])[1];
+      const size = (t.match(/💾\s*([\d.,]+\s*[KMG]?B)/i) || [''])[1];
+      const flags = [...new Set((t.match(FLAG) || []).map(flagName))];
+      return { raw: s, prov, q, seed, seedNum: parseCount(seed), size, flags, hevc: /hevc|h\.?265|x265/i.test(text) };
+    }
+
+    async function loadStreams(id, type) {
+      searchBody.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Mengambil streams…</p>';
+      try {
+        const data = await jget(`${TIO}/stream/${type}/${encodeURIComponent(id)}.json`);
+        sv.streams = (data.streams || []).map(parseStream)
+          .sort((a, b) => b.seedNum - a.seedNum); // seed terbanyak di atas
+        sv.qs = new Set(); sv.ls = new Set(); sv.provs = new Set(); sv.hevc = false;
+        syncBack();
+        renderStreams();
+      } catch (err) {
+        searchBody.innerHTML = `<p class="p-6 text-center text-sm text-rose-300">${err.message}</p>`;
+      }
+    }
+
+    function streamsFiltered() {
+      return sv.streams.filter((s) =>
+        (!sv.provs.size || sv.provs.has(s.prov))
+        && (!sv.qs.size || sv.qs.has(s.q))
+        && (!sv.ls.size || s.flags.some((f) => sv.ls.has(f)))
+        && (!sv.hevc || s.hevc));
+    }
+
+    function chip(label, on, onClick) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.className = 'chip' + (on ? ' on' : '');
+      b.addEventListener('click', onClick);
+      return b;
+    }
+
+    function renderStreams() {
+      const chipWrap = document.createElement('div');
+      chipWrap.className = 'mb-3 space-y-2';
+      const list = streamsFiltered();
+      const rows = [document.createElement('div'), document.createElement('div'), document.createElement('div')];
+      for (const row of rows) row.className = 'mb-2 flex flex-wrap gap-1.5';
+      const [rProv, rQual, rLang] = rows;
+      const count = document.createElement('span');
+      count.className = 'chip';
+      count.textContent = `Streams (${list.length}/${sv.streams.length})`;
+      rProv.append(count);
+      for (const p of new Set(sv.streams.map((s) => s.prov))) {
+        rProv.append(chip(p, sv.provs.has(p), () => {
+          sv.provs.has(p) ? sv.provs.delete(p) : sv.provs.add(p);
+          renderStreams();
+        }));
+      }
+      for (const q of [...new Set(sv.streams.map((s) => s.q).filter(Boolean))]
+        .sort((a, b) => parseInt(b) - parseInt(a))) {
+        rQual.append(chip(q + 'p', sv.qs.has(q), () => {
+          sv.qs.has(q) ? sv.qs.delete(q) : sv.qs.add(q);
+          renderStreams();
+        }));
+      }
+      if (sv.streams.some((s) => s.hevc)) {
+        rQual.append(chip(`HEVC (${sv.streams.filter((s) => s.hevc).length})`, sv.hevc, () => {
+          sv.hevc = !sv.hevc;
+          renderStreams();
+        }));
+      }
+      // Bahasa: Indonesia dulu, lalu Inggris, lalu sisanya dari yang paling banyak.
+      const langs = {};
+      for (const s of sv.streams) for (const f of s.flags) langs[f] = (langs[f] || 0) + 1;
+      const order = Object.entries(langs)
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .sort((a, b) => b[0] === 'Indonesia' ? 1 : a[0] === 'Indonesia' ? -1 : b[0] === 'Inggris' ? 1 : a[0] === 'Inggris' ? -1 : 0);
+      for (const [f, n] of order) {
+        rLang.append(chip(`${f} ${n}`, sv.ls.has(f), () => {
+          sv.ls.has(f) ? sv.ls.delete(f) : sv.ls.add(f);
+          renderStreams();
+        }));
+      }
+      const body = document.createElement('div');
+      body.className = 'space-y-1.5';
+      body.replaceChildren(...list.map(streamRow));
+      if (sv.streams.length && !list.length) {
+        body.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Tidak ada stream yang lolos filter.</p>';
+      }
+      chipWrap.replaceChildren(...rows);
+      searchBody.replaceChildren(chipWrap, body);
+      window.lucide?.createIcons();
+    }
+
+    function streamRow(s) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'group flex w-full flex-col rounded-lg border border-border bg-zinc-900 px-3 py-2.5 text-left transition hover:border-zinc-600 hover:bg-zinc-800';
+      const meta = document.createElement('div');
+      meta.className = 'flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11px]';
+      const prov = document.createElement('span');
+      prov.textContent = s.prov;
+      prov.className = 'font-medium text-zinc-300';
+      const q = document.createElement('span');
+      q.textContent = s.q || 'lainnya';
+      q.className = 'font-medium text-zinc-100';
+      const stat = document.createElement('span');
+      stat.textContent = [s.seed && '👤 ' + s.seed, s.size].filter(Boolean).join(' · ');
+      stat.className = 'text-zinc-500';
+      const rel = document.createElement('div');
+      rel.textContent = (s.raw.title || s.raw.name || '').split('\n')
+        .filter((l) => l.trim() && !/👤|⚙️/.test(l))
+        .map((l) => l.replace(FLAG, '').replace(/\/\s+(?=\/|$)/g, '').replace(/\s{2,}/g, ' ').trim())
+        .filter(Boolean).join(' — ') || s.raw.name || '';
+      rel.title = rel.textContent; // teks lengkap via tooltip kalau terpotong
+      rel.className = 'mt-1 line-clamp-2 text-xs leading-snug text-zinc-300';
+      const fl = document.createElement('div');
+      fl.textContent = s.flags.join(' · ');
+      fl.className = 'mt-1 text-[12px] tracking-wide';
+      meta.append(prov, q, stat);
+      b.append(meta, rel, fl);
+      b.addEventListener('click', () => playStream(s));
+      return b;
+    }
+
+    async function playStream(s) {
+      const raw = s.raw;
+      if (!raw.infoHash) {
+        setStatus('Stream ini bukan torrent murni (debrid), tidak bisa dimuat.', 'error');
+        return;
+      }
+      searchBody.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Memuat torrent… (metadata bisa sampai 45 detik)</p>';
+      const trs = (raw.sources || []).filter((x) => x.startsWith('tracker:'))
+        .map((x) => '&tr=' + encodeURIComponent(x.slice(8))).join('');
+      const dn = raw.title?.split('\n')[0].slice(0, 180) || raw.name || '';
+      const magnet = `magnet:?xt=urn:btih:${raw.infoHash}&dn=${encodeURIComponent(dn)}${trs}`;
+      const body = { magnet };
+      if (Number.isInteger(raw.fileIdx)) body.fileIndex = raw.fileIdx;
+      try {
+        const state = await api('/api/magnet', { method: 'POST', body: JSON.stringify(body) });
+        searchDlg.close();
+        applyState(state);
+        const files = state.files || [];
+        const pick = files[state.selected ?? 0] || files[0];
+        saveLast({ magnet, index: pick?.index ?? 0 });
+        setStatus(`Torrent siap: ${state.name || 'tanpa nama'}.`, 'ok');
+        if (pick) playFile(pick);
+      } catch (err) {
+        renderStreams();
+        setStatus(err.message, 'error');
+      }
+    }
+
+    // Kembali: streams → episode/movie, episode → daftar hasil.
+    function syncBack() {
+      const at = s_currentView();
+      searchBack.disabled = at === 'results';
+    }
+    function s_currentView() {
+      if (sv.streams.length) return 'streams';
+      if (sv.cur) return 'episodes';
+      return 'results';
+    }
+    searchBack.addEventListener('click', () => {
+      const at = s_currentView();
+      if (at === 'streams') {
+        sv.streams = [];
+        if (sv.cur?.type === 'movie') { syncBack(); renderResults(); }
+        else { syncBack(); renderSeasons(); }
+      } else if (at === 'episodes') {
+        sv.cur = null; sv.videos = []; syncBack(); renderResults();
+      }
+    });
+
+    for (const b of searchDlg.querySelectorAll('[data-tab]')) {
+      b.addEventListener('click', () => {
+        sv.tab = b.dataset.tab;
+        searchDlg.querySelectorAll('[data-tab]').forEach((x) => x.classList.toggle('on', x === b));
+        if (searchQ.value.trim()) doSearch(searchQ.value.trim());
+      });
+    }
+    searchGo.addEventListener('click', () => {
+      const q = searchQ.value.trim();
+      if (q) doSearch(q);
+    });
+    searchQ.addEventListener('keydown', (e) => { if (e.key === 'Enter') searchGo.click(); });
+    $('search-close').addEventListener('click', () => searchDlg.close());
+    $('search-btn').addEventListener('click', () => {
+      if (!searchDlg.open) searchDlg.showModal();
+      searchQ.focus();
+    });
+
     // Docs: event `error` membawa Error di `detail`.
     player.addEventListener('error', (event) => {
       const message = event.detail?.message;
@@ -544,6 +1000,7 @@
     const saved = lastSaved();
     if (saved.magnet) magnetInput.value = saved.magnet;
     refresh(); // sekali supaya UI langsung terisi walau socket belum tersambung
+    window.lucide?.createIcons(); // ikon statis di markup
     connectStatus();
 
     // Script module jalan setelah script biasa: tunggu elemen ter-upgrade
