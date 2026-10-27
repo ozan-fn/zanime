@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Angka cache yang dipakai `/api/ws` dan `/info`.
@@ -55,7 +56,9 @@ impl Stats {
 }
 
 pub struct MemStorageFactory {
-    pub limit: u64,
+    /// Budget piece yang tersisa — dibagi dengan buffer remux: setiap byte
+    /// remux memotong limit ini supaya total RAM tetap dalam batas env.
+    pub limit: Arc<AtomicU64>,
     pub evicted: UnboundedSender<u32>,
     pub stats: Arc<Stats>,
 }
@@ -63,7 +66,7 @@ pub struct MemStorageFactory {
 impl Clone for MemStorageFactory {
     fn clone(&self) -> Self {
         Self {
-            limit: self.limit,
+            limit: self.limit.clone(),
             evicted: self.evicted.clone(),
             stats: self.stats.clone(),
         }
@@ -74,15 +77,18 @@ impl StorageFactory for MemStorageFactory {
     type Storage = MemStorage;
 
     fn create(&self, _: &ManagedTorrentShared, metadata: &TorrentMetadata) -> Result<MemStorage> {
+        let piece_len = metadata.lengths.default_piece_length().max(1) as u64;
+        // Batas efektif minimal satu piece; mengubah budget bersama karena
+        // remux juga memotong Arc yang sama.
+        let _ = self.limit.fetch_max(piece_len, Ordering::SeqCst);
         Ok(MemStorage::new(
-            metadata.lengths.default_piece_length().max(1) as u64,
+            piece_len,
             metadata
                 .file_infos
                 .iter()
                 .map(|f| f.offset_in_torrent)
                 .collect(),
-            self.limit
-                .max(metadata.lengths.default_piece_length() as u64),
+            self.limit.clone(),
             self.evicted.clone(),
             self.stats.clone(),
         ))
@@ -103,7 +109,7 @@ struct State {
 struct Inner {
     piece_len: u64,
     offsets: Vec<u64>,
-    limit: u64,
+    limit: Arc<AtomicU64>,
     evicted: UnboundedSender<u32>,
     stats: Arc<Stats>,
     state: Mutex<State>,
@@ -130,7 +136,8 @@ impl Inner {
 
     /// Buang piece paling lama sampai `bytes + reserve` muat di bawah limit.
     fn make_room(&self, st: &mut State, reserve: u64) {
-        while st.bytes + reserve > self.limit && !st.pieces.is_empty() {
+        let limit = self.limit.load(Ordering::Relaxed);
+        while st.bytes + reserve > limit && !st.pieces.is_empty() {
             let victim = st
                 .pieces
                 .iter()
@@ -156,7 +163,7 @@ impl MemStorage {
     pub(crate) fn new(
         piece_len: u64,
         offsets: Vec<u64>,
-        limit: u64,
+        limit: Arc<AtomicU64>,
         evicted: UnboundedSender<u32>,
         stats: Arc<Stats>,
     ) -> Self {
@@ -173,33 +180,33 @@ impl MemStorage {
     }
 }
 
+/// Pesan error untuk piece yang hilang dari RAM (dipakai untuk klasifikasi).
+const ERR_EVICTED: &str = "sudah dibuang dari RAM";
+
 impl TorrentStorage for MemStorage {
     fn init(&mut self, _: &ManagedTorrentShared, _: &TorrentMetadata) -> Result<()> {
         Ok(())
     }
 
     fn pread_exact(&self, file_id: usize, offset: u64, buf: &mut [u8]) -> Result<()> {
-        let mut abs = self.inner.at(file_id, offset)?;
-        let mut done = 0;
-        let mut st = self.inner.state.lock().unwrap();
-        st.tick += 1;
-        while done < buf.len() {
-            let pid = (abs / self.inner.piece_len) as u32;
-            let off = (abs % self.inner.piece_len) as usize;
-            let tick = st.tick;
-            let Some((piece, used)) = st.pieces.get_mut(&pid) else {
-                anyhow::bail!("piece {pid} sudah dibuang dari RAM");
-            };
-            *used = tick;
-            let n = (buf.len() - done).min(piece.len().saturating_sub(off));
-            if n == 0 {
-                anyhow::bail!("piece {pid} belum lengkap");
+        let abs = self.inner.at(file_id, offset)?;
+        // Piece bisa baru saja dibuang sementara evictor belum sempat
+        // melapor ke librqbit (forget_piece). Setelah laporan itu tiba,
+        // Filestream akan mengunduh ulang — jadi tunggu, jangan langsung
+        // gagalkan bacaan.
+        for attempt in 0..40 {
+            let mut st = self.inner.state.lock().unwrap();
+            st.tick += 1;
+            match Self::pread_once(&self.inner, &mut st, abs, buf) {
+                Ok(()) => return Ok(()),
+                Err(error) if attempt < 39 && error.to_string().contains(ERR_EVICTED) => {
+                    drop(st);
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => return Err(error),
             }
-            buf[done..done + n].copy_from_slice(&piece[off..off + n]);
-            done += n;
-            abs += n as u64;
         }
-        Ok(())
+        unreachable!("loop selalu return")
     }
 
     fn pwrite_all(&self, file_id: usize, offset: u64, buf: &[u8]) -> Result<()> {
@@ -249,6 +256,29 @@ impl TorrentStorage for MemStorage {
     }
 }
 
+impl MemStorage {
+    fn pread_once(inner: &Inner, st: &mut State, mut abs: u64, buf: &mut [u8]) -> Result<()> {
+        let mut done = 0;
+        while done < buf.len() {
+            let pid = (abs / inner.piece_len) as u32;
+            let off = (abs % inner.piece_len) as usize;
+            let tick = st.tick;
+            let Some((piece, used)) = st.pieces.get_mut(&pid) else {
+                anyhow::bail!("piece {pid} {ERR_EVICTED}");
+            };
+            *used = tick;
+            let n = (buf.len() - done).min(piece.len().saturating_sub(off));
+            if n == 0 {
+                anyhow::bail!("piece {pid} belum lengkap");
+            }
+            buf[done..done + n].copy_from_slice(&piece[off..off + n]);
+            done += n;
+            abs += n as u64;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,7 +292,13 @@ mod tests {
     ) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let stats = Arc::new(Stats::default());
-        let storage = MemStorage::new(4, vec![0], limit, tx, stats.clone());
+        let storage = MemStorage::new(
+            4,
+            vec![0],
+            Arc::new(AtomicU64::new(limit)),
+            tx,
+            stats.clone(),
+        );
         (storage, rx, stats)
     }
 
@@ -311,7 +347,8 @@ mod tests {
     }
 
     #[test]
-    fn single_piece_larger_than_limit_is_still_stored() {        let (storage, _, _) = storage(4);
+    fn single_piece_larger_than_limit_is_still_stored() {
+        let (storage, _, _) = storage(4);
         storage.pwrite_all(0, 0, &[7; 4]).unwrap();
         let mut buf = [0u8; 4];
         storage.pread_exact(0, 0, &mut buf).unwrap();

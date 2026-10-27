@@ -276,6 +276,9 @@
     const nowPlaying = $('now-playing');
 
     let lastFileKey = '';
+    // true begitu player benar-benar memutar: remux yang siap belakangan
+    // tidak boleh menyela playback yang sudah jalan.
+    let everPlayed = false;
 
     // Magnet + episode terakhir bertahan setelah reload.
     const LAST_KEY = 'zanime.last';
@@ -413,6 +416,7 @@
     }
 
     player.addEventListener('loadstart', () => { subtitleDone = false; });
+    player.addEventListener('playing', () => { everPlayed = true; });
     for (const name of ['loadedmetadata', 'trackschange', 'loadeddata']) {
       player.addEventListener(name, applySubtitle);
     }
@@ -565,6 +569,17 @@
       $('dl-text').textContent = total ? `${fmt(dl)} / ${fmt(total)}` : fmt(dl);
       $('dl-bar').style.width = total ? `${Math.min(100, (dl / total) * 100)}%` : '0%';
 
+      // Remux siap untuk episode terpilih dan player belum sempat memutar:
+      // pindah ke versi berindex supaya seek lancar tanpa pindai ulang.
+      if (state.remux?.ready && !everPlayed && state.remux.index === state.selected
+          && !String(player.src).includes('/remux/')) {
+        const f = files.find((x) => x.index === state.selected);
+        if (f) {
+          everPlayed = true;
+          player.src = `/remux/${f.index}/${encodeURIComponent(f.name)}`;
+        }
+      }
+
       applyNet(state.net);
     }
 
@@ -593,6 +608,7 @@
 
     // Cukup set src; atribut `autoplay` di <movi-player> yang menjalankan playback.
     function playFile(file) {
+      everPlayed = false;
       retriedSrc = '';
       const th = epThumbFor(file);
       const npTh = $('np-thumb');

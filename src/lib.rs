@@ -5,6 +5,7 @@
 //! eviction + refetch, dan `/stream` yang mendukung HEAD + Range.
 
 pub mod memstore;
+pub mod remux;
 
 use anyhow::{Context, Result, bail};
 use axum::Json;
@@ -15,6 +16,7 @@ use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Router, serve};
+use bytes::{Bytes, BytesMut};
 use librqbit::api::TorrentIdOrHash;
 use librqbit::storage::StorageFactoryExt;
 use librqbit::{
@@ -28,7 +30,7 @@ use std::io::SeekFrom;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::net::TcpListener;
@@ -138,9 +140,22 @@ pub struct App {
     session: Arc<Session>,
     cache_mb: u64,
     stats: Arc<Stats>,
+    /// Budget piece yang tersisa (mulai dari `cache_mb`), dibagi dengan
+    /// buffer remux supaya total RAM tetap dalam batas env.
+    mem_limit: Arc<AtomicU64>,
+    /// Port HTTP yang sudah di-bind; 0 = belum (remux butuh URL sendiri).
+    http_port: AtomicU16,
     current: RwLock<Option<Arc<Current>>>,
     job: Mutex<Option<Arc<LoadJob>>>,
     switching: Mutex<()>,
+}
+
+/// Job remux ffmpeg untuk satu file: hasil disimpan di RAM, terbatas budget.
+/// `stop` ditandai saat ganti episode; task pembacanya yang memulihkan budget.
+struct RemuxJob {
+    index: usize,
+    stop: Arc<AtomicBool>,
+    buf: Arc<RwLock<Option<Bytes>>>,
 }
 
 /// Torrent aktif. Pegangan keepalive + evictor dibatalkan saat torrent diganti.
@@ -153,6 +168,7 @@ struct Current {
     selected: AtomicUsize,
     keepalive: JoinHandle<()>,
     evictor: JoinHandle<()>,
+    remux: Mutex<Option<RemuxJob>>,
 }
 
 #[derive(Clone)]
@@ -328,7 +344,7 @@ async fn load_torrent(app: Arc<App>, job: Arc<LoadJob>, magnet: String) -> Resul
 
     let (evict_tx, evict_rx) = mpsc::unbounded_channel::<u32>();
     let factory = MemStorageFactory {
-        limit: app.cache_mb * MIB,
+        limit: app.mem_limit.clone(),
         evicted: evict_tx,
         stats: app.stats.clone(),
     };
@@ -390,6 +406,7 @@ async fn load_torrent(app: Arc<App>, job: Arc<LoadJob>, magnet: String) -> Resul
     log::ready(&current.name, current.videos.len());
     current.warm_head(0);
     current.warm_tail(0);
+    spawn_remux(&app, &current, 0);
     let old = app.current.write().await.replace(current);
     if let Some(old) = old {
         retire(app.clone(), old);
@@ -446,6 +463,7 @@ fn attach(
         selected: AtomicUsize::new(0),
         keepalive,
         evictor,
+        remux: Mutex::new(None),
     })
 }
 
@@ -455,10 +473,177 @@ fn retire(app: Arc<App>, old: Arc<Current>) {
         sleep(Duration::from_secs(2)).await;
         old.keepalive.abort();
         old.evictor.abort();
+        stop_remux(&old).await;
         let _ = app
             .session
             .delete(TorrentIdOrHash::Id(old.handle.id()), false)
             .await;
+    });
+}
+
+// --------------------------------------------------------------- remux ----
+
+/// MKV punya index `Cues` di ekor? Baca maksimal 8 MiB terakhir dan cari ID
+/// elemennya. Tanpa Cues, player harus memindai seluruh file sebelum mutar —
+/// file seperti ini yang perlu diremux.
+async fn mkv_has_cues(handle: &Arc<ManagedTorrent>, file: &FileEntry) -> bool {
+    let tail = file.len.min(8 << 20);
+    let Ok(mut stream) = handle.clone().stream(file.id) else {
+        return false;
+    };
+    if stream.seek(SeekFrom::Start(file.len - tail)).await.is_err() {
+        return false;
+    }
+    let mut buf = vec![0u8; tail as usize];
+    if stream.read_exact(&mut buf).await.is_err() {
+        return false;
+    }
+    buf.windows(4).any(|w| w == remux::CUES_ID)
+}
+
+async fn stop_remux(current: &Current) {
+    if let Some(job) = current.remux.lock().await.take() {
+        job.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Mulai remux episode terpilih bila perlu: ffmpeg ada, file Matroska, dan
+/// tidak punya Cues. Hasil dipipe ke RAM; setiap byte memotong `mem_limit`
+/// sehingga cache piece ikut menyusut — total RAM tetap dalam batas env.
+fn spawn_remux(app: &Arc<App>, current: &Arc<Current>, index: usize) {
+    let Some(file) = current.videos.get(index).cloned() else {
+        return;
+    };
+    if !remux::is_matroska(&file.path) {
+        return;
+    }
+    let app = app.clone();
+    let current = current.clone();
+    tokio::spawn(async move {
+        // Job untuk file yang sama sedang berjalan / sudah siap: jangan diulang.
+        {
+            let slot = current.remux.lock().await;
+            if slot.as_ref().is_some_and(|j| j.index == index) {
+                return;
+            }
+        }
+        // Hentikan job file lain supaya budget bebas untuk deteksi + remux baru.
+        stop_remux(&current).await;
+        if mkv_has_cues(&current.handle, &file).await {
+            return; // sudah punya index: player langsung bisa memutar
+        }
+        let Some(ffmpeg) = remux::ensure().await else {
+            return;
+        };
+        start_remux(&app, &current, index, &file, ffmpeg).await;
+    });
+}
+
+async fn start_remux(
+    app: &Arc<App>,
+    current: &Arc<Current>,
+    index: usize,
+    file: &FileEntry,
+    ffmpeg: PathBuf,
+) {
+    let port = app.http_port.load(Ordering::SeqCst);
+    if port == 0 {
+        return; // server belum listen (hanya di test)
+    }
+    let url = format!("http://127.0.0.1:{port}{}", stream_url(index, file.name()));
+    let mut child = match tokio::process::Command::new(&ffmpeg)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-i",
+            &url,
+            "-map",
+            "0",
+            "-c",
+            "copy",
+            "-f",
+            "matroska",
+            "pipe:1",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("remux: ffmpeg gagal jalan: {error}");
+            return;
+        }
+    };
+    let mut out = child.stdout.take().expect("stdout ffmpeg dipipe");
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let taken = Arc::new(AtomicU64::new(0));
+    let buf: Arc<RwLock<Option<Bytes>>> = Arc::new(RwLock::new(None));
+    *current.remux.lock().await = Some(RemuxJob {
+        index,
+        stop: stop.clone(),
+        buf: buf.clone(),
+    });
+
+    let limit = app.mem_limit.clone();
+    let name = file.name().to_string();
+    tokio::spawn(async move {
+        let mut acc = BytesMut::new();
+        let mut chunk = vec![0u8; 128 * 1024];
+        let mut failed = false;
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                failed = true;
+                break;
+            }
+            match out.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    // Potong budget piece; kalau limit tidak cukup untuk satu
+                    // chunk, remux digagalkan alih-alih melewati batas memori.
+                    let n64 = n as u64;
+                    let mut cut = false;
+                    loop {
+                        let left = limit.load(Ordering::SeqCst);
+                        if left < n64 {
+                            break;
+                        }
+                        if limit
+                            .compare_exchange(left, left - n64, Ordering::SeqCst, Ordering::SeqCst)
+                            .is_ok()
+                        {
+                            cut = true;
+                            break;
+                        }
+                    }
+                    if !cut {
+                        eprintln!("remux: melewati batas memori, dibatalkan");
+                        failed = true;
+                        break;
+                    }
+                    taken.fetch_add(n64, Ordering::SeqCst);
+                    acc.extend_from_slice(&chunk[..n]);
+                }
+                Err(_) => {
+                    failed = true;
+                    break;
+                }
+            }
+        }
+        if failed {
+            let _ = child.start_kill();
+            limit.fetch_add(taken.load(Ordering::SeqCst), Ordering::SeqCst);
+            return;
+        }
+        if matches!(child.wait().await, Ok(status) if status.success()) {
+            println!("remux siap: {name} ({} byte)", acc.len());
+            *buf.write().await = Some(acc.freeze());
+        } else {
+            limit.fetch_add(taken.load(Ordering::SeqCst), Ordering::SeqCst);
+        }
     });
 }
 
@@ -501,7 +686,9 @@ async fn state_json(app: &App) -> Value {
             let mut bytes = 0u64;
             for (&pid, &have) in &app.stats.cached_pieces() {
                 let pstart = pid as u64 * piece_len;
-                let overlap = (pstart + piece_len).min(fend).saturating_sub(pstart.max(fstart));
+                let overlap = (pstart + piece_len)
+                    .min(fend)
+                    .saturating_sub(pstart.max(fstart));
                 bytes += overlap.min(have);
             }
             bytes.min(f.len)
@@ -539,6 +726,21 @@ async fn state_json(app: &App) -> Value {
         })
         .collect();
 
+    let remux_state = {
+        let slot = current.remux.lock().await;
+        match slot.as_ref() {
+            Some(job) => {
+                let buf = job.buf.read().await;
+                Some(json!({
+                    "index": job.index,
+                    "ready": buf.is_some(),
+                    "size": buf.as_ref().map(|b| b.len()).unwrap_or(0),
+                }))
+            }
+            None => None,
+        }
+    };
+
     json!({
         "ready": true,
         "loading": loading,
@@ -558,6 +760,7 @@ async fn state_json(app: &App) -> Value {
             "from_peers": fetched,
             "to_client": app.stats.served(),
         },
+        "remux": remux_state,
     })
 }
 
@@ -833,6 +1036,7 @@ async fn api_select(State(app): State<Arc<App>>, Json(req): Json<SelectRequest>)
     current.selected.store(req.index, Ordering::SeqCst);
     current.warm_head(req.index);
     current.warm_tail(req.index);
+    spawn_remux(&app, &current, req.index);
     Json(state_json(&app).await).into_response()
 }
 
@@ -851,6 +1055,69 @@ async fn stream_index(
     headers: HeaderMap,
 ) -> Response {
     serve_stream(app, Some(index), method, headers).await
+}
+
+/// Keluaran remux dari RAM, dukungan Range sama seperti /stream supaya
+/// seek player instan tanpa menyentuh swarm.
+async fn remux_index(
+    State(app): State<Arc<App>>,
+    AxumPath((index, _name)): AxumPath<(usize, String)>,
+    method: Method,
+    headers: HeaderMap,
+) -> Response {
+    let current = app.current.read().await.clone();
+    let Some(current) = current else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "torrent metadata belum siap",
+        );
+    };
+    let slot = current.remux.lock().await;
+    let Some(job) = slot.as_ref().filter(|j| j.index == index) else {
+        return json_error(StatusCode::NOT_FOUND, "remux tidak tersedia untuk file ini");
+    };
+    let Some(bytes) = job.buf.read().await.clone() else {
+        return json_error(StatusCode::SERVICE_UNAVAILABLE, "remux masih berjalan");
+    };
+    drop(slot);
+    let len = bytes.len() as u64;
+    let spec = parse_range(
+        headers
+            .get(header::RANGE)
+            .and_then(|value| value.to_str().ok()),
+        len,
+    );
+    let (status, start, count, content_range) = match spec {
+        RangeSpec::Unsatisfiable => {
+            return Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(header::ACCEPT_RANGES, "bytes")
+                .header(header::CONTENT_RANGE, format!("bytes */{len}"))
+                .body(Body::empty())
+                .expect("response 416 selalu valid");
+        }
+        RangeSpec::Full => (StatusCode::OK, 0u64, len, None),
+        RangeSpec::Partial { start, end } => (
+            StatusCode::PARTIAL_CONTENT,
+            start,
+            end - start + 1,
+            Some(format!("bytes {start}-{end}/{len}")),
+        ),
+    };
+    let body = if method == Method::HEAD {
+        Body::empty()
+    } else {
+        Body::from(bytes.slice(start as usize..(start + count) as usize))
+    };
+    let mut builder = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "video/x-matroska")
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, count.to_string());
+    if let Some(range) = content_range {
+        builder = builder.header(header::CONTENT_RANGE, range);
+    }
+    builder.body(body).expect("response remux selalu valid")
 }
 
 /// HEAD, Range (206), dan 416. Byte dikirim begitu librqbit punya datanya.
@@ -913,14 +1180,12 @@ async fn serve_stream(
                 // "server → client".
                 use futures_util::StreamExt;
                 let stats = app.stats.clone();
-                Body::from_stream(
-                    ReaderStream::new(stream.take(count)).map(move |chunk| {
-                        if let Ok(bytes) = &chunk {
-                            stats.add_served(bytes.len() as u64);
-                        }
-                        chunk
-                    }),
-                )
+                Body::from_stream(ReaderStream::new(stream.take(count)).map(move |chunk| {
+                    if let Ok(bytes) = &chunk {
+                        stats.add_served(bytes.len() as u64);
+                    }
+                    chunk
+                }))
             }
             Err(error) => {
                 return json_error(
@@ -956,11 +1221,14 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/select", post(api_select))
         .route("/stream", get(stream_selected))
         .route("/stream/{index}/{name}", get(stream_index))
+        .route("/remux/{index}/{name}", get(remux_index))
         .with_state(app)
 }
 
 pub async fn run() -> Result<()> {
     let config = Config::from_env_and_args()?;
+    // Lokasi binary ffmpeg opsional (diunduh sendiri bila tidak ada di sistem).
+    let _ = std::fs::create_dir_all("./tmp");
 
     // Zero disk: DataDir hanya dipakai kalau storage bawaan yang aktif.
     let session = Session::new_with_opts(
@@ -977,10 +1245,22 @@ pub async fn run() -> Result<()> {
         session,
         cache_mb: config.cache_mb,
         stats: Arc::new(Stats::default()),
+        mem_limit: Arc::new(AtomicU64::new(config.cache_mb * MIB)),
+        http_port: AtomicU16::new(0),
         current: RwLock::new(None),
         job: Mutex::new(None),
         switching: Mutex::new(()),
     });
+
+    // Bind dulu: remux butuh port sendiri sebagai input URL ffmpeg.
+    let listener = TcpListener::bind(&config.addr)
+        .await
+        .with_context(|| format!("bind {} gagal", config.addr))?;
+    app.http_port.store(
+        listener.local_addr().context("alamat listener")?.port(),
+        Ordering::SeqCst,
+    );
+    log::listening(&browser_url(&config.addr), config.cache_mb);
 
     if !config.magnet.is_empty() {
         match magnet_hash(&config.magnet) {
@@ -997,11 +1277,6 @@ pub async fn run() -> Result<()> {
     }
 
     let router = router(app);
-
-    let listener = TcpListener::bind(&config.addr)
-        .await
-        .with_context(|| format!("bind {} gagal", config.addr))?;
-    log::listening(&browser_url(&config.addr), config.cache_mb);
     serve(listener, router).await.context("server berhenti")
 }
 
@@ -1087,6 +1362,8 @@ mod router_tests {
             session,
             cache_mb: 200,
             stats: Arc::new(Stats::default()),
+            mem_limit: Arc::new(AtomicU64::new(200 * MIB)),
+            http_port: AtomicU16::new(0),
             current: RwLock::new(None),
             job: Mutex::new(None),
             switching: Mutex::new(()),
@@ -1299,7 +1576,7 @@ mod stream_tests {
                     only_files: Some(Vec::new()),
                     storage_factory: Some(
                         MemStorageFactory {
-                            limit: 2 * PIECE as u64,
+                            limit: Arc::new(AtomicU64::new(2 * PIECE as u64)),
                             evicted: evict_tx,
                             stats: stats.clone(),
                         }
@@ -1323,6 +1600,8 @@ mod stream_tests {
             session: leech_session,
             cache_mb: 1,
             stats: stats.clone(),
+            mem_limit: Arc::new(AtomicU64::new(MIB)),
+            http_port: AtomicU16::new(0),
             current: RwLock::new(Some(attach(handle, videos, evict_rx))),
             job: Mutex::new(None),
             switching: Mutex::new(()),

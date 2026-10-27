@@ -6,7 +6,9 @@ zero disk, dan UI web untuk menempel magnet serta memilih video.
 Player memakai [MoviPlayer](https://moviplayer.com/) dari CDN (`<movi-player>`),
 jadi MKV/HEVC/AV1 dan subtitle di dalam file diputar di browser lewat WebCodecs
 + FFmpeg WASM. Server hanya mengirim byte lewat HTTP Range; tidak ada transcoding
-di server.
+di server. Kalau MKV tidak punya index `Cues` (pemutar biasanya harus memindai
+seluruh file dulu), server bisa **remux cepat** (`-c copy`, tanpa transkode) ke
+RAM sehingga player dapat versi berindex — lihat [Remux](#remux).
 
 ## Stack
 
@@ -15,6 +17,7 @@ di server.
   `forget_piece`: piece yang dibuang dari RAM ditandai "belum punya" sehingga
   bisa diunduh ulang saat player seek kembali.
 - Storage piece: `src/memstore.rs` (LRU, batas `MAX_MEMORY_MB`).
+- Remux opsional: ffmpeg sistem / statis di `./tmp/ffmpeg` (`src/remux.rs`).
 
 ## Menjalankan
 
@@ -33,7 +36,7 @@ Buka `http://localhost:8080`, tempel magnet, lalu klik salah satu file video.
 | Sumber | Kunci | Arti |
 |---|---|---|
 | `.env` / env proses | `PORT` | port HTTP (default 8080) |
-| `.env` / env proses | `MAX_MEMORY_MB` | batas cache piece di RAM (default 200 MiB) |
+| `.env` / env proses | `MAX_MEMORY_MB` | batas RAM total: cache piece + buffer remux (default 200 MiB) |
 | argumen | `--addr`, `--cache-mb`, `--magnet` | menimpa nilai di atas |
 
 Magnet awal bisa dikosongkan (`--magnet ""`) supaya server mulai tanpa torrent.
@@ -51,6 +54,27 @@ Magnet awal bisa dikosongkan (`--magnet ""`) supaya server mulai tanpa torrent.
 | `POST /api/select` | `{"index": N}` pada daftar video yang sudah diurutkan |
 | `GET/HEAD /stream` | file terpilih; dukung `Range` (206) dan 416 |
 | `GET/HEAD /stream/{index}/{name}` | file tertentu; `name` dipakai untuk MIME |
+| `GET/HEAD /remux/{index}/{name}` | keluaran remux (RAM); `Range` didukung; 503 saat masih diproses |
+
+## Remux
+
+MKV tanpa `Cues` membuat player memindai seluruh file sebelum bisa memutar.
+Untuk file seperti itu server menjalankan **ffmpeg**:
+
+- Sumber ffmpeg: `./tmp/ffmpeg` → ffmpeg dari `PATH` → build statis yang
+  diunduh otomatis ke `./tmp/ffmpeg` (~35 MB, sekali saja).
+- Perintah: `ffmpeg -i http://127.0.0.1:<port>/stream/… -map 0 -c copy -f matroska pipe:1`
+  — semua track (audio/subtitle/font) disalin bit-per-bit, input dibaca lewat
+  endpoint stream sendiri, keluaran dipipe langsung ke RAM: **tetap zero disk**.
+- Setiap byte keluaran memotong budget `MAX_MEMORY_MB` yang sama dengan cache
+  piece (cache otomatis meng-LRU menyusut), jadi total RAM tidak pernah
+  melewati batas env.
+- UI otomatis memakai `/remux/...` hanya kalau player belum sempat memutar;
+  playback yang sudah jalan tidak pernah disela.
+- Ganti episode: job remux lama dihentikan, budgetnya dipulihkan. Job untuk
+  file yang sama tidak dijalankan ulang.
+- File yang sudah punya `Cues` (atau bukan Matroska) tidak diremux — player
+  langsung memutar dari `/stream`.
 
 ## Cara kerja singkat
 
@@ -83,8 +107,9 @@ karena butuh swarm nyata.
 
 ```
 src/main.rs        entry point (tipis)
-src/lib.rs         config, app state, job magnet, route, stream Range
-src/memstore.rs    storage piece RAM + LRU eviction
+src/lib.rs         config, app state, job magnet, route, stream Range, remux
+src/remux.rs       deteksi/unduh ffmpeg, kebutuhan remux
+src/memstore.rs    storage piece RAM + LRU eviction (budget dibagi dengan remux)
 vendor/librqbit    librqbit 8.1.1 yang dipatch (forget_piece)
 web/index.html     UI yang di-embed
 ```

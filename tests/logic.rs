@@ -1,7 +1,7 @@
 //! Test logika murni `zanime`: tanpa jaringan, tanpa torrent, jalan cepat.//! Semua yang bisa gagal diam-diam (parsing range, escaping URL, filter file)
 //! ada di sini supaya regresi tertangkap sebelum menyentuh swarm sungguhan.
 
-use zanime::{is_video, magnet_hash, parse_range, pick_videos, stream_url, video_mime, RangeSpec};
+use zanime::{RangeSpec, is_video, magnet_hash, parse_range, pick_videos, stream_url, video_mime};
 
 #[test]
 fn videos_are_filtered_and_sorted_by_name() {
@@ -68,7 +68,10 @@ fn range_parsing_matches_http_expectations() {
         parse_range(Some("bytes=100-"), 100),
         RangeSpec::Unsatisfiable
     );
-    assert_eq!(parse_range(Some("bytes=5-1"), 100), RangeSpec::Unsatisfiable);
+    assert_eq!(
+        parse_range(Some("bytes=5-1"), 100),
+        RangeSpec::Unsatisfiable
+    );
     assert_eq!(parse_range(Some("bytes=0-"), 0), RangeSpec::Unsatisfiable);
 }
 
@@ -86,6 +89,9 @@ fn video_mime_covers_every_video_extension() {
 #[test]
 fn magnet_hash_accepts_only_real_magnets() {
     let magnet = "magnet:?xt=urn:btih:3c5356a2834c80305e18479ad39d16a4f8b8682b";
-    assert_eq!(magnet_hash(magnet).unwrap(), "3c5356a2834c80305e18479ad39d16a4f8b8682b");
+    assert_eq!(
+        magnet_hash(magnet).unwrap(),
+        "3c5356a2834c80305e18479ad39d16a4f8b8682b"
+    );
     assert!(magnet_hash("bukan magnet").is_err());
 }
