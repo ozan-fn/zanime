@@ -12,6 +12,22 @@ import (
 	"zanime/internal/memstorage"
 )
 
+func TestBrowserURL(t *testing.T) {
+	cases := map[string]string{
+		"0.0.0.0:8080":   "http://localhost:8080",
+		":8080":          "http://localhost:8080",
+		"[::]:8080":      "http://localhost:8080",
+		"127.0.0.1:9000": "http://127.0.0.1:9000",
+		"[::1]:9000":     "http://[::1]:9000",
+		"tanpa-port":     "tanpa-port",
+	}
+	for addr, want := range cases {
+		if got := browserURL(addr); got != want {
+			t.Errorf("browserURL(%q) = %q, want %q", addr, got, want)
+		}
+	}
+}
+
 func TestVideoFilesSortedByName(t *testing.T) {
 	info := metainfo.Info{
 		Name:        "pack",

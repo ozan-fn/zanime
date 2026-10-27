@@ -48,20 +48,20 @@ PORT=8080
 MAX_MEMORY_MB=200
 ```
 
-- `PORT` — port HTTP di `127.0.0.1`.
+- `PORT` — port HTTP (default bind `0.0.0.0`, log menampilkan `http://localhost:<port>`).
 - `MAX_MEMORY_MB` — batas cache piece di RAM (MiB).
 
 Flag CLI menimpa nilai `.env`:
 
 ```sh
-go run .                       # magnet contoh, 127.0.0.1:8080, cache dari .env
+go run .                       # magnet contoh, 0.0.0.0:8080 (buka localhost:8080), cache dari .env
 go run . -magnet ''            # mulai tanpa torrent, isi magnet dari UI
 go run . -addr 0.0.0.0:8080 -cache-mb 128
 ```
 
 ## UI
 
-Buka `http://127.0.0.1:8080`:
+Buka `http://localhost:8080`:
 
 1. Tempel magnet, klik **Muat torrent**. Server menunggu metadata lalu menampilkan daftar file video, urut nama.
 2. Klik salah satu file. `src` player diarahkan ke `/stream/<index>/<nama>` dan playback langsung dicoba.

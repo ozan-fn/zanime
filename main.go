@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -87,10 +88,23 @@ func main() {
 	r.GET("/stream/:index/:name", srv.stream)
 	r.HEAD("/stream/:index/:name", srv.stream)
 
-	log.Printf("listening on %s (memory cache %d MiB, zero disk)", *addr, *cacheMB)
+	log.Printf("listening on %s (memory cache %d MiB, zero disk)", browserURL(*addr), *cacheMB)
 	if err := r.Run(*addr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// browserURL turns a listen address into something clickable in a terminal:
+// a wildcard host becomes localhost, since 0.0.0.0 is not a browsable target.
+func browserURL(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "localhost"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 type server struct {
