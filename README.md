@@ -6,7 +6,9 @@ zero disk, dan UI web untuk menempel magnet serta memilih video.
 Player memakai [MoviPlayer](https://moviplayer.com/) dari CDN (`<movi-player>`),
 jadi MKV/HEVC/AV1 dan subtitle di dalam file diputar di browser lewat WebCodecs
 + FFmpeg WASM. Server hanya mengirim byte lewat HTTP Range; tidak ada transcoding
-di server. Kalau MKV tidak punya index `Cues` (pemutar biasanya harus memindai
+di server. Subtitle mandiri (SRT/VTT/TTML) bisa ditambahkan dari menu subtitle
+player (atribut `subtitlepicker`) — file dibaca di browser, tidak diunggah.
+Kalau MKV tidak punya index `Cues` (pemutar biasanya harus memindai
 seluruh file dulu), server bisa **remux cepat** (`-c copy`, tanpa transkode) ke
 RAM sehingga player dapat versi berindex — lihat [Remux](#remux).
 
