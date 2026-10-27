@@ -78,7 +78,7 @@ Buka `http://localhost:8080`:
 2. Klik salah satu file. `src` player diarahkan ke `/stream/<index>/<nama>` dan playback langsung dicoba.
 3. Panel status menampilkan cache RAM, eviction, peer, dan byte yang tersedia.
 
-Magnet dan episode terakhir disimpan di `localStorage` (`zanime.last`), jadi membuka ulang UI langsung memuat torrent dan video yang sama. Bahasa subtitle terakhir diingat oleh atribut `persist` MoviPlayer (`persistkey="zanime"`).
+Magnet dan episode terakhir disimpan di `localStorage` (`zanime.last`), jadi membuka ulang UI langsung memuat torrent dan video yang sama. Bahasa subtitle terakhir diingat oleh atribut `persist` MoviPlayer (`persistkey="zanime"`) dan diterapkan ulang oleh UI setiap ganti video. Penerapan ulang mencocokkan tag lewat alias (`id`/`in`/`ind`/`indonesian`, dst.), dan kalau file baru hanya punya satu track subtitle tanpa tag yang cocok, track itu yang dipilih — jadi tidak perlu memilih manual lagi.
 
 Player di-load dari `https://moviplayer.com/dist/element.js`; Tailwind dari `https://cdn.tailwindcss.com`. Keduanya CDN, tidak perlu build frontend.
 

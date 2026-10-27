@@ -165,13 +165,79 @@
     let lastFileKey = '';
     let lastSize = 0;
 
-    // Magnet + chosen episode survive reloads; subtitle language is kept by the
-    // player's persist attribute above.
+    // Magnet + chosen episode survive reloads; the subtitle language is kept by
+    // the player's persist attribute above and re-applied below on every file
+    // switch.
     const LAST_KEY = 'zanime.last';
     const lastSaved = () => {
       try { return JSON.parse(localStorage.getItem(LAST_KEY)) || {}; } catch { return {}; }
     };
     const saveLast = (patch) => localStorage.setItem(LAST_KEY, JSON.stringify({ ...lastSaved(), ...patch }));
+
+    // The element's own persist only matches the same language tag, so a file
+    // tagged `id` after one tagged `ind` (or an untagged track) comes up with
+    // subtitles off and the viewer has to pick again. These aliases close that
+    // gap.
+    const SUB_ALIASES = {
+      id: ['id', 'in', 'ind', 'indonesian'],
+      ms: ['ms', 'msa', 'may', 'malay', 'melayu'],
+      en: ['en', 'eng', 'english'],
+      ja: ['ja', 'jpn', 'japanese'],
+      ko: ['ko', 'kor', 'korean'],
+      zh: ['zh', 'zho', 'chi', 'chinese', 'mandarin'],
+      tl: ['tl', 'tgl', 'fil', 'tagalog', 'filipino'],
+      es: ['es', 'spa', 'spanish'],
+      fr: ['fr', 'fra', 'fre', 'french'],
+      de: ['de', 'deu', 'ger', 'german'],
+      pt: ['pt', 'por', 'portuguese'],
+      ru: ['ru', 'rus', 'russian'],
+      ar: ['ar', 'ara', 'arabic'],
+      th: ['th', 'tha', 'thai'],
+      vi: ['vi', 'vie', 'vietnamese'],
+    };
+
+    const canonLang = (lang) => {
+      const tag = String(lang || '').trim().toLowerCase().replace(/[_.]/g, '-').split('-')[0];
+      if (!tag || ['und', 'unknown', 'mis', 'zxx'].includes(tag)) return '';
+      for (const [code, tags] of Object.entries(SUB_ALIASES)) {
+        if (tags.includes(tag)) return code;
+      }
+      return tag;
+    };
+
+    const subLangs = () => {
+      try { return player.getSubtitleLangs?.() || []; } catch { return []; }
+    };
+
+    // Current choice: '' = subtitles off, undefined = tracks not known yet
+    // (keep the stored preference).
+    const rememberSubtitle = () => {
+      const langs = subLangs();
+      if (!langs.length) return undefined;
+      const lang = langs.find((l) => l.active)?.lang || '';
+      saveLast({ subtitleLang: lang });
+      return lang;
+    };
+
+    let restoreToken = 0;
+    const restoreSubtitle = (lang) => {
+      const token = ++restoreToken;
+      const want = canonLang(lang);
+      if (!want) return;
+      const deadline = Date.now() + 10000;
+      const attempt = () => {
+        if (token !== restoreToken) return;
+        const langs = subLangs();
+        if (langs.length) {
+          const pick = langs.find((l) => canonLang(l.lang) === want)
+            || (langs.length === 1 ? langs[0] : null);
+          if (pick) Promise.resolve(player.selectSubtitleLang?.(pick.lang)).catch(() => {});
+          return;
+        }
+        if (Date.now() < deadline) setTimeout(attempt, 300);
+      };
+      attempt();
+    };
 
     const fmt = (n) => {
       if (!n || n < 0) return '0 B';
@@ -284,7 +350,9 @@
     function playFile(file) {
       $('np-title').textContent = file.name;
       $('np-sub').textContent = `${fmt(file.size)} · ${file.path || file.name}`;
+      const subtitle = rememberSubtitle() ?? lastSaved().subtitleLang;
       player.src = file.url;
+      restoreSubtitle(subtitle);
       const attempt = () => {
         const playing = player.play?.();
         if (playing && typeof playing.catch === 'function') playing.catch(() => {});
