@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"errors"
 	"flag"
@@ -36,7 +37,10 @@ const metadataTimeout = 45 * time.Second
 // wsDelay is how often /api/ws pushes the state the UI used to poll for.
 const wsDelay = 700 * time.Millisecond
 
-var errMetadataTimeout = errors.New("metadata timeout")
+var (
+	errMetadataTimeout = errors.New("metadata timeout")
+	errLoadCanceled    = errors.New("pemuatan magnet dibatalkan")
+)
 
 func main() {
 	if err := config.LoadDotEnv(".env"); err != nil {
@@ -72,7 +76,7 @@ func main() {
 	go srv.syncEvictions()
 	if *magnet != "" {
 		go func() {
-			if err := srv.loadMagnet(*magnet); err != nil {
+			if err := srv.loadMagnet(context.Background(), *magnet); err != nil {
 				log.Printf("magnet awal: %v", err)
 			}
 		}()
@@ -87,6 +91,7 @@ func main() {
 	r.GET("/api/state", srv.apiState)
 	r.GET("/api/ws", srv.apiWS)
 	r.POST("/api/magnet", srv.apiMagnet)
+	r.POST("/api/cancel", srv.apiCancel)
 	r.POST("/api/select", srv.apiSelect)
 	r.GET("/stream", srv.stream)
 	r.HEAD("/stream", srv.stream)
@@ -117,7 +122,10 @@ type server struct {
 	mem *memstorage.Client
 	web fs.FS
 
-	addMu sync.Mutex // serializes magnet loads
+	addMu sync.Mutex // serializes the download part of a magnet load
+
+	jobMu sync.Mutex
+	job   *loadJob // non-nil while a magnet load is in flight
 
 	mu       sync.RWMutex
 	t        *torrent.Torrent
@@ -130,9 +138,106 @@ func newServer(cl *torrent.Client, mem *memstorage.Client, web fs.FS) *server {
 	return &server{cl: cl, mem: mem, web: web, selected: -1}
 }
 
+// loadJob is one in-flight magnet load. It is owned by the server, not by the
+// request that started it, so it can be cancelled from anywhere (POST
+// /api/cancel) and shared: every request that asks for the same magnet waits on
+// the same job instead of starting a second download.
+type loadJob struct {
+	magnet string
+	hash   string // hex info hash, for spam detection
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+
+	// err is set before done is closed, so a waiter that sees done closed reads
+	// a finished value.
+	err error
+}
+
+// beginLoad registers a job for magnet. A job already running for the same
+// magnet is handed back to be waited on, so spamming the button (or reloading
+// the page mid-load) never starts a second download. A job for a different
+// magnet is cancelled first: the newest request wins.
+func (s *server) beginLoad(ctx context.Context, magnet, hash string) (*loadJob, bool) {
+	s.jobMu.Lock()
+	defer s.jobMu.Unlock()
+	if s.job != nil {
+		if s.job.hash == hash {
+			return s.job, true
+		}
+		s.job.cancel()
+	}
+	// The job outlives the caller: a client that gives up only stops waiting, and
+	// a page reload keeps watching the same load. It ends via /api/cancel or the
+	// metadata timeout.
+	jobCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	job := &loadJob{
+		magnet: magnet,
+		hash:   hash,
+		ctx:    jobCtx,
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+	s.job = job
+	s.mu.Lock()
+	s.loading = true
+	s.mu.Unlock()
+	return job, false
+}
+
+// finishLoad publishes the job result and clears it, unless a newer job already
+// replaced it (that newer job then owns `loading`).
+func (s *server) finishLoad(job *loadJob, err error) {
+	job.cancel()
+	job.err = err
+	s.jobMu.Lock()
+	if s.job == job {
+		s.job = nil
+		s.mu.Lock()
+		s.loading = false
+		s.mu.Unlock()
+	}
+	s.jobMu.Unlock()
+	close(job.done)
+}
+
+// cancelLoad ends the in-flight load, if any. The active torrent is untouched.
+func (s *server) cancelLoad() bool {
+	s.jobMu.Lock()
+	defer s.jobMu.Unlock()
+	if s.job == nil {
+		return false
+	}
+	s.job.cancel()
+	return true
+}
+
+// waitForJob blocks until the shared job finishes. Giving up (the caller's own
+// request ending) does not stop the job.
+func waitForJob(ctx context.Context, job *loadJob) error {
+	select {
+	case <-job.done:
+		return job.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// currentHash is the hex info hash of the active torrent, or "" when there is
+// none.
+func (s *server) currentHash() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.t == nil {
+		return ""
+	}
+	return s.t.InfoHash().String()
+}
+
 // loadMagnet replaces the active torrent and waits for its metadata. It is
-// called both at startup and from POST /api/magnet.
-func (s *server) loadMagnet(magnet string) error {
+// called both at startup and from POST /api/magnet, and returns once the job
+// ends: success, metadata timeout, error, or cancellation.
+func (s *server) loadMagnet(ctx context.Context, magnet string) (err error) {
 	magnet = strings.TrimSpace(magnet)
 	if magnet == "" {
 		return errors.New("magnet kosong")
@@ -141,18 +246,29 @@ func (s *server) loadMagnet(magnet string) error {
 	if err != nil {
 		return fmt.Errorf("magnet tidak valid: %w", err)
 	}
+	hash := spec.InfoHash.String()
+
+	// Already the active torrent: pressing Muat again must not restart it.
+	if s.currentHash() == hash {
+		return nil
+	}
+
+	job, shared := s.beginLoad(ctx, magnet, hash)
+	if shared {
+		return waitForJob(ctx, job)
+	}
+	defer func() { s.finishLoad(job, err) }()
 
 	s.addMu.Lock()
 	defer s.addMu.Unlock()
 
-	s.mu.Lock()
-	s.loading = true
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		s.loading = false
-		s.mu.Unlock()
-	}()
+	// Cancelled (or superseded by a newer magnet) while waiting for the lock.
+	if job.ctx.Err() != nil {
+		return errLoadCanceled
+	}
+
+	jobCtx, cancel := context.WithTimeout(job.ctx, metadataTimeout)
+	defer cancel()
 
 	t, _, err := s.cl.AddTorrentSpec(spec)
 	if err != nil {
@@ -161,9 +277,12 @@ func (s *server) loadMagnet(magnet string) error {
 
 	select {
 	case <-t.GotInfo():
-	case <-time.After(metadataTimeout):
+	case <-jobCtx.Done():
 		go t.Drop()
-		return fmt.Errorf("%w setelah %s", errMetadataTimeout, metadataTimeout)
+		if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("%w setelah %s", errMetadataTimeout, metadataTimeout)
+		}
+		return errLoadCanceled
 	}
 
 	files := videoFiles(t.Files())
@@ -276,12 +395,30 @@ func (s *server) apiMagnet(c *gin.Context) {
 		return
 	}
 
-	if err := s.loadMagnet(req.Magnet); err != nil {
+	if err := s.loadMagnet(c.Request.Context(), req.Magnet); err != nil {
+		// The browser is gone (aborted fetch, closed tab): nobody would read the
+		// error, and the job itself keeps running on the server.
+		if errors.Is(err, context.Canceled) {
+			return
+		}
 		status := http.StatusBadGateway
-		if errors.Is(err, errMetadataTimeout) {
+		switch {
+		case errors.Is(err, errMetadataTimeout):
 			status = http.StatusGatewayTimeout
+		case errors.Is(err, errLoadCanceled):
+			status = http.StatusConflict
 		}
 		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, s.state())
+}
+
+// apiCancel stops the in-flight magnet load, if any. The active torrent and its
+// stream are left alone, so cancelling a bad magnet does not stop playback.
+func (s *server) apiCancel(c *gin.Context) {
+	if !s.cancelLoad() {
+		c.JSON(http.StatusConflict, gin.H{"error": "tidak ada magnet yang sedang dimuat"})
 		return
 	}
 	c.JSON(http.StatusOK, s.state())

@@ -74,7 +74,7 @@ go run . -addr 0.0.0.0:8080 -cache-mb 128
 
 Buka `http://localhost:8080`:
 
-1. Tempel magnet, klik **Muat torrent**. Server menunggu metadata lalu menampilkan daftar file video, urut nama.
+1. Tempel magnet, klik **Muat torrent**. Server menunggu metadata (maksimal 45 detik) lalu menampilkan daftar file video, urut nama. Selama menunggu, tombol **Batalkan** muncul di sebelah tombol Muat dan status memuat ikut terlihat di kartu Status — termasuk kalau halaman di-reload atau dibuka dari tab lain, karena statusnya datang dari server.
 2. Klik salah satu file. `src` player diarahkan ke `/stream/<index>/<nama>` dan playback langsung dicoba.
 3. Panel status menampilkan cache RAM, eviction, peer, dan byte yang tersedia. UI tidak polling: ia membuka `GET /api/ws` dan server mendorong payload `/api/state` tiap 0,7 detik (`wsDelay` di `main.go`). Socket yang putus disambung ulang otomatis oleh UI.
 Kartu Status di-update dua jalur supaya angkanya tidak pernah diam: WebSocket `/api/ws` sebagai jalur utama, dan polling `/api/state` dengan jeda yang sama kalau frame WS tidak masuk (socket gagal/putus, proxy, halaman lama). Begitu frame WS datang lagi, polling berhenti sendiri. Label kecil di sebelah judul **Status** menunjukkan jalur yang sedang dipakai — `live` (WebSocket) atau `poll`. Kalau nilainya diam padahal `live`, itu memang nilai aslinya: tanpa ada pembaca yang menarik data, torrent tidak mengunduh apa pun sehingga `Cache RAM` dan `Tersedia dari torrent` tetap `0 B`.
@@ -90,7 +90,8 @@ Player di-load dari `https://moviplayer.com/dist/element.js`; Tailwind dari `htt
 | `GET /` | UI (embedded `web/index.html`) |
 | `GET /api/state` | status torrent, daftar file video, file terpilih, cache, peer |
 | `GET /api/ws` | WebSocket; payload sama dengan `/api/state`, dikirim tiap 0,7 detik |
-| `POST /api/magnet` | `{"magnet":"..."}` — ganti torrent aktif, tunggu metadata |
+| `POST /api/magnet` | `{"magnet":"..."}` — ganti torrent aktif, tunggu metadata (504 kalau timeout, 400 magnet invalid, 409 dibatalkan) |
+| `POST /api/cancel` | batalkan pemuatan magnet yang sedang jalan (409 kalau tidak ada) |
 | `POST /api/select` | `{"index":N}` — pilih file video |
 | `GET /stream` | file terpilih; dukung `HEAD` dan `Range` |
 | `GET /stream/:index/:name` | file tertentu; `name` dipakai untuk MIME/ekstensi |
@@ -107,6 +108,18 @@ curl -X POST http://127.0.0.1:8080/api/magnet \
 curl -I http://127.0.0.1:8080/stream
 curl -H 'Range: bytes=0-1048575' -o chunk.bin http://127.0.0.1:8080/stream
 ```
+
+## Pemuatan magnet: satu job
+
+Pemuatan dijalankan sebagai satu job milik server (`loadJob` di `main.go`):
+
+- **Anti-spam.** Magnet yang sama tidak pernah memulai unduhan kedua: request yang datang saat job itu masih jalan ikut menunggu job yang sama. Menekan Muat lagi untuk magnet yang sudah aktif langsung menjawab tanpa me-restart torrent.
+- **Magnet baru menang.** Mengirim magnet lain membatalkan job lama (torrentnya di-drop), lalu job baru jalan.
+- **Cancel.** `POST /api/cancel` menghentikan job; torrent yang sedang aktif dan stream-nya tidak diusik, jadi membatalkan magnet jelek tidak menghentikan playback. UI memakai ini lewat tombol **Batalkan**.
+- **Abort.** Job tidak terikat pada request yang memulainya: menutup tab atau membatalkan fetch hanya menghentikan request itu menunggu, bukan job-nya. Job berakhir karena sukses, `/api/cancel`, atau timeout metadata 45 detik.
+- **Timeout & error.** Timeout metadata menjawab 504 (`metadata timeout setelah 45s`), magnet invalid 400, job yang dibatalkan 409. Semua pesan itu ditampilkan di baris status UI.
+
+Setelah job selesai, `loading` di `/api/state` (dan `/api/ws`) kembali `false`, sehingga tombol Muat/Batalkan di semua klien kembali ke keadaan semestinya.
 
 ## Cache & zero disk
 
