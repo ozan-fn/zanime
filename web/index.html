@@ -112,7 +112,9 @@
       <section class="flex min-w-0 flex-col gap-3">
         <div class="overflow-hidden rounded-2xl border border-white/10 bg-black shadow-2xl shadow-black/50">
           <div class="aspect-video w-full">
-            <movi-player id="player" controls playsinline buffersize="64" thumb></movi-player>
+            <movi-player id="player" controls playsinline buffersize="64" thumb
+              persist="loop muted volume speed ambient stablevolume hdr aspect cropbars audiolang subtitlelang"
+              persistkey="zanime"></movi-player>
           </div>
           <div id="now-playing" class="hidden items-center justify-between gap-3 border-t border-white/10 bg-white/[0.03] px-4 py-3">
             <div class="min-w-0">
@@ -152,6 +154,14 @@
 
     let lastFileKey = '';
     let lastSize = 0;
+
+    // Magnet + chosen episode survive reloads; subtitle language is kept by the
+    // player's persist attribute above.
+    const LAST_KEY = 'zanime.last';
+    const lastSaved = () => {
+      try { return JSON.parse(localStorage.getItem(LAST_KEY)) || {}; } catch { return {}; }
+    };
+    const saveLast = (patch) => localStorage.setItem(LAST_KEY, JSON.stringify({ ...lastSaved(), ...patch }));
 
     const fmt = (n) => {
       if (!n || n < 0) return '0 B';
@@ -280,6 +290,7 @@
           body: JSON.stringify({ index: file.index }),
         });
         applyState(state);
+        saveLast({ index: file.index });
         playFile(file);
       } catch (err) {
         setStatus(err.message, 'error');
@@ -310,9 +321,13 @@
           body: JSON.stringify({ magnet }),
         });
         applyState(state);
+        const files = state.files || [];
+        const saved = lastSaved();
+        const pick = (saved.magnet === magnet ? files[saved.index] : null)
+          || files[state.selected] || files[0];
+        saveLast({ magnet, index: pick ? pick.index : 0 });
         setStatus(`Torrent siap: ${state.name || 'tanpa nama'}. Pilih video untuk diputar.`, 'ok');
-        const first = (state.files || [])[state.selected] || (state.files || [])[0];
-        if (first) playFile(first);
+        if (pick) selectFile(pick);
       } catch (err) {
         setStatus(err.message, 'error');
       } finally {
@@ -326,8 +341,13 @@
       if (message) setStatus(`Player: ${message}`, 'error');
     });
 
+    const saved = lastSaved();
+    if (saved.magnet) magnetInput.value = saved.magnet;
     refresh();
     setInterval(refresh, 3000);
+    // Wait for the element to upgrade, or a fast restore would set `src` on the
+    // un-upgraded tag and shadow the player's own accessor.
+    if (saved.magnet) customElements.whenDefined('movi-player').then(() => form.requestSubmit());
   </script>
 </body>
 </html>

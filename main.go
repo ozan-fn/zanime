@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -365,5 +366,8 @@ func videoFiles(all []*torrent.File) []*torrent.File {
 			out = append(out, f)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i].Path()) < strings.ToLower(out[j].Path())
+	})
 	return out
 }

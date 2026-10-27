@@ -24,9 +24,24 @@ tests/eviction_test.go         eviction + refetch, seeder/leecher lokal (tanpa i
 tests/e2e_test.go              e2e streaming + seek + API + cek disk ke server hidup
 ```
 
+## Build
+
+Butuh Go 1.27+.
+
+```sh
+cp .env.example .env   # lalu sesuaikan PORT / MAX_MEMORY_MB
+make build             # hasil: ./zanime
+make run               # go run .
+make vet               # go vet ./...
+make test              # unit + eviction virtual, -race, timeout 15s
+make clean             # hapus ./zanime dan zanime.exe
+```
+
+Tanpa `make`: `go build -o zanime .`
+
 ## Konfigurasi
 
-`.env` di root:
+`.env` di root (contoh lengkap di `.env.example`):
 
 ```dotenv
 PORT=8080
@@ -48,9 +63,11 @@ go run . -addr 0.0.0.0:8080 -cache-mb 128
 
 Buka `http://127.0.0.1:8080`:
 
-1. Tempel magnet, klik **Muat torrent**. Server menunggu metadata lalu menampilkan daftar file video.
+1. Tempel magnet, klik **Muat torrent**. Server menunggu metadata lalu menampilkan daftar file video, urut nama.
 2. Klik salah satu file. `src` player diarahkan ke `/stream/<index>/<nama>` dan playback langsung dicoba.
 3. Panel status menampilkan cache RAM, eviction, peer, dan byte yang tersedia.
+
+Magnet dan episode terakhir disimpan di `localStorage` (`zanime.last`), jadi membuka ulang UI langsung memuat torrent dan video yang sama. Bahasa subtitle terakhir diingat oleh atribut `persist` MoviPlayer (`persistkey="zanime"`).
 
 Player di-load dari `https://moviplayer.com/dist/element.js`; Tailwind dari `https://cdn.tailwindcss.com`. Keduanya CDN, tidak perlu build frontend.
 
@@ -91,8 +108,8 @@ curl -H 'Range: bytes=0-1048575' -o chunk.bin http://127.0.0.1:8080/stream
 Unit test (hermetic, termasuk eviction virtual):
 
 ```sh
-go vet ./...
-go test -race ./... -count=1 -timeout 15s
+make vet
+make test
 ```
 
 `tests/eviction_test.go` menjalankan seeder + leecher di proses yang sama lewat localhost, torrent 8 MiB / 8 piece, cache 2 piece. Efeknya eviction, refetch setelah seek, dan isi byte diverifikasi tanpa internet (~0,2 detik). Kedua `DataDir` dicek tetap kosong.
