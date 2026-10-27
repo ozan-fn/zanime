@@ -58,23 +58,23 @@ Magnet awal bisa dikosongkan (`--magnet ""`) supaya server mulai tanpa torrent.
 
 ## Remux
 
-MKV tanpa `Cues` membuat player memindai seluruh file sebelum bisa memutar.
-Untuk file seperti itu server menjalankan **ffmpeg**:
+Setiap episode terpilih diremux **ffmpeg** untuk menjamin file punya index
+(`Cues`) — tanpa itu player bisa dipaksa memindai seluruh file sebelum mutar:
 
 - Sumber ffmpeg: `./tmp/ffmpeg` → ffmpeg dari `PATH` → build statis yang
   diunduh otomatis ke `./tmp/ffmpeg` (~35 MB, sekali saja).
 - Perintah: `ffmpeg -i http://127.0.0.1:<port>/stream/… -map 0 -c copy -f matroska pipe:1`
   — semua track (audio/subtitle/font) disalin bit-per-bit, input dibaca lewat
-  endpoint stream sendiri, keluaran dipipe langsung ke RAM: **tetap zero disk**.
+  endpoint stream sendiri secara streaming, keluaran dipipe langsung ke RAM:
+  **tetap zero disk**.
 - Setiap byte keluaran memotong budget `MAX_MEMORY_MB` yang sama dengan cache
   piece (cache otomatis meng-LRU menyusut), jadi total RAM tidak pernah
   melewati batas env.
 - UI otomatis memakai `/remux/...` hanya kalau player belum sempat memutar;
   playback yang sudah jalan tidak pernah disela.
 - Ganti episode: job remux lama dihentikan, budgetnya dipulihkan. Job untuk
-  file yang sama tidak dijalankan ulang.
-- File yang sudah punya `Cues` (atau bukan Matroska) tidak diremux — player
-  langsung memutar dari `/stream`.
+  file yang sama tidak dijalankan ulang. Remux gagal (ffmpeg error/batas
+  memori) → player tetap dilayani `/stream` seperti biasa.
 
 ## Cara kerja singkat
 

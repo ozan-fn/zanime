@@ -1,13 +1,10 @@
-//! Deteksi/unduh ffmpeg + kebutuhan remux. Media tetap nol disk — hanya
-//! binary ffmpeg (opsional) yang disimpan di ./tmp.
+//! Deteksi/unduh ffmpeg. Media tetap nol disk — hanya binary ffmpeg
+//! (opsional) yang disimpan di ./tmp.
 
 use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-
-/// ID elemen EBML `Cues` Matroska (RFC 9559) — index seek di ekor file.
-pub const CUES_ID: [u8; 4] = [0x1C, 0x53, 0xBB, 0x6B];
 
 /// Lokasi ffmpeg: `./tmp/ffmpeg` dulu, lalu `ffmpeg` dari sistem, terakhir
 /// unduh build statis ke `./tmp/ffmpeg`. Hasil di-cache sekali saja.
@@ -84,32 +81,4 @@ async fn download_to_tmp() -> Option<PathBuf> {
         }
     }
     None
-}
-
-/// Kontainer Matroska: MKV/WebM/MKA.
-pub fn is_matroska(path: &str) -> bool {
-    let ext = path
-        .rsplit_once('.')
-        .map(|(_, ext)| ext.to_lowercase())
-        .unwrap_or_default();
-    matches!(ext.as_str(), "mkv" | "webm" | "mka")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn matroska_extensions_detected() {
-        assert!(is_matroska("a.mkv"));
-        assert!(is_matroska("b.WEBM"));
-        assert!(is_matroska("c.mka"));
-        assert!(!is_matroska("d.mp4"));
-        assert!(!is_matroska("e.txt"));
-    }
-
-    #[test]
-    fn cues_id_is_the_rfc_value() {
-        assert_eq!(CUES_ID, [0x1C, 0x53, 0xBB, 0x6B]);
-    }
 }

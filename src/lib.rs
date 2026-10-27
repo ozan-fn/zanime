@@ -483,40 +483,19 @@ fn retire(app: Arc<App>, old: Arc<Current>) {
 
 // --------------------------------------------------------------- remux ----
 
-/// MKV punya index `Cues` di ekor? Baca maksimal 8 MiB terakhir dan cari ID
-/// elemennya. Tanpa Cues, player harus memindai seluruh file sebelum mutar —
-/// file seperti ini yang perlu diremux.
-async fn mkv_has_cues(handle: &Arc<ManagedTorrent>, file: &FileEntry) -> bool {
-    let tail = file.len.min(8 << 20);
-    let Ok(mut stream) = handle.clone().stream(file.id) else {
-        return false;
-    };
-    if stream.seek(SeekFrom::Start(file.len - tail)).await.is_err() {
-        return false;
-    }
-    let mut buf = vec![0u8; tail as usize];
-    if stream.read_exact(&mut buf).await.is_err() {
-        return false;
-    }
-    buf.windows(4).any(|w| w == remux::CUES_ID)
-}
-
 async fn stop_remux(current: &Current) {
     if let Some(job) = current.remux.lock().await.take() {
         job.stop.store(true, Ordering::SeqCst);
     }
 }
 
-/// Mulai remux episode terpilih bila perlu: ffmpeg ada, file Matroska, dan
-/// tidak punya Cues. Hasil dipipe ke RAM; setiap byte memotong `mem_limit`
-/// sehingga cache piece ikut menyusut — total RAM tetap dalam batas env.
+/// Mulai remux episode terpilih — selalu, tanpa syarat kontainer/index.
+/// Hasil dipipe ke RAM; setiap byte memotong `mem_limit` sehingga cache
+/// piece ikut menyusut — total RAM tetap dalam batas env.
 fn spawn_remux(app: &Arc<App>, current: &Arc<Current>, index: usize) {
     let Some(file) = current.videos.get(index).cloned() else {
         return;
     };
-    if !remux::is_matroska(&file.path) {
-        return;
-    }
     let app = app.clone();
     let current = current.clone();
     tokio::spawn(async move {
@@ -527,11 +506,8 @@ fn spawn_remux(app: &Arc<App>, current: &Arc<Current>, index: usize) {
                 return;
             }
         }
-        // Hentikan job file lain supaya budget bebas untuk deteksi + remux baru.
+        // Hentikan job file lain supaya budget bebas untuk remux baru.
         stop_remux(&current).await;
-        if mkv_has_cues(&current.handle, &file).await {
-            return; // sudah punya index: player langsung bisa memutar
-        }
         let Some(ffmpeg) = remux::ensure().await else {
             return;
         };
