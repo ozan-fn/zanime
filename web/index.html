@@ -36,6 +36,19 @@
     ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
     .file-row[aria-current="true"] { box-shadow: inset 3px 0 0 #fafafa; }
+    /* Panah kecepatan: redup saat diam, berdenyut searah aliran saat aktif. */
+    .net-ic { display: inline-block; opacity: .3; transition: opacity .3s; }
+    .net-ic.on { opacity: 1; animation: net-flow .8s ease-in-out infinite; }
+    .net-ic.down.on { animation-name: net-flow-down; }
+    .net-ic.up.on { animation-name: net-flow-up; }
+    @keyframes net-flow-down {
+      0%, 100% { opacity: .4; transform: translateY(-2px); }
+      50% { opacity: 1; transform: translateY(2px); }
+    }
+    @keyframes net-flow-up {
+      0%, 100% { opacity: .4; transform: translateY(2px); }
+      50% { opacity: 1; transform: translateY(-2px); }
+    }
     dialog::backdrop { background: rgba(9, 9, 11, .78); }
     .chip {
       display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none;
@@ -155,6 +168,22 @@
               </div>
               <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
                 <div id="dl-bar" class="h-full w-0 rounded-full bg-zinc-100 transition-[width] duration-500"></div>
+              </div>
+            </div>
+            <div>
+              <div class="flex items-center justify-between text-[11px] text-zinc-500">
+                <span class="flex items-center gap-1.5">
+                  <span id="net-down-ic" class="net-ic down" aria-hidden="true">↓</span>
+                  peer → server
+                </span>
+                <span id="net-down" class="tabular-nums text-zinc-300">0 Mbps</span>
+              </div>
+              <div class="flex items-center justify-between text-[11px] text-zinc-500">
+                <span class="flex items-center gap-1.5">
+                  <span id="net-up-ic" class="net-ic up" aria-hidden="true">↑</span>
+                  server → client
+                </span>
+                <span id="net-up" class="tabular-nums text-zinc-300">0 Mbps</span>
               </div>
             </div>
           </div>
@@ -535,6 +564,31 @@
       const total = state.length || 0;
       $('dl-text').textContent = total ? `${fmt(dl)} / ${fmt(total)}` : fmt(dl);
       $('dl-bar').style.width = total ? `${Math.min(100, (dl / total) * 100)}%` : '0%';
+
+      applyNet(state.net);
+    }
+
+    /* Kecepatan dari selisih byte kumulatif antara dua push status (0,7 dtk).
+     * Dua arah: peer → server (unduhan dari swarm) dan server → client
+     * (byte yang keluar ke player). Panah menyala saat ada aliran. */
+    let lastNet = null;
+    function applyNet(net) {
+      const now = performance.now();
+      const from = net?.from_peers || 0;
+      const to = net?.to_client || 0;
+      if (lastNet && net) {
+        const dt = (now - lastNet.t) / 1000;
+        if (dt >= 0.2) {
+          const down = Math.max(0, from - lastNet.from) / dt * 8 / 1e6;
+          const up = Math.max(0, to - lastNet.to) / dt * 8 / 1e6;
+          const fmtMbps = (v) => (v >= 10 ? v.toFixed(1) : v.toFixed(2));
+          $('net-down').textContent = `${fmtMbps(down)} Mbps`;
+          $('net-up').textContent = `${fmtMbps(up)} Mbps`;
+          $('net-down-ic').classList.toggle('on', down >= 0.05);
+          $('net-up-ic').classList.toggle('on', up >= 0.05);
+        }
+      }
+      lastNet = { t: now, from, to };
     }
 
     // Cukup set src; atribut `autoplay` di <movi-player> yang menjalankan playback.

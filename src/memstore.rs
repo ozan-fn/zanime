@@ -17,6 +17,8 @@ pub struct Stats {
     used: AtomicU64,
     evictions: AtomicU64,
     pieces: Mutex<HashMap<u32, u64>>,
+    /// Total byte yang sudah dikirim server ke player (semua torrent).
+    served: AtomicU64,
 }
 
 impl Stats {
@@ -26,6 +28,14 @@ impl Stats {
 
     pub fn evictions(&self) -> u64 {
         self.evictions.load(Ordering::Relaxed)
+    }
+
+    pub fn served(&self) -> u64 {
+        self.served.load(Ordering::Relaxed)
+    }
+
+    pub fn add_served(&self, n: u64) {
+        self.served.fetch_add(n, Ordering::Relaxed);
     }
 
     /// Catat byte piece yang tersimpan (dipanggil setelah tulis).

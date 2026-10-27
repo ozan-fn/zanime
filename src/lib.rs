@@ -553,6 +553,11 @@ async fn state_json(app: &App) -> Value {
         "pieces": pieces,
         "peers": peers,
         "size": file.map(|f| f.len).unwrap_or(0),
+        // byte kumulatif; kecepatan (Mbps) dihitung di klien dari selisihnya
+        "net": {
+            "from_peers": fetched,
+            "to_client": app.stats.served(),
+        },
     })
 }
 
@@ -904,7 +909,18 @@ async fn serve_stream(
                         &format!("seek stream: {error}"),
                     );
                 }
-                Body::from_stream(ReaderStream::new(stream.take(count)))
+                // Hitung byte yang benar-benar keluar ke player untuk statistik
+                // "server → client".
+                use futures_util::StreamExt;
+                let stats = app.stats.clone();
+                Body::from_stream(
+                    ReaderStream::new(stream.take(count)).map(move |chunk| {
+                        if let Ok(bytes) = &chunk {
+                            stats.add_served(bytes.len() as u64);
+                        }
+                        chunk
+                    }),
+                )
             }
             Err(error) => {
                 return json_error(
