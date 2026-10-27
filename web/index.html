@@ -53,11 +53,6 @@
         <span class="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-400">
           <span class="h-1.5 w-1.5 rounded-full bg-indigo-400"></span> movi-player
         </span>
-        <label for="ffmpeg" title="Matikan untuk memakai decoder native browser (tanpa pipeline FFmpeg WASM; MKV/HEVC dan subtitle di dalam file biasanya tidak didukung)"
-          class="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-400 transition hover:border-white/20">
-          <input id="ffmpeg" type="checkbox" class="h-3 w-3 cursor-pointer accent-indigo-500" checked />
-          <span>FFmpeg</span>
-        </label>
       </div>
     </header>
 
@@ -98,7 +93,10 @@
 
         <div id="stats-card" class="hidden rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-2xl shadow-black/30 backdrop-blur">
           <div class="flex items-center justify-between">
-            <h2 class="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Status</h2>
+            <h2 class="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+              Status
+              <span id="status-source" class="font-normal normal-case tracking-normal text-zinc-600">menyambung…</span>
+            </h2>
             <span id="peers-wrap" class="text-[11px] text-zinc-500"><span id="peers" class="font-semibold text-zinc-300">0</span> peer</span>
           </div>
 
@@ -161,12 +159,8 @@
     </footer>
   </div>
 
-  <!--
-    Build slim sesuai docs MoviPlayer (v0.4.1): movi.wasm dimuat sebagai file
-    terpisah dari samping bundle JS, bukan tertanam di dalamnya. Jangan set
-    atribut wasmurl — itu mematikan fallback native otomatis milik build slim.
-  -->
-  <script type="module" src="https://cdn.jsdelivr.net/npm/movi-player@0.4.1/dist/element.slim.js"></script>
+  <!-- CDN module build sesuai docs MoviPlayer (v0.4.1). -->
+  <script type="module" src="https://cdn.jsdelivr.net/npm/movi-player@0.4.1/dist/element.js"></script>
   <script>
     const $ = (id) => document.getElementById(id);
     const player = $('player');
@@ -381,9 +375,7 @@
     }
 
     // Cukup set src; atribut `autoplay` di <movi-player> yang menjalankan playback.
-    let currentFile = null;
     function playFile(file) {
-      currentFile = file;
       $('np-title').textContent = file.name;
       $('np-sub').textContent = `${fmt(file.size)} · ${file.path || file.name}`;
       player.src = file.url;
@@ -410,55 +402,47 @@
     }
 
     /* ------------------------------------------------------------------ *
-     * Status lewat WebSocket: server mendorong payload yang sama dengan
-     * /api/state tiap 0,7 detik, jadi UI tidak polling. Reconnect otomatis
-     * kalau server restart atau koneksi putus.
+     * Update kartu Status — dua jalur, supaya angka tidak pernah berhenti:
+     *   1. WebSocket: server mendorong payload /api/state tiap 0,7 detik.
+     *   2. Polling /api/state dengan jeda yang sama, jalan hanya saat frame WS
+     *      tidak masuk (socket gagal/putus, proxy, halaman lama). Begitu frame
+     *      WS datang lagi, polling berhenti sendiri.
+     * `#status-source` menunjukkan jalur yang sedang dipakai, jadi kelihatan
+     * apakah angka yang diam itu memang nilai aslinya (mis. torrent tanpa
+     * pembaca = 0 B) atau socket-nya yang tidak jalan.
      * ------------------------------------------------------------------ */
+    const STATUS_DELAY = 700;
+    let lastFrameAt = 0;
+
+    function markStatusSource(source) {
+      const el = $('status-source');
+      if (!el || el.dataset.source === source) return;
+      el.dataset.source = source;
+      el.textContent = source === 'ws' ? 'live' : 'poll';
+      el.className = source === 'ws'
+        ? 'font-normal normal-case tracking-normal text-emerald-400'
+        : 'font-normal normal-case tracking-normal text-amber-400';
+    }
+
     function connectStatus() {
       const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
       const socket = new WebSocket(`${scheme}://${location.host}/api/ws`);
       socket.addEventListener('message', (event) => {
-        try { applyState(JSON.parse(event.data)); } catch { /* frame rusak, tunggu yang berikutnya */ }
+        try {
+          applyState(JSON.parse(event.data));
+          lastFrameAt = Date.now();
+          markStatusSource('ws');
+        } catch { /* frame rusak, tunggu yang berikutnya */ }
       });
       socket.addEventListener('close', () => setTimeout(connectStatus, 1000));
       socket.addEventListener('error', () => socket.close());
     }
 
-    /* ------------------------------------------------------------------ *
-     * Toggle FFmpeg: pipeline WASM (demux + decode MKV/HEVC di browser) vs
-     * decoder native. Mematikan FFmpeg memasang engine="native" (docs:
-     * atribut `engine`), sehingga elemen menyerahkan src ke <video> bawaan
-     * dengan UI Movi tetap di atasnya. Nilai satu nama = tanpa fallback.
-     * ------------------------------------------------------------------ */
-    const ffmpegToggle = $('ffmpeg');
-    const ffmpegEnabled = () => lastSaved().ffmpeg !== false;
-
-    function applyEngine() {
-      if (ffmpegEnabled()) player.removeAttribute('engine');
-      else player.setAttribute('engine', 'native');
-    }
-
-    // engine hanya dibaca saat load. Docs: `src = null` mengosongkan source,
-    // jadi mengosongkan lalu mengisi ulang menjamin load baru dengan engine baru
-    // (mengisi URL yang sama saja tidak dijamin memicu load ulang).
-    function reloadCurrent() {
-      if (!currentFile) return;
-      const url = currentFile.url;
-      player.src = null;
-      player.src = url;
-    }
-
-    ffmpegToggle.checked = ffmpegEnabled();
-    ffmpegToggle.addEventListener('change', () => {
-      saveLast({ ffmpeg: ffmpegToggle.checked });
-      applyEngine();
-      reloadCurrent();
-      setStatus(ffmpegToggle.checked
-        ? 'FFmpeg WASM aktif: MKV/HEVC dan subtitle di dalam file diputar lewat WebCodecs.'
-        : 'Decoder native aktif: pipeline FFmpeg WASM tidak dipakai. File yang codec-nya tidak didukung browser akan gagal diputar, dan subtitle di dalam file tidak tampil.',
-      'info');
-    });
-    applyEngine();
+    setInterval(() => {
+      if (Date.now() - lastFrameAt < 3 * STATUS_DELAY) return; // WS masih hidup
+      markStatusSource('poll');
+      refresh();
+    }, STATUS_DELAY);
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
