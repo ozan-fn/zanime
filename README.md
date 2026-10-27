@@ -34,10 +34,21 @@ make build             # hasil: ./zanime
 make run               # go run .
 make vet               # go vet ./...
 make test              # unit + eviction virtual, -race, timeout 15s
+golangci-lint run ./... # lint semua paket (wajib: 0 issues)
 make clean             # hapus ./zanime dan zanime.exe
 ```
 
 Tanpa `make`: `go build -o zanime .`
+
+## Lint
+
+Butuh [golangci-lint](https://golangci-lint.run/) v2:
+
+```sh
+golangci-lint run ./...
+```
+
+Config default (tanpa `.golangci.yml`), mencakup `errcheck` — error dari `Close`/`Unsetenv` harus eksplisit diabaikan (`defer func() { _ = f.Close() }()`), bukan `defer f.Close()`.
 
 ## Konfigurasi
 
@@ -109,6 +120,7 @@ Unit test (hermetic, termasuk eviction virtual):
 
 ```sh
 make vet
+golangci-lint run ./...
 make test
 ```
 

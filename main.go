@@ -321,7 +321,7 @@ func (s *server) stream(c *gin.Context) {
 	}
 
 	reader := f.NewReader()
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	reader.SetReadahead(8 << 20)
 	stream.Serve(c, path.Base(f.Path()), reader)
 }
