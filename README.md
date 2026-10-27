@@ -1,176 +1,90 @@
 # zanime
 
-Torrent video streaming server: Gin HTTP, virtual streaming + seek, cache RAM-only, zero disk, plus a web UI untuk tempel magnet dan memilih video.
+Torrent video streaming server: HTTP + Range/seek, cache piece di RAM saja,
+zero disk, dan UI web untuk menempel magnet serta memilih video.
 
-Player memakai [MoviPlayer](https://moviplayer.com/) dari CDN (`<movi-player>`), jadi MKV/HEVC/AV1 dan subtitle di dalam file diputar di browser lewat WebCodecs + FFmpeg WASM. Server hanya mengirim byte lewat HTTP Range; tidak ada transcoding di server.
+Player memakai [MoviPlayer](https://moviplayer.com/) dari CDN (`<movi-player>`),
+jadi MKV/HEVC/AV1 dan subtitle di dalam file diputar di browser lewat WebCodecs
++ FFmpeg WASM. Server hanya mengirim byte lewat HTTP Range; tidak ada transcoding
+di server.
 
-## Kenapa `anacrolix/torrent`
+## Stack
 
-- `File.NewReader()` mengembalikan `io.ReadSeekCloser`, langsung cocok untuk `http.ServeContent` (HEAD, Range/206, multi-range, 416).
-- Storage backend bisa diganti, jadi piece bisa disimpan di RAM.
-- `cenkalti/rain` v2.4.4 tidak mengekspos API baca piece (`File` hanya `Length`/`Path`), jadi tidak bisa virtual streaming/seek.
+- **Rust** + **axum** (HTTP, WebSocket) + **tokio**.
+- **librqbit** untuk BitTorrent. Salinan di `vendor/librqbit` dipatch dengan
+  `forget_piece`: piece yang dibuang dari RAM ditandai "belum punya" sehingga
+  bisa diunduh ulang saat player seek kembali.
+- Storage piece: `src/memstore.rs` (LRU, batas `MAX_MEMORY_MB`).
 
-## Struktur
+## Menjalankan
 
-```
-main.go                        gin server, API magnet/file, embed web/
-web/index.html                 UI Tailwind + <movi-player>, di-embed lewat go:embed
-internal/config/               loader .env (PORT, MAX_MEMORY_MB)
-internal/stream/               handler HTTP Range/seek (dipakai main + test)
-internal/stream/*_test.go      unit test HEAD/Range/seek/416
-internal/memstorage/           storage torrent RAM-only, LRU
-internal/memstorage/*_test.go  unit test cache + eviction
-tests/eviction_test.go         eviction + refetch, seeder/leecher lokal (tanpa internet)
-tests/e2e_test.go              e2e streaming + seek + API + cek disk ke server hidup
-```
-
-## Build
-
-Butuh Go 1.27+.
-
-```sh
-cp .env.example .env   # lalu sesuaikan PORT / MAX_MEMORY_MB
-make build             # hasil: ./zanime
-make run               # go run .
-make vet               # go vet ./...
-make test              # unit + eviction virtual, -race, timeout 15s
-golangci-lint run ./... # lint semua paket (wajib: 0 issues)
-make clean             # hapus ./zanime dan zanime.exe
+```bash
+cp .env.example .env      # PORT, MAX_MEMORY_MB
+cargo run --release
+# atau
+cargo run --release -- --addr 0.0.0.0:8080 --cache-mb 200 --magnet "magnet:?xt=..."
 ```
 
-Tanpa `make`: `go build -o zanime .`
-
-## Lint
-
-Butuh [golangci-lint](https://golangci-lint.run/) v2:
-
-```sh
-golangci-lint run ./...
-```
-
-Config default (tanpa `.golangci.yml`), mencakup `errcheck` — error dari `Close`/`Unsetenv` harus eksplisit diabaikan (`defer func() { _ = f.Close() }()`), bukan `defer f.Close()`.
+Buka `http://localhost:8080`, tempel magnet, lalu klik salah satu file video.
+`/api/ws` mendorong status tiap 0,7 detik; UI tidak memakai polling.
 
 ## Konfigurasi
 
-`.env` di root (contoh lengkap di `.env.example`):
+| Sumber | Kunci | Arti |
+|---|---|---|
+| `.env` / env proses | `PORT` | port HTTP (default 8080) |
+| `.env` / env proses | `MAX_MEMORY_MB` | batas cache piece di RAM (default 200 MiB) |
+| argumen | `--addr`, `--cache-mb`, `--magnet` | menimpa nilai di atas |
 
-```dotenv
-PORT=8080
-MAX_MEMORY_MB=200
-```
-
-- `PORT` — port HTTP (default bind `0.0.0.0`, log menampilkan `http://localhost:<port>`).
-- `MAX_MEMORY_MB` — batas cache piece di RAM (MiB).
-
-Flag CLI menimpa nilai `.env`:
-
-```sh
-go run .                       # magnet contoh, 0.0.0.0:8080 (buka localhost:8080), cache dari .env
-go run . -magnet ''            # mulai tanpa torrent, isi magnet dari UI
-go run . -addr 0.0.0.0:8080 -cache-mb 128
-```
-
-## UI
-
-Buka `http://localhost:8080`:
-
-1. Tempel magnet, klik **Muat torrent**. Server menunggu metadata (maksimal 45 detik) lalu menampilkan daftar file video, urut nama. Selama menunggu, tombol **Batalkan** muncul di sebelah tombol Muat dan status memuat ikut terlihat di kartu Status — termasuk kalau halaman di-reload atau dibuka dari tab lain, karena statusnya datang dari server.
-2. Klik salah satu file. `src` player diarahkan ke `/stream/<index>/<nama>` dan playback langsung dicoba.
-3. Panel status menampilkan cache RAM, eviction, peer, dan byte yang tersedia. UI tidak polling: ia membuka `GET /api/ws` dan server mendorong payload `/api/state` tiap 0,7 detik (`wsDelay` di `main.go`). Socket yang putus disambung ulang otomatis oleh UI.
-Kartu Status di-update dua jalur supaya angkanya tidak pernah diam: WebSocket `/api/ws` sebagai jalur utama, dan polling `/api/state` dengan jeda yang sama kalau frame WS tidak masuk (socket gagal/putus, proxy, halaman lama). Begitu frame WS datang lagi, polling berhenti sendiri. Label kecil di sebelah judul **Status** menunjukkan jalur yang sedang dipakai — `live` (WebSocket) atau `poll`. Kalau nilainya diam padahal `live`, itu memang nilai aslinya: tanpa ada pembaca yang menarik data, torrent tidak mengunduh apa pun sehingga `Cache RAM` dan `Tersedia dari torrent` tetap `0 B`.
-
-Magnet dan episode terakhir disimpan di `localStorage` (`zanime.last`), jadi membuka ulang UI langsung memuat torrent dan video yang sama. Bahasa subtitle terakhir diingat oleh atribut `persist` MoviPlayer (`persistkey="zanime"`) dan diterapkan ulang oleh UI setiap ganti video. Penerapan ulang mencocokkan tag lewat alias (`id`/`in`/`ind`/`indonesian`, dst.), dan kalau file baru hanya punya satu track subtitle tanpa tag yang cocok, track itu yang dipilih — jadi tidak perlu memilih manual lagi.
-
-Player di-load dari `https://moviplayer.com/dist/element.js`; Tailwind dari `https://cdn.tailwindcss.com`. Keduanya CDN, tidak perlu build frontend.
+Magnet awal bisa dikosongkan (`--magnet ""`) supaya server mulai tanpa torrent.
 
 ## Endpoint
 
-| Path | Fungsi |
-|------|--------|
-| `GET /` | UI (embedded `web/index.html`) |
-| `GET /api/state` | status torrent, daftar file video, file terpilih, cache, peer |
-| `GET /api/ws` | WebSocket; payload sama dengan `/api/state`, dikirim tiap 0,7 detik |
-| `POST /api/magnet` | `{"magnet":"..."}` — ganti torrent aktif, tunggu metadata (504 kalau timeout, 400 magnet invalid, 409 dibatalkan) |
-| `POST /api/cancel` | batalkan pemuatan magnet yang sedang jalan (409 kalau tidak ada) |
-| `POST /api/select` | `{"index":N}` — pilih file video |
-| `GET /stream` | file terpilih; dukung `HEAD` dan `Range` |
-| `GET /stream/:index/:name` | file tertentu; `name` dipakai untuk MIME/ekstensi |
-| `GET /info` | ringkasan siap/nama/ukuran/cache (dipakai e2e) |
-| `GET /healthz` | `ok` |
+| Endpoint | Fungsi |
+|---|---|
+| `GET /` | UI (index.html di-embed ke binary) |
+| `GET /healthz` | cek hidup, balas `ok` |
+| `GET /info` | ringkasan siap/nama/ukuran/cache |
+| `GET /api/ws` | WebSocket: dorongan status tiap 0,7 detik (sumber tunggal angka di UI) |
+| `POST /api/magnet` | `{"magnet": "...", "fileIndex": N}`; `fileIndex` opsional (urutan file di torrent) |
+| `POST /api/cancel` | batalkan pemuatan magnet yang sedang jalan |
+| `POST /api/select` | `{"index": N}` pada daftar video yang sudah diurutkan |
+| `GET/HEAD /stream` | file terpilih; dukung `Range` (206) dan 416 |
+| `GET/HEAD /stream/{index}/{name}` | file tertentu; `name` dipakai untuk MIME |
 
-Contoh:
+## Cara kerja singkat
 
-```sh
-curl http://127.0.0.1:8080/api/state
-curl -X POST http://127.0.0.1:8080/api/magnet \
-  -H 'Content-Type: application/json' \
-  -d '{"magnet":"magnet:?xt=urn:btih:..."}'
-curl -I http://127.0.0.1:8080/stream
-curl -H 'Range: bytes=0-1048575' -o chunk.bin http://127.0.0.1:8080/stream
-```
-
-## Pemuatan magnet: satu job
-
-Pemuatan dijalankan sebagai satu job milik server (`loadJob` di `main.go`):
-
-- **Anti-spam.** Magnet yang sama tidak pernah memulai unduhan kedua: request yang datang saat job itu masih jalan ikut menunggu job yang sama. Menekan Muat lagi untuk magnet yang sudah aktif langsung menjawab tanpa me-restart torrent.
-- **Magnet baru menang.** Mengirim magnet lain membatalkan job lama (torrentnya di-drop), lalu job baru jalan.
-- **Cancel.** `POST /api/cancel` menghentikan job; torrent yang sedang aktif dan stream-nya tidak diusik, jadi membatalkan magnet jelek tidak menghentikan playback. UI memakai ini lewat tombol **Batalkan**.
-- **Abort.** Job tidak terikat pada request yang memulainya: menutup tab atau membatalkan fetch hanya menghentikan request itu menunggu, bukan job-nya. Job berakhir karena sukses, `/api/cancel`, atau timeout metadata 45 detik.
-- **Timeout & error.** Timeout metadata menjawab 504 (`metadata timeout setelah 45s`), magnet invalid 400, job yang dibatalkan 409. Semua pesan itu ditampilkan di baris status UI.
-
-Setelah job selesai, `loading` di `/api/state` (dan `/api/ws`) kembali `false`, sehingga tombol Muat/Batalkan di semua klien kembali ke keadaan semestinya.
-
-## Cache & zero disk
-
-- `internal/memstorage` menyimpan piece di `map` + LRU (`container/list`), total dibatasi `MAX_MEMORY_MB` / `-cache-mb` (default 200 MiB).
-- Saat budget terlampaui, piece paling lama dibuang dan `Eviction{Hash, Index}` dikirim lewat channel `Evicted()`.
-- `server.syncEvictions()` memanggil `t.Piece(index).UpdateCompletion()` untuk piece yang dibuang, supaya torrent client menandainya belum lengkap dan mengunduhnya lagi saat di-seek. Eviction dari torrent lama diabaikan lewat info hash.
-- `cfg.DataDir = ""` dan `DefaultStorage` diganti `memstorage`; torrent client tidak pernah membuka file data.
-- Satu piece yang lebih besar dari limit tetap disimpan agar progres tidak macet.
+- Satu torrent aktif. Magnet baru tidak mengunduh seluruh file: librqbit diberi
+  `only_files = []`, jadi piece hanya diambil saat stream memintanya.
+- Pemuatan magnet adalah satu job milik server (bukan request), bisa dibatalkan
+  lewat `/api/cancel`, dibatasi 45 detik menunggu metadata, dan job dengan magnet
+  yang sama dipakai bersama.
+- Setiap torrent aktif memegang satu stream "penjaga" di EOF supaya peer tidak
+  dilepas saat player belum membaca apa pun.
+- Cache RAM: piece di atas batas dibuang (LRU), indeksnya dikirim ke evictor,
+  lalu `forget_piece` menandainya belum punya agar bisa diunduh ulang.
+- File video disaring berdasarkan ekstensi, diurutkan menurut path huruf kecil;
+  indeks di API/stream mengikuti urutan itu, sedangkan `fileIndex` mengikuti
+  urutan file di dalam torrent.
 
 ## Test
 
-Unit test (hermetic, termasuk eviction virtual):
-
-```sh
-make vet
-golangci-lint run ./...
-make test
+```bash
+cargo test        # unit: range, urutan file, URL, config, memstore, router
+cargo fmt
+cargo clippy --all-targets
 ```
 
-`tests/eviction_test.go` menjalankan seeder + leecher di proses yang sama lewat localhost, torrent 8 MiB / 8 piece, cache 2 piece. Efeknya eviction, refetch setelah seek, dan isi byte diverifikasi tanpa internet (~0,2 detik). Kedua `DataDir` dicek tetap kosong.
+Test router memakai `tower::ServiceExt::oneshot`, jadi route diuji tanpa membuka
+port dan tanpa torrent. Test streaming end-to-end tidak dijalankan otomatis
+karena butuh swarm nyata.
 
-E2E butuh server hidup dan network torrent:
+## Layout
 
-```sh
-go run .                                                  # terminal 1
-ZANIME_E2E=1 go test -run TestE2E -timeout 90s ./tests    # terminal 2
 ```
-
-Yang dicek e2e:
-
-- `/info`: `storage=memory`, file video, `cache_used <= cache_limit`
-- `HEAD /stream`: 200, `Content-Length`, `Accept-Ranges: bytes`
-- Range 0–128 KiB: 206 + `Content-Range`
-- seek 1 MiB dan 50% file: 206, offset benar
-- range sama dua kali: byte identik
-- `bytes=<size>-`: 416 + `Content-Range: bytes */<size>`
-- disk: `/proc/<pid>/fd` server tidak membuka file data (fd selain stdin/stdout/stderr)
-- UI: `/` memuat `movi-player` + Tailwind + endpoint `/api/magnet`
-- API: magnet invalid ditolak 400, `/api/state` berisi file + URL stream yang HEAD-nya 200, `/api/select` valid 200 dan index invalid 400
-
-Env test:
-
-- `ZANIME_URL` — default `http://127.0.0.1:8080`
-- `ZANIME_TIMEOUT` — timeout per request, default 15 detik
-- `ZANIME_E2E=1` — wajib untuk menjalankan e2e
-
-Jika satu piece torrent (4 MiB di magnet contoh) tidak selesai dalam timeout, test streaming di-skip, bukan gagal — swarm publik bisa lambat. Naikkan `ZANIME_TIMEOUT` bila perlu.
-
-## Batasan
-
-- Satu torrent aktif; menambah magnet baru akan mengganti torrent lama.
-- Hanya file dengan ekstensi video yang ditampilkan (`.mkv`, `.mp4`, `.webm`, `.avi`, `.mov`, `.ts`, `.m2ts`, …).
-- Tidak ada transcode/remux di server; server hanya menyajikan byte dari torrent.
-- Format yang bisa diputar tergantung browser: MoviPlayer memakai WebCodecs (Chrome/Edge terbaru paling aman). Safari tanpa WebCodecs akan fallback ke native `<video>`.
+src/main.rs        entry point (tipis)
+src/lib.rs         config, app state, job magnet, route, stream Range
+src/memstore.rs    storage piece RAM + LRU eviction
+vendor/librqbit    librqbit 8.1.1 yang dipatch (forget_piece)
+web/index.html     UI yang di-embed
+```

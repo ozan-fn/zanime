@@ -168,13 +168,12 @@
             persist: hanya yang terdaftar yang diingat (bahasa subtitle sengaja tidak
             dimasukkan — ditangani script di bawah lewat API player, lihat applySubtitle).
           -->
-          <!-- probesize/probeduration dipasang capping untuk MKV multi-sub: tanpa batas, ffmpeg membaca hampir seluruh file demi paket pertama tiap track subtitle. -->
-<!-- probesize/probeduration dipasang capping untuk MKV multi-sub: tanpa batas, ffmpeg membaca hampir seluruh file demi paket pertama tiap track subtitle. -->
+          <!-- probesize/probeduration dibiarkan default: cap kecil membuat ffmpeg
+               tidak sempat membaca info durasi, jadi timeline tampil 00:00. -->
 <movi-player id="player"
             controls autoplay playsinline thumb
             theme="dark"
             buffersize="64"
-            probesize="2mb" probeduration="1000"
             bindav="false"
             persist="loop muted volume speed ambient stablevolume hdr aspect cropbars audiolang"
             persistkey="zanime"></movi-player>
@@ -492,31 +491,17 @@
       }
     }
 
-    async function refresh() {
-      try {
-        applyState(await api('/api/state'));
-      } catch { /* server restarting */ }
-    }
-
     /* ------------------------------------------------------------------ *
-     * Update kartu Status — dua jalur, supaya angka tidak pernah berhenti:
-     *   1. WebSocket: server mendorong payload /api/state tiap 0,7 detik.
-     *   2. Polling /api/state dengan jeda yang sama, jalan hanya saat frame WS
-     *      tidak masuk (socket gagal/putus, proxy, halaman lama). Begitu frame
-     *      WS datang lagi, polling berhenti sendiri.
-     * `#status-source` menunjukkan jalur yang sedang dipakai, jadi kelihatan
-     * apakah angka yang diam itu memang nilai aslinya (mis. torrent tanpa
-     * pembaca = 0 B) atau socket-nya yang tidak jalan.
+     * Update kartu Status lewat WebSocket: server mendorong status tiap 0,7
+     * detik. `#status-source` menandai socket hidup atau sedang menyambung
+     * ulang, jadi angka yang diam bisa dibedakan dari socket yang mati.
      * ------------------------------------------------------------------ */
-    const STATUS_DELAY = 700;
-    let lastFrameAt = 0;
-
-    function markStatusSource(source) {
+    function markStatusSource(state) {
       const el = $('status-source');
-      if (!el || el.dataset.source === source) return;
-      el.dataset.source = source;
-      el.textContent = source === 'ws' ? 'live' : 'poll';
-      el.className = source === 'ws'
+      if (!el || el.dataset.source === state) return;
+      el.dataset.source = state;
+      el.textContent = state === 'ws' ? 'live' : 'menyambung…';
+      el.className = state === 'ws'
         ? 'font-normal normal-case tracking-normal text-zinc-400'
         : 'font-normal normal-case tracking-normal text-amber-400';
     }
@@ -527,19 +512,15 @@
       socket.addEventListener('message', (event) => {
         try {
           applyState(JSON.parse(event.data));
-          lastFrameAt = Date.now();
           markStatusSource('ws');
         } catch { /* frame rusak, tunggu yang berikutnya */ }
       });
-      socket.addEventListener('close', () => setTimeout(connectStatus, 1000));
+      socket.addEventListener('close', () => {
+        markStatusSource('reconnect');
+        setTimeout(connectStatus, 1000);
+      });
       socket.addEventListener('error', () => socket.close());
     }
-
-    setInterval(() => {
-      if (Date.now() - lastFrameAt < 3 * STATUS_DELAY) return; // WS masih hidup
-      markStatusSource('poll');
-      refresh();
-    }, STATUS_DELAY);
 
     /* ------------------------------------------------------------------ *
      * Memuat magnet = satu job di server.
@@ -575,12 +556,12 @@
       syncLoadBusy();
       setStatus('Membatalkan pemuatan magnet…', 'info');
       try {
-        await api('/api/cancel', { method: 'POST' });
+        // Server membalas status terbaru; frame WS berikutnya menyusul sendiri.
+        applyState(await api('/api/cancel', { method: 'POST' }));
         setStatus('Pemuatan magnet dibatalkan. Torrent yang sedang aktif tidak diubah.', 'ok');
       } catch (err) {
         setStatus(`Batalkan gagal: ${err.message}`, 'error');
       }
-      refresh();
     });
 
     form.addEventListener('submit', async (event) => {
@@ -999,7 +980,6 @@
 
     const saved = lastSaved();
     if (saved.magnet) magnetInput.value = saved.magnet;
-    refresh(); // sekali supaya UI langsung terisi walau socket belum tersambung
     window.lucide?.createIcons(); // ikon statis di markup
     connectStatus();
 

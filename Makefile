@@ -1,19 +1,25 @@
-BINARY := zanime
-GO ?= go
+BINARY := target/release/zanime
+CARGO ?= cargo
 
-.PHONY: build run vet test clean
+.PHONY: build run test fmt lint clean
 
 build:
-	CGO_ENABLED=0 $(GO) build -o $(BINARY) .
+	$(CARGO) build --release
+	rm -f zanime
+	cp $(BINARY) .
+	upx --best --lzma zanime
 
 run:
-	$(GO) run .
-
-vet:
-	$(GO) vet ./...
+	$(CARGO) run --release
 
 test:
-	$(GO) test -race ./... -count=1 -timeout 15s
+	$(CARGO) test
+
+fmt:
+	$(CARGO) fmt
+
+lint:
+	$(CARGO) clippy --all-targets
 
 clean:
-	rm -f $(BINARY) $(BINARY).exe
+	$(CARGO) clean
