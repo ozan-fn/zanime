@@ -61,8 +61,9 @@ Magnet awal bisa dikosongkan (`--magnet ""`) supaya server mulai tanpa torrent.
 Setiap episode terpilih diremux **ffmpeg** untuk menjamin file punya index
 (`Cues`) — tanpa itu player bisa dipaksa memindai seluruh file sebelum mutar:
 
-- Sumber ffmpeg: `./tmp/ffmpeg` → ffmpeg dari `PATH` → build statis yang
-  diunduh otomatis ke `./tmp/ffmpeg` (~35 MB, sekali saja).
+- Sumber ffmpeg: `./tmp/ffmpeg` (Windows: `./tmp/ffmpeg.exe`) → ffmpeg dari
+  `PATH` → build statis yang diunduh otomatis ke `./tmp` (Linux:
+  johnvansickle.com, Windows: gyan.dev; sekali saja).
 - Perintah: `ffmpeg -i http://127.0.0.1:<port>/stream/… -map 0 -c copy -f matroska pipe:1`
   — semua track (audio/subtitle/font) disalin bit-per-bit, input dibaca lewat
   endpoint stream sendiri secara streaming, keluaran dipipe langsung ke RAM:
