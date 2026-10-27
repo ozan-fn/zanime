@@ -10,10 +10,13 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Angka cache yang dipakai `/api/ws` dan `/info`.
+/// `pieces` memetakan id piece → byte yang benar-benar tersimpan, sumber
+/// kebenaran untuk statistik "sudah terunduh" per file.
 #[derive(Default)]
 pub struct Stats {
     used: AtomicU64,
     evictions: AtomicU64,
+    pieces: Mutex<HashMap<u32, u64>>,
 }
 
 impl Stats {
@@ -23,6 +26,21 @@ impl Stats {
 
     pub fn evictions(&self) -> u64 {
         self.evictions.load(Ordering::Relaxed)
+    }
+
+    /// Catat byte piece yang tersimpan (dipanggil setelah tulis).
+    pub fn piece_written(&self, pid: u32, len: u64) {
+        self.pieces.lock().unwrap().insert(pid, len);
+    }
+
+    /// Lepaskan piece dari statistik saat dibuang dari RAM.
+    pub fn piece_evicted(&self, pid: u32) {
+        self.pieces.lock().unwrap().remove(&pid);
+    }
+
+    /// Salinan piece yang ada di RAM sekarang.
+    pub fn cached_pieces(&self) -> HashMap<u32, u64> {
+        self.pieces.lock().unwrap().clone()
     }
 }
 
@@ -89,21 +107,8 @@ impl Inner {
     fn touch<'a>(&self, st: &'a mut State, pid: u32) -> &'a mut Vec<u8> {
         st.tick += 1;
         if !st.pieces.contains_key(&pid) {
-            while st.bytes + self.piece_len > self.limit && !st.pieces.is_empty() {
-                let victim = st
-                    .pieces
-                    .iter()
-                    .min_by_key(|(_, (_, used))| *used)
-                    .map(|(id, _)| *id)
-                    .unwrap();
-                if let Some((old, _)) = st.pieces.remove(&victim) {
-                    st.bytes -= old.len() as u64;
-                    self.stats.evictions.fetch_add(1, Ordering::Relaxed);
-                    let _ = self.evicted.send(victim);
-                }
-            }
-            st.bytes += self.piece_len;
-            self.stats.used.store(st.bytes, Ordering::Relaxed);
+            // Sisihkan ruang untuk piece penuh sebelum menghitung byte nyata.
+            self.make_room(st, self.piece_len);
             st.pieces
                 .insert(pid, (Vec::with_capacity(self.piece_len as usize), st.tick));
         }
@@ -111,6 +116,24 @@ impl Inner {
         let piece = st.pieces.get_mut(&pid).unwrap();
         piece.1 = tick;
         &mut piece.0
+    }
+
+    /// Buang piece paling lama sampai `bytes + reserve` muat di bawah limit.
+    fn make_room(&self, st: &mut State, reserve: u64) {
+        while st.bytes + reserve > self.limit && !st.pieces.is_empty() {
+            let victim = st
+                .pieces
+                .iter()
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(id, _)| *id)
+                .unwrap();
+            if let Some((old, _)) = st.pieces.remove(&victim) {
+                st.bytes -= old.len() as u64;
+                self.stats.evictions.fetch_add(1, Ordering::Relaxed);
+                self.stats.piece_evicted(victim);
+                let _ = self.evicted.send(victim);
+            }
+        }
     }
 }
 
@@ -178,14 +201,24 @@ impl TorrentStorage for MemStorage {
             let pid = (abs / piece_len) as u32;
             let off = (abs % piece_len) as usize;
             let n = (buf.len() - done).min(piece_len as usize - off);
-            let piece = self.inner.touch(&mut st, pid);
-            if piece.len() < off + n {
-                piece.resize(off + n, 0);
-            }
-            piece[off..off + n].copy_from_slice(&buf[done..done + n]);
+            let grown = {
+                let piece = self.inner.touch(&mut st, pid);
+                let before = piece.len() as u64;
+                if piece.len() < off + n {
+                    piece.resize(off + n, 0);
+                }
+                piece[off..off + n].copy_from_slice(&buf[done..done + n]);
+                self.inner.stats.piece_written(pid, piece.len() as u64);
+                piece.len() as u64 - before
+            };
+            st.bytes += grown;
             done += n;
             abs += n as u64;
         }
+        // Pertumbuhan piece sebagian tidak lewat make_room, jadi pemeriksaan
+        // batas dilakukan lagi di sini dengan byte nyata.
+        self.inner.make_room(&mut st, 0);
+        self.inner.stats.used.store(st.bytes, Ordering::Relaxed);
         Ok(())
     }
 
@@ -248,8 +281,27 @@ mod tests {
     }
 
     #[test]
-    fn single_piece_larger_than_limit_is_still_stored() {
-        let (storage, _, _) = storage(4);
+    fn used_counts_real_bytes_not_piece_length() {
+        let (storage, _, stats) = storage(8);
+        storage.pwrite_all(0, 0, &[1; 2]).unwrap(); // piece 0 setengah terisi
+        assert_eq!(stats.used(), 2);
+        storage.pwrite_all(0, 2, &[2; 2]).unwrap(); // piece 0 lengkap
+        assert_eq!(stats.used(), 4);
+    }
+
+    #[test]
+    fn cached_pieces_tracks_evictions() {
+        let (storage, mut evicted, stats) = storage(8);
+        storage.pwrite_all(0, 0, &[1; 4]).unwrap();
+        storage.pwrite_all(0, 4, &[2; 4]).unwrap();
+        assert_eq!(stats.cached_pieces(), HashMap::from([(0, 4), (1, 4)]));
+        storage.pwrite_all(0, 8, &[3; 4]).unwrap();
+        assert_eq!(evicted.try_recv().unwrap(), 0);
+        assert_eq!(stats.cached_pieces(), HashMap::from([(1, 4), (2, 4)]));
+    }
+
+    #[test]
+    fn single_piece_larger_than_limit_is_still_stored() {        let (storage, _, _) = storage(4);
         storage.pwrite_all(0, 0, &[7; 4]).unwrap();
         let mut buf = [0u8; 4];
         storage.pread_exact(0, 0, &mut buf).unwrap();

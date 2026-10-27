@@ -178,6 +178,7 @@
             persist="loop muted volume speed ambient stablevolume hdr aspect cropbars audiolang"
             persistkey="zanime"></movi-player>
           <div id="now-playing" class="hidden items-center justify-between gap-3 border-t border-border bg-card px-4 py-3">
+            <img id="np-thumb" alt="" class="hidden h-11 w-20 shrink-0 rounded-md border border-border bg-zinc-900 object-cover" />
             <div class="min-w-0">
               <p id="np-title" class="sq text-sm font-medium text-zinc-100"></p>
               <p id="np-sub" class="sq mt-0.5 text-[11px] text-zinc-500"></p>
@@ -253,6 +254,22 @@
       try { return JSON.parse(localStorage.getItem(LAST_KEY)) || {}; } catch { return {}; }
     };
     const saveLast = (patch) => localStorage.setItem(LAST_KEY, JSON.stringify({ ...lastSaved(), ...patch }));
+
+    // Thumbnail episode per judul (kunci "season:episode") + thumbnail pilihan
+    // terakhir; ikut disimpan bersama magnet supaya bertahan setelah reload.
+    let epThumbs = lastSaved().thumbs || {};
+    let pickedThumb = lastSaved().thumb || '';
+    const buildEpThumbs = () => Object.fromEntries(
+      sv.videos.filter((v) => v.thumbnail && v.season != null)
+        .map((v) => [`${v.season}:${v.episode}`, v.thumbnail]));
+    // Nama file SxxEyy → thumbnail episode; kalau tidak cocok (mis. nama file
+    // tanpa kode episode), hanya baris terpilih yang memakai thumb terakhir.
+    const epThumbFor = (file) => {
+      const m = (file.name || '').match(/S(\d{1,2})E(\d{1,3})/i);
+      const hit = m && epThumbs[`${+m[1]}:${+m[2]}`];
+      if (hit) return hit;
+      return file.index === lastState?.selected ? pickedThumb : '';
+    };
 
     /* ------------------------------------------------------------------ *
      * Subtitle auto-load — hanya pakai API yang ada di docs:
@@ -426,7 +443,21 @@
         size.className = 'ml-2 shrink-0 text-[11px] tabular-nums text-zinc-500';
         size.textContent = fmt(file.size);
 
-        btn.append(icon, body, size);
+        // Thumbnail episode (sama seperti di dialog pilih episode); kalau
+        // tidak ada / gagal muat, jatuh kembali ke ikon play.
+        let lead = icon;
+        const thumb = epThumbFor(file);
+        if (thumb) {
+          const img = document.createElement('img');
+          img.src = thumb;
+          img.alt = '';
+          img.loading = 'lazy';
+          img.className = 'h-11 w-20 shrink-0 rounded-md border border-border bg-zinc-900 object-cover';
+          img.onerror = () => img.replaceWith(icon);
+          lead = img;
+        }
+
+        btn.append(lead, body, size);
         btn.addEventListener('click', () => selectFile(file));
         filesEl.appendChild(btn);
       }
@@ -472,6 +503,11 @@
 
     // Cukup set src; atribut `autoplay` di <movi-player> yang menjalankan playback.
     function playFile(file) {
+      retriedSrc = '';
+      const th = epThumbFor(file);
+      const npTh = $('np-thumb');
+      npTh.src = th || '';
+      npTh.classList.toggle('hidden', !th);
       setSq($('np-title'), file.name);
       setSq($('np-sub'), `${fmt(file.size)} · ${file.path || file.name}`);
       player.src = file.url;
@@ -587,9 +623,12 @@
         applyState(state);
         const files = state.files || [];
         const saved = lastSaved();
+        // Magnet baru dari kolom tempel: buang thumbnail judul sebelumnya.
+        // Magnet sama (auto-resume reload) memakai thumbnail yang tersimpan.
+        if (saved.magnet !== magnet) { epThumbs = {}; pickedThumb = ''; }
         const pick = (saved.magnet === magnet ? files[saved.index] : null)
           || files[state.selected] || files[0];
-        saveLast({ magnet, index: pick ? pick.index : 0 });
+        saveLast({ magnet, index: pick ? pick.index : 0, thumb: pickedThumb, thumbs: epThumbs });
         setStatus(`Torrent siap: ${state.name || 'tanpa nama'}. Pilih video untuk diputar.`, 'ok');
         if (pick) selectFile(pick);
       } catch (err) {
@@ -696,6 +735,7 @@
     async function openTitle(m) {
       try {
         searchBody.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Memuat detail…</p>';
+        pickedThumb = ''; // judul baru: thumbnail episode lama tidak dipakai
         if (m.type === 'movie') {
           sv.cur = m; sv.videos = []; syncBack();
           return loadStreams(m.id, 'movie');
@@ -733,6 +773,15 @@
         const row = document.createElement('button');
         row.type = 'button';
         row.className = 'file-row group flex w-full items-center gap-3 rounded-lg border border-border bg-zinc-900 px-3 py-2.5 text-left transition hover:bg-zinc-800';
+        if (v.thumbnail) {
+          const th = document.createElement('img');
+          th.src = v.thumbnail;
+          th.alt = '';
+          th.loading = 'lazy';
+          th.className = 'h-11 w-20 shrink-0 rounded-md border border-border bg-zinc-800 object-cover';
+          th.onerror = () => th.remove(); // thumbnail hilang → tampil label E saja
+          row.append(th);
+        }
         const label = document.createElement('span');
         label.textContent = 'E' + (v.episode ?? '?');
         label.className = 'grid h-8 w-9 shrink-0 place-items-center rounded-md bg-zinc-800 text-[11px] font-semibold text-zinc-300';
@@ -741,7 +790,10 @@
         name.title = v.name || v.title || '';
         name.textContent = v.name || v.title || '';
         row.append(label, name);
-        row.addEventListener('click', () => loadStreams(v.id || `${sv.cur.id}:${v.season}:${v.episode}`, 'series'));
+        row.addEventListener('click', () => {
+          pickedThumb = v.thumbnail || '';
+          loadStreams(v.id || `${sv.cur.id}:${v.season}:${v.episode}`, 'series');
+        });
         list.append(row);
       }
       searchBody.replaceChildren(tabs, list);
@@ -921,10 +973,11 @@
       try {
         const state = await api('/api/magnet', { method: 'POST', body: JSON.stringify(body) });
         searchDlg.close();
+        epThumbs = buildEpThumbs();
         applyState(state);
         const files = state.files || [];
         const pick = files[state.selected ?? 0] || files[0];
-        saveLast({ magnet, index: pick?.index ?? 0 });
+        saveLast({ magnet, index: pick?.index ?? 0, thumb: pickedThumb, thumbs: epThumbs });
         setStatus(`Torrent siap: ${state.name || 'tanpa nama'}.`, 'ok');
         if (pick) playFile(pick);
       } catch (err) {
@@ -973,9 +1026,18 @@
     });
 
     // Docs: event `error` membawa Error di `detail`.
+    // "Timeout at N" berarti byte belum sempat datang dari swarm: tunggu
+    // sebentar lalu coba buka ulang src yang sama, maksimal sekali per src.
+    let retriedSrc = '';
     player.addEventListener('error', (event) => {
       const message = event.detail?.message;
-      if (message) setStatus(`Player: ${message}`, 'error');
+      if (!message) return;
+      if (/Timeout/.test(message) && player.src && retriedSrc !== player.src) {
+        retriedSrc = player.src;
+        setTimeout(() => { player.src = retriedSrc; }, 2000);
+        return;
+      }
+      setStatus(`Player: ${message}`, 'error');
     });
 
     const saved = lastSaved();

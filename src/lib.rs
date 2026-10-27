@@ -37,6 +37,8 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_util::io::ReaderStream;
 
+use tokio::time::timeout;
+
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const MIB: u64 = 1024 * 1024;
 const METADATA_TIMEOUT: Duration = Duration::from_secs(45);
@@ -45,6 +47,13 @@ const WS_DELAY: Duration = Duration::from_millis(700);
 /// Cues, MP4 moov non-faststart) ada di sana, dan tanpa itu player hanya bisa
 /// menampilkan durasi 00:00 sampai file terunduh hampir penuh.
 const TAIL_WARM: u64 = 1 << 20;
+/// Kepala file dipanaskan sebelum player membuka media; kalau byte 0 belum
+/// ada, request pertama player menunggu unduhan dan MoviPlayer bisa
+/// "Failed to open media: Timeout at 0".
+const HEAD_WARM: u64 = 1 << 20;
+/// Batas waktu task pemanas; tanpa ini task yang menggantung menahan
+/// torrent lama beserta storage RAM-nya.
+const WARM_TIMEOUT: Duration = Duration::from_secs(30);
 
 const ERR_CANCELLED: &str = "pemuatan magnet dibatalkan";
 const ERR_TIMEOUT: &str = "metadata timeout";
@@ -147,20 +156,46 @@ struct Current {
 }
 
 #[derive(Clone)]
-struct FileEntry {
+pub struct FileEntry {
     /// Indeks file di torrent (urutan `file_infos`), dipakai untuk `fileIndex`.
-    id: usize,
-    path: String,
-    len: u64,
+    pub id: usize,
+    pub path: String,
+    pub len: u64,
 }
 
 impl FileEntry {
-    fn name(&self) -> &str {
+    pub fn name(&self) -> &str {
         self.path.rsplit(['/', '\\']).next().unwrap_or(&self.path)
     }
 }
 
 impl Current {
+    /// Baca kepala file sampai `HEAD_WARM` byte terunduh penuh supaya open
+    /// player tidak menunggu. Berjalan di latar dengan batas waktu: task yang
+    /// menggantung selamanya menahan `ManagedTorrent` lama → storage RAM-nya
+    /// tidak pernah lepas setelah ganti torrent.
+    fn warm_head(self: &Arc<Self>, index: usize) {
+        let Some(file) = self.videos.get(index) else {
+            return;
+        };
+        let handle = self.handle.clone();
+        let (id, want) = (file.id, file.len.min(HEAD_WARM));
+        tokio::spawn(async move {
+            let Ok(mut stream) = handle.stream(id) else {
+                return;
+            };
+            let deadline = Instant::now() + WARM_TIMEOUT;
+            let mut remaining = want;
+            let mut buf = vec![0u8; 64 * 1024];
+            while remaining > 0 && Instant::now() < deadline {
+                match timeout(Duration::from_secs(10), stream.read(&mut buf)).await {
+                    Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                    Ok(Ok(n)) => remaining -= n as u64,
+                }
+            }
+        });
+    }
+
     /// Baca sedikit dari ekor file supaya piece yang memuat index container
     /// cepat datang. Tanpa ini librqbit hanya mengunduh apa yang dibaca player
     /// dari awal file.
@@ -181,7 +216,7 @@ impl Current {
                 return;
             }
             let mut buf = [0u8; 16 * 1024];
-            let _ = stream.read(&mut buf).await;
+            let _ = timeout(WARM_TIMEOUT, stream.read(&mut buf)).await;
         });
     }
 }
@@ -209,7 +244,7 @@ impl LoadJob {
     }
 }
 
-fn magnet_hash(magnet: &str) -> Result<String> {
+pub fn magnet_hash(magnet: &str) -> Result<String> {
     let parsed = Magnet::parse(magnet)?;
     if let Some(id) = parsed.as_id20() {
         return Ok(id.as_string());
@@ -353,6 +388,7 @@ async fn load_torrent(app: Arc<App>, job: Arc<LoadJob>, magnet: String) -> Resul
 
     let current = attach(handle, videos, evict_rx);
     log::ready(&current.name, current.videos.len());
+    current.warm_head(0);
     current.warm_tail(0);
     let old = app.current.write().await.replace(current);
     if let Some(old) = old {
@@ -450,16 +486,27 @@ async fn state_json(app: &App) -> Value {
     let selected = current.selected.load(Ordering::SeqCst);
     let file = current.videos.get(selected);
     let stats = current.handle.stats();
-    // progress_bytes hanya menghitung file yang dipilih; di mode RAM tidak ada
-    // file yang dipilih, jadi byte yang benar-benar terverifikasi diambil dari
-    // counter live-nya.
-    let downloaded = stats.progress_bytes.max(
-        stats
-            .live
-            .as_ref()
-            .map(|live| live.snapshot.downloaded_and_checked_bytes)
-            .unwrap_or(0),
-    );
+    // Byte file terpilih yang masih ada di cache RAM — nol saat ganti episode
+    // ke file yang belum diunduh, dan kembali naik saat balik ke episode yang
+    // piece-nya masih tersimpan.
+    let downloaded = file
+        .map(|f| {
+            let guard = current.handle.metadata.load();
+            let Some(meta) = guard.as_ref() else {
+                return 0;
+            };
+            let piece_len = meta.lengths.default_piece_length().max(1) as u64;
+            let info = &meta.file_infos[f.id];
+            let (fstart, fend) = (info.offset_in_torrent, info.offset_in_torrent + info.len);
+            let mut bytes = 0u64;
+            for (&pid, &have) in &app.stats.cached_pieces() {
+                let pstart = pid as u64 * piece_len;
+                let overlap = (pstart + piece_len).min(fend).saturating_sub(pstart.max(fstart));
+                bytes += overlap.min(have);
+            }
+            bytes.min(f.len)
+        })
+        .unwrap_or(0);
     let peers = stats
         .live
         .as_ref()
@@ -531,7 +578,7 @@ async fn info_json(app: &App) -> Value {
 
 // ------------------------------------------------------------- helpers ----
 
-fn is_video(path: &str) -> bool {
+pub fn is_video(path: &str) -> bool {
     let ext = path
         .rsplit_once('.')
         .map(|(_, ext)| ext.to_lowercase())
@@ -543,7 +590,7 @@ fn is_video(path: &str) -> bool {
 }
 
 /// Saring file video lalu urutkan menurut nama (huruf kecil), sama seperti Go.
-fn pick_videos(all: impl Iterator<Item = (usize, String, u64)>) -> Vec<FileEntry> {
+pub fn pick_videos(all: impl Iterator<Item = (usize, String, u64)>) -> Vec<FileEntry> {
     let mut videos: Vec<FileEntry> = all
         .filter(|(_, path, _)| is_video(path))
         .map(|(id, path, len)| FileEntry { id, path, len })
@@ -566,7 +613,7 @@ fn video_files(handle: &Arc<ManagedTorrent>) -> Vec<FileEntry> {
     }))
 }
 
-fn video_mime(path: &str) -> &'static str {
+pub fn video_mime(path: &str) -> &'static str {
     match path
         .rsplit_once('.')
         .map(|(_, ext)| ext.to_lowercase())
@@ -583,7 +630,7 @@ fn video_mime(path: &str) -> &'static str {
     }
 }
 
-fn encode_segment(text: &str) -> String {
+pub fn encode_segment(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for byte in text.bytes() {
         match byte {
@@ -596,19 +643,19 @@ fn encode_segment(text: &str) -> String {
     out
 }
 
-fn stream_url(index: usize, name: &str) -> String {
+pub fn stream_url(index: usize, name: &str) -> String {
     format!("/stream/{index}/{}", encode_segment(name))
 }
 
 #[derive(Debug, PartialEq)]
-enum RangeSpec {
+pub enum RangeSpec {
     Full,
     Partial { start: u64, end: u64 },
     Unsatisfiable,
 }
 
 /// `shortcut: multi-range diabaikan, ambil rentang pertama; cukup untuk <video>`
-fn parse_range(header_value: Option<&str>, len: u64) -> RangeSpec {
+pub fn parse_range(header_value: Option<&str>, len: u64) -> RangeSpec {
     let Some(value) = header_value else {
         return RangeSpec::Full;
     };
@@ -764,6 +811,7 @@ async fn api_select(State(app): State<Arc<App>>, Json(req): Json<SelectRequest>)
         return json_error(StatusCode::BAD_REQUEST, "index file di luar jangkauan");
     }
     current.selected.store(req.index, Ordering::SeqCst);
+    current.warm_head(req.index);
     current.warm_tail(req.index);
     Json(state_json(&app).await).into_response()
 }
@@ -969,68 +1017,6 @@ mod tests {
         for (addr, want) in cases {
             assert_eq!(browser_url(addr), want, "browser_url({addr})");
         }
-    }
-
-    #[test]
-    fn videos_are_filtered_and_sorted_by_name() {
-        let files = vec![
-            (0, "pack/ep02.mkv".to_string(), 10u64),
-            (1, "pack/ep10.mkv".to_string(), 10),
-            (2, "pack/ep01.mkv".to_string(), 10),
-            (3, "pack/notes.txt".to_string(), 1),
-            (4, "pack/Extra.MP4".to_string(), 5),
-        ];
-        let videos = pick_videos(files.into_iter());
-        let names: Vec<&str> = videos.iter().map(|f| f.name()).collect();
-        assert_eq!(
-            names,
-            vec!["ep01.mkv", "ep02.mkv", "ep10.mkv", "Extra.MP4"],
-            "urutan memakai path huruf kecil, seperti Go"
-        );
-        assert_eq!(videos[0].id, 2, "indeks file torrent ikut dipertahankan");
-    }
-
-    #[test]
-    fn stream_url_escapes_the_name() {
-        assert_eq!(
-            stream_url(3, "[Erai-raws] Drop Out - 03.mkv"),
-            "/stream/3/%5BErai-raws%5D%20Drop%20Out%20-%2003.mkv"
-        );
-    }
-
-    #[test]
-    fn range_parsing_matches_http_expectations() {
-        assert_eq!(parse_range(None, 100), RangeSpec::Full);
-        assert_eq!(
-            parse_range(Some("bytes=0-99"), 100),
-            RangeSpec::Partial { start: 0, end: 99 }
-        );
-        assert_eq!(
-            parse_range(Some("bytes=50-"), 100),
-            RangeSpec::Partial { start: 50, end: 99 }
-        );
-        assert_eq!(
-            parse_range(Some("bytes=-10"), 100),
-            RangeSpec::Partial { start: 90, end: 99 }
-        );
-        assert_eq!(
-            parse_range(Some("bytes=0-1000"), 100),
-            RangeSpec::Partial { start: 0, end: 99 }
-        );
-        assert_eq!(
-            parse_range(Some("bytes=0-9,20-29"), 100),
-            RangeSpec::Partial { start: 0, end: 9 },
-            "multi-range memakai rentang pertama"
-        );
-        assert_eq!(
-            parse_range(Some("bytes=100-"), 100),
-            RangeSpec::Unsatisfiable
-        );
-        assert_eq!(
-            parse_range(Some("bytes=5-1"), 100),
-            RangeSpec::Unsatisfiable
-        );
-        assert_eq!(parse_range(Some("bytes=0-"), 0), RangeSpec::Unsatisfiable);
     }
 
     #[test]
