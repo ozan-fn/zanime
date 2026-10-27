@@ -4,7 +4,7 @@ GO ?= go
 .PHONY: build run vet test clean
 
 build:
-	$(GO) build -o $(BINARY) .
+	CGO_ENABLED=0 $(GO) build -o $(BINARY) .
 
 run:
 	$(GO) run .
