@@ -556,6 +556,20 @@ async fn state_json(app: &App) -> Value {
     })
 }
 
+/// RSS proses dari /proc; bukan bagian cache, dipakai untuk membandingkan
+/// pemakaian memori total vs batas cache.
+fn rss_bytes() -> u64 {
+    std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|s| {
+            s.split_whitespace()
+                .nth(1)
+                .and_then(|pages| pages.parse::<u64>().ok())
+        })
+        .map(|pages| pages * 4096)
+        .unwrap_or(0)
+}
+
 async fn info_json(app: &App) -> Value {
     let current = app.current.read().await.clone();
     let mut response = json!({
@@ -564,6 +578,7 @@ async fn info_json(app: &App) -> Value {
         "cache_limit": app.cache_mb * MIB,
         "cache_used": app.stats.used(),
         "cache_evictions": app.stats.evictions(),
+        "rss_bytes": rss_bytes(),
     });
     if let Some(current) = current {
         let selected = current.selected.load(Ordering::SeqCst);
