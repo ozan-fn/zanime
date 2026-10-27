@@ -1,0 +1,10 @@
+# binaries
+/zanime
+zanime.exe
+
+# env
+.env
+
+# go
+*.test
+*.out
