@@ -15,11 +15,15 @@ RAM sehingga player dapat versi berindex — lihat [Remux](#remux).
 ## Stack
 
 - **Rust** + **axum** (HTTP, WebSocket) + **tokio**.
-- **librqbit** untuk BitTorrent. Salinan di `vendor/librqbit` dipatch dengan
-  `forget_piece` + `want_piece`: piece yang dibuang dari RAM ditandai "belum
-  punya" dan bacaan yang menemukan piece hilang langsung memintanya ke swarm
-  lagi, jadi reload halaman tidak pernah menggantung menunggu piece yang
-  sebenarnya sudah tidak ada.
+- **librqbit** untuk BitTorrent. Salinan di `vendor/librqbit` dipatch:
+  - `forget_piece` + `want_piece`: piece yang dibuang dari RAM ditandai
+    "belum punya" dan bacaan yang menemukan piece hilang langsung memintanya
+    ke swarm lagi, jadi reload halaman tidak pernah menggantung menunggu
+    piece yang sebenarnya sudah tidak ada.
+  - `disconnect_all_peers_that_have_full_torrent` dimatikan: peer yang punya
+    torrent lengkap justru yang paling sering dibutuhkan lagi (piece RAM
+    selalu dibuang & diminta ulang), jadi koneksi dipertahankan agar daftar
+    peer tidak selalu turun ke 0 setelah selesai burst unduhan.
 - Storage piece: `src/memstore.rs` (LRU, batas `MAX_MEMORY_MB`).
 - Remux opsional: ffmpeg sistem / statis di `./tmp/ffmpeg` (`src/remux.rs`).
 
@@ -72,6 +76,36 @@ Magnet awal bisa dikosongkan (`--magnet ""`) supaya server mulai tanpa torrent.
 | `GET/HEAD /stream` | file terpilih; dukung `Range` (206) dan 416 |
 | `GET/HEAD /stream/{index}/{name}` | file tertentu; `name` dipakai untuk MIME |
 | `GET/HEAD /remux/{index}/{name}` | keluaran remux (RAM); `Range` didukung; 503 saat masih diproses |
+| `GET /fetch?url=` | pass-through streaming URL video langsung (addon Muvibox): `Range` diteruskan, body dipipe tanpa disk/cache, 502 kalau upstream gagal |
+
+## Absolute Cinema (addon Stremio)
+
+Tab 🗼Anime Pop/Top/Airing/AniList, Netflix, dan Top Rated berasal dari addon
+[`cinema.debrid.in`](https://cinema.debrid.in/manifest.json). Katalog anime
+(Kitsu/AniList) tidak menyediakan daftar episode, jadi anime diputar lewat
+pemilihan rilis (batch/season) — sebelum termuat, episode dipilih dari daftar
+file torrent di sidebar. Stream dari addon ini torrent murni (infoHash) dan
+digabung ke daftar stream bersama Torrentio + Muvibox (dedupe infoHash/url).
+Katalog Netflix/Top Rated berkunci `tt` sehingga meta ambil dari Cinemeta
+seperti biasa.
+
+## Muvibox (addon Stremio)
+
+Di dialog pencarian ada tab katalog dari addon Stremio
+[`muvibox`](https://muvibox.inulpc.web.id/manifest.json): 🔥Trending
+(mendukung pencarian via kotak yang sama), 🇮🇩Indo, Korea, China, India,
+Horror, Anime, Comedy, Romance, Action — katalog movie+series digabung per
+tab. Meta `mb:` diambil dari addon ini, daftar episode ikut metanya.
+Saat membuka judul, daftar stream menggabungkan Torrentio + Muvibox
+(dedupe infoHash/url).
+
+Stream "Muvibox Free" berupa link direct MP4 (bukan torrent) yang dibungkus
+halaman player: bungkusnya dibuka dan URL video aslinya diputar melalui
+`GET /fetch?url=` — proxy RAM pass-through, jadi tetap nol disk dan seek
+menjadi Range request ke CDN asal. Token pada link tersebut terbatas waktu,
+jadi link direct tidak disimpan untuk resume; ambil daftar stream ulang
+tiap mau memutar. Baris berlangganan (`Muvibox Pro`) langsung dibuka di tab
+baru.
 
 ## Remux
 

@@ -113,6 +113,7 @@ impl PeerState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn take_live_no_counters(self) -> Option<LivePeerState> {
         match self {
             PeerState::Live(l) => Some(l),
@@ -262,6 +263,7 @@ impl LivePeerState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn has_full_torrent(&self, total_pieces: usize) -> bool {
         self.bitfield.get(0..total_pieces).is_some_and(|s| s.all())
     }

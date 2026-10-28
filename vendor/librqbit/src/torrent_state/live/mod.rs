@@ -828,14 +828,21 @@ impl TorrentStateLive {
             if !self.has_active_streams_unfinished_files(locked) {
                 // prevent deadlocks.
                 drop(g);
-                // There is not poing being connected to peers that have all the torrent, when
-                // we don't need anything from them, and they don't need anything from us.
-                self.disconnect_all_peers_that_have_full_torrent();
+                // PATCH(zanime): JANGAN putuskan peer yang punya torrent
+                // lengkap. Storage kami RAM-only: piece yang sudah dibaca
+                // dibuang lagi dari cache dan SERING dibutuhkan ulang
+                // (reload page, seek kembali, remux). Memutus koneksi di
+                // setiap selesai burst unduhan membuat daftar peer selalu
+                // kembali ke 0 dan pengunduhan berikutnya lambat karena
+                // harus mencari peer dari awal lagi.
+                // self.disconnect_all_peers_that_have_full_torrent();
             }
         }
         Ok(())
     }
 
+    // PATCH(zanime): tidak dipakai lagi — lihat komentar pada pemanggilnya.
+    #[allow(dead_code)]
     fn disconnect_all_peers_that_have_full_torrent(&self) {
         for mut pe in self.peers.states.iter_mut() {
             if let PeerState::Live(l) = pe.value().get_state() {

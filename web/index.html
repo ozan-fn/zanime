@@ -247,6 +247,22 @@
         <button type="button" data-tab="all" class="chip on">All</button>
         <button type="button" data-tab="movie" class="chip">Movie</button>
         <button type="button" data-tab="series" class="chip">Series</button>
+        <button type="button" data-muv="trending" class="chip">🔥Trending</button>
+        <button type="button" data-muv="indo" class="chip">🇮🇩Indo</button>
+        <button type="button" data-muv="korea" class="chip">Korea</button>
+        <button type="button" data-muv="china" class="chip">China</button>
+        <button type="button" data-muv="india" class="chip">India</button>
+        <button type="button" data-muv="horror" class="chip">Horror</button>
+        <button type="button" data-muv="anime" class="chip">Anime</button>
+        <button type="button" data-muv="comedy" class="chip">Comedy</button>
+        <button type="button" data-muv="romance" class="chip">Romance</button>
+        <button type="button" data-muv="action" class="chip">Action</button>
+        <button type="button" data-ac="0" class="chip">🗼Anime Pop</button>
+        <button type="button" data-ac="1" class="chip">🗼Anime Top</button>
+        <button type="button" data-ac="2" class="chip">🗼Anime Airing</button>
+        <button type="button" data-ac="3" class="chip">🗼AniList</button>
+        <button type="button" data-ac="4" class="chip">Netflix</button>
+        <button type="button" data-ac="5" class="chip">Top Rated</button>
         <button type="button" id="search-back" class="chip ml-auto" disabled>
           <i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>
           Kembali
@@ -280,6 +296,7 @@
     // true begitu player benar-benar memutar: remux yang siap belakangan
     // tidak boleh menyela playback yang sudah jalan.
     let everPlayed = false;
+    let directPlay = false; // sedang memutar stream direct (/fetch), bukan torrent
 
     // Magnet + episode terakhir bertahan setelah reload.
     const LAST_KEY = 'zanime.last';
@@ -573,7 +590,7 @@
       // Remux siap untuk episode terpilih dan player belum sempat memutar:
       // pindah ke versi berindex supaya seek lancar tanpa pindai ulang.
       if (state.remux?.ready && !everPlayed && state.remux.index === state.selected
-          && !String(player.src).includes('/remux/')) {
+          && !String(player.src).includes('/remux/') && !directPlay) {
         const f = files.find((x) => x.index === state.selected);
         if (f) {
           everPlayed = true;
@@ -610,6 +627,7 @@
     // Cukup set src; atribut `autoplay` di <movi-player> yang menjalankan playback.
     function playFile(file) {
       everPlayed = false;
+      directPlay = false;
       retriedSrc = '';
       const th = epThumbFor(file);
       const npTh = $('np-thumb');
@@ -759,8 +777,37 @@
      *     dengan fileIndex bila Torrentio memberikannya (season pack).
      *   - Reset filter setiap ganti judul/episode.
      * ------------------------------------------------------------------ */
+    // Addon Stremio Absolute Cinema: katalog anime (Kitsu/AniList, tanpa
+    // daftar episode — pilih rilis batch/season); stream-nya torrent
+    // (infoHash), jadi lariku dengan alur Torrentio. Netflix/Top kêm katalog
+    // TMDB → id `tt`, meta lewat Cinemeta.
+    const AC = 'https://cinema.debrid.in';
+    const AC_FAMILIES = [
+      { label: '🗼Anime Pop', cats: [{ t: 'anime', c: 'kitsu_popular' }] },
+      { label: '🗼Anime Top', cats: [{ t: 'anime', c: 'kitsu_top_rated' }] },
+      { label: '🗼Anime Airing', cats: [{ t: 'anime', c: 'kitsu_current' }] },
+      { label: '🗼AniList', cats: [{ t: 'anime', c: 'anilist_trending' }] },
+      { label: 'Netflix', cats: [{ t: 'movie', c: 'tmdb_netflix_movie_us' }, { t: 'series', c: 'tmdb_netflix_series_us' }] },
+      { label: 'Top Rated', cats: [{ t: 'movie', c: 'tmdb_discover_top_movie' }, { t: 'series', c: 'tmdb_discover_top_series' }] },
+    ];
     const TIO = 'https://torrentio.strem.fun/sort=seeders|language=indonesian';
     const CINEMETA = 'https://v3-cinemeta.strem.io';
+    // Addon Stremio Muvibox: katalog film/serial (Trending dukung `search=`,
+    // sisanya browse saja) + stream direct MP4 (bukan torrent).
+    const MUV = 'https://muvibox.inulpc.web.id';
+    // Keluarga katalog: id memetakan ke `mb_{movie|series}s_{id}.json`.
+    const MUV_FAMILIES = [
+      { id: 'trending', label: '🔥Trending', types: ['movie', 'series'], search: true },
+      { id: 'indo', label: '🇮🇩Indo', types: ['movie', 'series'] },
+      { id: 'korea', label: 'Korea', types: ['movie', 'series'] },
+      { id: 'china', label: 'China', types: ['movie', 'series'] },
+      { id: 'india', label: 'India', types: ['movie', 'series'] },
+      { id: 'horror', label: 'Horror', types: ['movie'] },
+      { id: 'anime', label: 'Anime', types: ['movie', 'series'] },
+      { id: 'comedy', label: 'Comedy', types: ['movie', 'series'] },
+      { id: 'romance', label: 'Romance', types: ['movie', 'series'] },
+      { id: 'action', label: 'Action', types: ['movie', 'series'] },
+    ];
     const searchDlg = $('search-dlg'), searchQ = $('search-q'), searchBody = $('search-body');
     const searchGo = $('search-go'), searchBack = $('search-back'), searchBtn = $('search-btn');
 
@@ -809,6 +856,57 @@
       }
     }
 
+    // Katalog Muvibox: gabungan katalog movie+series satu keluarga.
+    // Trending meneruskan isi kotak pencarian; keluarga lain mengabaikannya.
+    async function loadMuv(famId, q) {
+      const fam = MUV_FAMILIES.find((f) => f.id === famId);
+      if (!fam) return;
+      searchBody.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Memuat katalog Muvibox…</p>';
+      try {
+        const reqs = fam.types.map((t) => {
+          const slug = fam.search && q ? `${fam.id}/search=${encodeURIComponent(q)}` : fam.id;
+          return jget(`${MUV}/catalog/${t}/mb_${t}s_${slug}.json`);
+        });
+        const metas = (await Promise.allSettled(reqs))
+          .flatMap((r) => (r.status === 'fulfilled' ? r.value.metas || [] : []));
+        const seen = new Set();
+        sv.results = metas.filter((m) => m.id && m.poster && !seen.has(m.id) && seen.add(m.id));
+        sv.cur = null;
+        sv.videos = [];
+        syncBack();
+        searchBody.innerHTML = sv.results.length
+          ? ''
+          : '<p class="p-6 text-center text-sm text-zinc-500">Katalog kosong.</p>';
+        renderResults();
+      } catch (err) {
+        searchBody.innerHTML = `<p class="p-6 text-center text-sm text-rose-300">${err.message}</p>`;
+      }
+    }
+
+    // Katalog Absolute Cinema: satu keluarga bisa berisi beberapa katalog.
+    // Anime (Kitsu) tidak punya daftar episode -> pilih rilis/batch saja.
+    async function loadAc(famIdx) {
+      const fam = AC_FAMILIES[famIdx];
+      if (!fam) return;
+      searchBody.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Memuat katalog Absolute Cinema…</p>';
+      try {
+        const reqs = fam.cats.map((c) => jget(`${AC}/catalog/${c.t}/${c.c}.json`));
+        const metas = (await Promise.allSettled(reqs))
+          .flatMap((r) => (r.status === 'fulfilled' ? r.value.metas || [] : []));
+        const seen = new Set();
+        sv.results = metas.filter((m) => m.id && m.poster && !seen.has(m.id) && seen.add(m.id));
+        sv.cur = null;
+        sv.videos = [];
+        syncBack();
+        searchBody.innerHTML = sv.results.length
+          ? ''
+          : '<p class="p-6 text-center text-sm text-zinc-500">Katalog kosong.</p>';
+        renderResults();
+      } catch (err) {
+        searchBody.innerHTML = `<p class="p-6 text-center text-sm text-rose-300">${err.message}</p>`;
+      }
+    }
+
     function renderResults() {
       const grid = document.createElement('div');
       grid.className = 'grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3';
@@ -822,7 +920,7 @@
         img.loading = 'lazy';
         img.className = 'aspect-[2/3] w-full rounded-lg border border-border bg-zinc-900 object-cover';
         const badge = document.createElement('span');
-        badge.textContent = (m.type === 'series' ? 'Series' : 'Movie') + (m.releaseInfo ? ` · ${String(m.releaseInfo).split('–')[0]}` : '');
+        badge.textContent = (m.type === 'anime' ? 'Anime' : m.type === 'series' ? 'Series' : 'Movie') + (m.releaseInfo ? ` · ${String(m.releaseInfo).split('–')[0]}` : '');
         badge.className = 'absolute left-1 top-1 z-10 rounded bg-black/80 px-1 text-[9px] font-medium text-zinc-300';
         const wrap = document.createElement('span');
         wrap.className = 'relative block';
@@ -847,7 +945,19 @@
           sv.cur = m; sv.videos = []; syncBack();
           return loadStreams(m.id, 'movie');
         }
-        const meta = await jget(`${CINEMETA}/meta/series/${m.id}.json`);
+        // Anime Kitsu: metanya tanpa daftar episode → perlakukan seperti
+        // movie: pilih rilis (biasanya batch/season), lantas episode
+        // dipilih dari daftar file di sidebar setelah torrent termuat.
+        if (m.type === 'anime') {
+          sv.cur = m; sv.videos = []; syncBack();
+          setStatus('Kitsu tidak menyediakan daftar episode: pilih rilis batch/season, lalu pilih file episode dari sidebar.', 'ok');
+          return loadStreams(m.id, 'anime');
+        }
+        // Meta `mb:` hanya ada di addon MuvIndo, selebihnya Cinemeta.
+        const metaUrl = m.id.startsWith('mb:')
+          ? `${MUV}/meta/series/${encodeURIComponent(m.id)}.json`
+          : `${CINEMETA}/meta/series/${m.id}.json`;
+        const meta = await jget(metaUrl);
         sv.cur = m;
         sv.videos = (meta.meta?.videos || []).filter((v) => v.season != null);
         sv.season = sv.videos[0]?.season ?? 1;
@@ -942,7 +1052,8 @@
       const text = (s.name || '') + ' ' + (s.title || '');
       const q = (text.match(/\b(\d{3,4})p\b/i) || [])[1]?.toLowerCase() || '';
       const t = s.title || '';
-      const prov = (t.match(/⚙️\s*([^\n]+)/) || ['Torrentio'])[1]?.trim() || 'Torrentio';
+      const prov = (t.match(/⚙️\s*([^\n]+)/)?.[1]?.trim())
+        || (s.name?.split('\n')[0].trim() || '') || 'Torrentio';
       const seed = (t.match(/👤\s*([\d.,]+[KkMm]?)/) || [''])[1];
       const size = (t.match(/💾\s*([\d.,]+\s*[KMG]?B)/i) || [''])[1];
       const flags = [...new Set((t.match(FLAG) || []).map(flagName))];
@@ -952,8 +1063,27 @@
     async function loadStreams(id, type) {
       searchBody.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Mengambil streams…</p>';
       try {
-        const data = await jget(`${TIO}/stream/${type}/${encodeURIComponent(id)}.json`);
-        sv.streams = (data.streams || []).map(parseStream)
+        const enc = encodeURIComponent(id);
+        // Tiga sumber sekaligus: Torrentio, Muvibox, Absolute Cinema.
+        // Salah satu boleh gagal/kosong tanpa mematikan yang lain.
+        const settled = await Promise.allSettled([
+          jget(`${TIO}/stream/${type}/${enc}.json`),
+          jget(`${MUV}/stream/${type}/${enc}.json`),
+          jget(`${AC}/stream/${type}/${enc}.json`),
+        ]);
+        const pools = settled
+          .filter((r) => r.status === 'fulfilled')
+          .map((r) => r.value.streams || []);
+        // Torrentio dedupe infoHash, MuvIndo dedupe url.
+        const seen = new Set();
+        sv.streams = pools.flat()
+          .filter((raw) => {
+            const key = raw.infoHash ? 'h:' + raw.infoHash : 'u:' + (raw.url || raw.externalUrl || '');
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          })
+          .map(parseStream)
           .sort((a, b) => b.seedNum - a.seedNum); // seed terbanyak di atas
         sv.qs = new Set(); sv.ls = new Set(); sv.provs = new Set(); sv.hevc = false;
         syncBack();
@@ -1067,6 +1197,8 @@
     async function playStream(s) {
       const raw = s.raw;
       if (!raw.infoHash) {
+        if (raw.url) return playDirect(s);
+        if (raw.externalUrl) { window.open(raw.externalUrl, '_blank', 'noopener'); return; }
         setStatus('Stream ini bukan torrent murni (debrid), tidak bisa dimuat.', 'error');
         return;
       }
@@ -1093,6 +1225,34 @@
       }
     }
 
+    // Putar stream direct MP4 via proxy RAM `/fetch` (bukan torrent).
+    // URL Bungkus muvibox (`player.muvibox...?url=<inner mp4>`) dibuka
+    // dulu untuk mengambil URL video aslinya; token di dalamnya
+    // terbatas waktu (Time-limited), jadi selalu ambil daftar stream baru
+    // Setiap kali mau memutar.
+    function playDirect(s) {
+      const raw = s.raw;
+      let link = raw.url;
+      // Halaman bungkus bukan file media: ambil isi parameter `url=`.
+      if (!/\.(mp4|mkv|webm|m3u8|avi|mov)([?#]|$)/i.test(new URL(link).pathname)) {
+        const inner = new URL(link).searchParams.get('url');
+        if (!inner) {
+          setStatus('URL bungkus tidak berisi video yang bisa dimainkan.', 'error');
+          return;
+        }
+        link = inner;
+      }
+      everPlayed = false;
+      directPlay = true;
+      const name = raw.title?.split('\n')[0] || s.prov;
+      $('np-thumb').classList.add('hidden');
+      setSq($('np-title'), name);
+      setSq($('np-sub'), `${s.prov}${s.q ? ' · ' + s.q : ''} · direct (bukan torrent)`);
+      player.src = `/fetch?url=${encodeURIComponent(link)}`;
+      searchDlg.close();
+      setStatus('Memutar langsung lewat proxy RAM /fetch — tidak diunduh ke disk.', 'ok');
+    }
+
     // Kembali: streams → episode/movie, episode → daftar hasil.
     function syncBack() {
       const at = s_currentView();
@@ -1114,15 +1274,33 @@
       }
     });
 
-    for (const b of searchDlg.querySelectorAll('[data-tab]')) {
+    // Tab Cinemeta (pencarian) + katalog Muvibox/Absolute Cinema (browse).
+    for (const b of searchDlg.querySelectorAll('[data-tab],[data-muv],[data-ac]')) {
       b.addEventListener('click', () => {
-        sv.tab = b.dataset.tab;
-        searchDlg.querySelectorAll('[data-tab]').forEach((x) => x.classList.toggle('on', x === b));
-        if (searchQ.value.trim()) doSearch(searchQ.value.trim());
+        searchDlg.querySelectorAll('[data-tab],[data-muv],[data-ac]').forEach((x) => x.classList.toggle('on', x === b));
+        if (b.dataset.tab) {
+          sv.tab = b.dataset.tab;
+          if (searchQ.value.trim()) doSearch(searchQ.value.trim());
+        } else if (b.dataset.muv) {
+          sv.tab = 'mb:' + b.dataset.muv;
+          loadMuv(b.dataset.muv, searchQ.value.trim());
+        } else {
+          sv.tab = 'ac:' + b.dataset.ac;
+          loadAc(Number(b.dataset.ac));
+        }
       });
     }
     searchGo.addEventListener('click', () => {
       const q = searchQ.value.trim();
+      // Muvibox Trending mencari; keluarga lain + Absolute Cinema muat ulang saja.
+      if (sv.tab.startsWith('mb:')) {
+        loadMuv(sv.tab.slice(3), q);
+        return;
+      }
+      if (sv.tab.startsWith('ac:')) {
+        loadAc(Number(sv.tab.slice(3)));
+        return;
+      }
       if (q) doSearch(q);
     });
     searchQ.addEventListener('keydown', (e) => { if (e.key === 'Enter') searchGo.click(); });

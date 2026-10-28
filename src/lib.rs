@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use axum::Json;
 use axum::body::Body;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -1115,6 +1115,72 @@ async fn remux_index(
     builder.body(body).expect("response remux selalu valid")
 }
 
+/// Pass-through streaming RAM untuk URL video langsung (mis. stream addon
+/// Stremio MuvIndo yang berupa MP4, bukan torrent). Body dipipe langsung dari
+/// upstream ke klien tanpa disentuh disk atau cache; header `Range` diteruskan
+/// supaya seek bekerja per-request terhadap server video asal.
+#[derive(Deserialize)]
+struct FetchParams {
+    url: String,
+}
+
+async fn fetch_proxy(
+    State(_app): State<Arc<App>>,
+    Query(params): Query<FetchParams>,
+    headers: HeaderMap,
+) -> Response {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .expect("reqwest client selalu terbentuk")
+    });
+    let parsed = reqwest::Url::parse(&params.url);
+    let Ok(url) = parsed else {
+        return json_error(StatusCode::BAD_REQUEST, "URL tidak valid");
+    };
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return json_error(StatusCode::BAD_REQUEST, "skema URL harus http/https");
+    }
+    let mut request = client
+        .get(url)
+        .header(header::USER_AGENT, "Mozilla/5.0 zanime");
+    if let Some(range) = headers.get(header::RANGE) {
+        request = request.header(header::RANGE, range);
+    }
+    let upstream = match request.send().await {
+        Ok(res) => res,
+        Err(err) => {
+            return json_error(
+                StatusCode::BAD_GATEWAY,
+                &format!("gagal menghubungi upstream: {err}"),
+            );
+        }
+    };
+    let mut builder = Response::builder()
+        .status(StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::OK));
+    for field in [
+        header::CONTENT_LENGTH,
+        header::CONTENT_RANGE,
+        header::ACCEPT_RANGES,
+    ] {
+        if let Some(value) = upstream.headers().get(&field) {
+            builder = builder.header(field.clone(), value);
+        }
+    }
+    // Content-type wajib ada untuk <video>: pakai upstream, fallback mp4.
+    let ctype = upstream
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .cloned()
+        .unwrap_or_else(|| header::HeaderValue::from_static("video/mp4"));
+    builder = builder.header(header::CONTENT_TYPE, ctype);
+    builder
+        .body(Body::from_stream(upstream.bytes_stream()))
+        .unwrap_or_else(|_| json_error(StatusCode::INTERNAL_SERVER_ERROR, "gagal menyiapkan body"))
+}
+
 /// HEAD, Range (206), dan 416. Byte dikirim begitu librqbit punya datanya.
 async fn serve_stream(
     app: Arc<App>,
@@ -1217,6 +1283,7 @@ fn router(app: Arc<App>) -> Router {
         .route("/stream", get(stream_selected))
         .route("/stream/{index}/{name}", get(stream_index))
         .route("/remux/{index}/{name}", get(remux_index))
+        .route("/fetch", get(fetch_proxy))
         .with_state(app)
 }
 
