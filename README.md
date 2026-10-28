@@ -1,167 +1,185 @@
 # zanime
 
-Torrent video streaming server: HTTP + Range/seek, cache piece di RAM saja,
-zero disk, dan UI web untuk menempel magnet serta memilih video.
+Torrent video streaming server: Gin HTTP, virtual streaming + seek, cache RAM-only, zero disk, plus a web UI untuk tempel magnet dan memilih video.
 
-Player memakai [MoviPlayer](https://moviplayer.com/) dari CDN (`<movi-player>`),
-jadi MKV/HEVC/AV1 dan subtitle di dalam file diputar di browser lewat WebCodecs
-+ FFmpeg WASM. Server hanya mengirim byte lewat HTTP Range; tidak ada transcoding
-di server. Subtitle mandiri (SRT/VTT/TTML) bisa ditambahkan dari menu subtitle
-player (atribut `subtitlepicker`) — file dibaca di browser, tidak diunggah.
-Kalau MKV tidak punya index `Cues` (pemutar biasanya harus memindai
-seluruh file dulu), server bisa **remux cepat** (`-c copy`, tanpa transkode) ke
-RAM sehingga player dapat versi berindex — lihat [Remux](#remux).
+Player memakai [MoviPlayer](https://moviplayer.com/) dari CDN (`<movi-player>`), jadi MKV/HEVC/AV1 dan subtitle di dalam file diputar di browser lewat WebCodecs + FFmpeg WASM. Server hanya mengirim byte lewat HTTP Range; tidak ada transcoding di server.
 
-## Stack
+## Kenapa `anacrolix/torrent`
 
-- **Rust** + **axum** (HTTP, WebSocket) + **tokio**.
-- **librqbit** untuk BitTorrent. Salinan di `vendor/librqbit` dipatch:
-  - `forget_piece` + `want_piece`: piece yang dibuang dari RAM ditandai
-    "belum punya" dan bacaan yang menemukan piece hilang langsung memintanya
-    ke swarm lagi, jadi reload halaman tidak pernah menggantung menunggu
-    piece yang sebenarnya sudah tidak ada.
-  - `disconnect_all_peers_that_have_full_torrent` dimatikan: peer yang punya
-    torrent lengkap justru yang paling sering dibutuhkan lagi (piece RAM
-    selalu dibuang & diminta ulang), jadi koneksi dipertahankan agar daftar
-    peer tidak selalu turun ke 0 setelah selesai burst unduhan.
-- Storage piece: `src/memstore.rs` (LRU, batas `MAX_MEMORY_MB`).
-- Remux opsional: ffmpeg sistem / statis di `./tmp/ffmpeg` (`src/remux.rs`).
+- `File.NewReader()` mengembalikan `io.ReadSeekCloser`, langsung cocok untuk `http.ServeContent` (HEAD, Range/206, multi-range, 416).
+- Storage backend bisa diganti, jadi piece bisa disimpan di RAM.
+- `cenkalti/rain` v2.4.4 tidak mengekspos API baca piece (`File` hanya `Length`/`Path`), jadi tidak bisa virtual streaming/seek.
 
-## Menjalankan
+## Struktur
 
-```bash
-cp .env.example .env      # PORT, MAX_MEMORY_MB
-cargo run --release
-# atau
-cargo run --release -- --addr 0.0.0.0:8080 --cache-mb 200 --magnet "magnet:?xt=..."
+```
+main.go                        gin server, API magnet/file, embed web/
+web/index.html                 UI Tailwind + <movi-player>, di-embed lewat go:embed
+internal/config/               loader .env (PORT, MAX_MEMORY_MB)
+internal/stream/               handler HTTP Range/seek (dipakai main + test)
+internal/stream/*_test.go      unit test HEAD/Range/seek/416
+internal/memstorage/           storage torrent RAM-only, LRU
+internal/memstorage/*_test.go  unit test cache + eviction + budget remux
+internal/remux/                ffmpeg `-c copy` (muxer) + auto-download binary
+internal/remux/*_test.go       unit test job, budget, dan pemetaan unduhan
+tests/eviction_test.go         eviction + refetch, seeder/leecher lokal (tanpa internet)
+tests/e2e_test.go              e2e streaming + seek + API + cek disk ke server hidup
 ```
 
-Buka `http://localhost:8080`, tempel magnet, lalu klik salah satu file video.
-`/api/ws` mendorong status tiap 0,7 detik; UI tidak memakai polling.
+## Build
 
-Pencarian peer: session listen di port TCP 4240–4260 (peer masuk) dengan
-UPnP otomatis, DHT diingat ke `./tmp/dht.json` (bukan media — restart tidak
-bootstrap dari nol), dan ada tracker umum cadangan untuk magnet yang sedikit
-tracker. Waktu tunggu metadata magnet maksimal 90 detik. Port peer diprint
-saat startup; kalau UPnP ditolak router, teruskan port itu manual.
+Butuh Go 1.27+.
 
-Checklist performa torrent: koneksi masuk (port+UPnP), DHT hangat, tracker
-cadangan, PEX (aktif otomatis di librqbit), unggah aktif (tit-for-tat, tidak
-dimatikan), rate limit tak terbatas, timeout peer default 10 dtk. Yang tidak
-didukung librqbit (limitasi library, bukan konfigurasi): uTP dan enkripsi MSE
-— semua koneksi TCP polos. Media tetap nol disk; `./tmp` hanya berisi binary
-ffmpeg opsional dan cache routing DHT.
+```sh
+cp .env.example .env   # lalu sesuaikan PORT / MAX_MEMORY_MB
+make build             # ./zanime: ldflags "-s -w", lalu upx --best --lzma
+make run               # go run .
+make vet               # go vet ./...
+make test              # unit + eviction virtual, -race, timeout 15s
+make clean             # hapus ./zanime dan zanime.exe
+```
+
+Tanpa `make`: `go build -ldflags "-s -w" -o zanime .`
+
+`make build` membuang tabel simbol dan info debug (`-s -w`), lalu langsung
+mengompres binary dengan
+[upx](https://upx.github.io/) (`--best --lzma`) bila upx ada di `PATH`. Tanpa
+upx, build tetap selesai dan hanya memberi pesan bahwa kompresi dilewati.
 
 ## Konfigurasi
 
-| Sumber | Kunci | Arti |
-|---|---|---|
-| `.env` / env proses | `PORT` | port HTTP (default 8080) |
-| `.env` / env proses | `MAX_MEMORY_MB` | batas RAM total: cache piece + buffer remux (default 200 MiB) |
-| argumen | `--addr`, `--cache-mb`, `--magnet` | menimpa nilai di atas |
+`.env` di root (contoh lengkap di `.env.example`):
 
-Magnet awal bisa dikosongkan (`--magnet ""`) supaya server mulai tanpa torrent.
+```dotenv
+PORT=8080
+MAX_MEMORY_MB=200
+```
+
+- `PORT` — port HTTP di `127.0.0.1`.
+- `MAX_MEMORY_MB` — batas RAM total: cache piece + buffer remux (MiB).
+
+Flag CLI menimpa nilai `.env`:
+
+```sh
+go run .                       # magnet contoh, 127.0.0.1:8080, cache dari .env
+go run . -magnet ''            # mulai tanpa torrent, isi magnet dari UI
+go run . -addr 0.0.0.0:8080 -cache-mb 128
+```
+
+## UI
+
+Buka `http://127.0.0.1:8080`:
+
+1. Tempel magnet, klik **Muat torrent**. Server menunggu metadata lalu menampilkan daftar file video, urut nama.
+2. Klik salah satu file. `src` player diarahkan ke `/stream/<index>/<nama>` dan playback langsung dicoba.
+3. Panel status menampilkan cache RAM, eviction, peer, kecepatan dua arah, dan byte yang tersedia. Angka ini didorong server lewat WebSocket `/api/ws` tiap 700 ms — UI tidak polling.
+4. Di latar, episode terpilih di-remux (`-c copy`). Kalau hasilnya siap **sebelum** player benar-benar memutar, `src` diganti ke `/remux/<index>/<nama>` (salinan ber-index). Playback yang sudah jalan tidak pernah disela.
+5. Dialog pencarian memakai Cinemeta (judul/seri/episode). **Stream hanya diambil dari Torrentio** (magnet + `fileIndex` untuk season pack); katalog Muvibox dan Absolute Cinema tetap ada untuk browsing, tapi stream-nya tidak diambil dari sana. Kalau sebuah stream berisi URL media langsung (bukan torrent), UI memutarnya lewat proxy RAM `/fetch` (Range diteruskan, tanpa disk).
+
+Magnet dan episode terakhir disimpan di `localStorage` (`zanime.last`), jadi membuka ulang UI langsung memuat torrent dan video yang sama. Bahasa subtitle terakhir diingat oleh atribut `persist` MoviPlayer (`persistkey="zanime"`).
+
+Player di-load dari `https://cdn.jsdelivr.net/npm/movi-player@0.4.1/dist/element.js`; Tailwind dan lucide dari CDN. Tidak ada build frontend.
+
+Tombol **Batalkan** menghentikan job magnet di server (`POST /api/cancel`) tanpa mengusik torrent yang sedang aktif, dan status `loading` ikut terkirim lewat WS jadi tab lain / halaman yang di-reload ikut benar.
 
 ## Endpoint
 
-| Endpoint | Fungsi |
-|---|---|
-| `GET /` | UI (index.html di-embed ke binary) |
-| `GET /healthz` | cek hidup, balas `ok` |
-| `GET /info` | ringkasan siap/nama/ukuran/cache |
-| `GET /api/ws` | WebSocket: dorongan status tiap 0,7 detik (sumber tunggal angka di UI) |
-| `POST /api/magnet` | `{"magnet": "...", "fileIndex": N}`; `fileIndex` opsional (urutan file di torrent) |
+| Path | Fungsi |
+|------|--------|
+| `GET /` | UI (embedded `web/index.html`) |
+| `GET /api/ws` | WebSocket: dorongan status JSON tiap 700 ms (satu-satunya sumber angka di UI) |
+| `GET /api/state` | status JSON sekali ambil; dipakai test/curl, bukan UI |
+| `POST /api/magnet` | `{"magnet":"...","fileIndex":N}` — ganti torrent aktif, tunggu metadata; `fileIndex` opsional (urutan file di torrent) |
 | `POST /api/cancel` | batalkan pemuatan magnet yang sedang jalan |
-| `POST /api/select` | `{"index": N}` pada daftar video yang sudah diurutkan |
-| `GET/HEAD /stream` | file terpilih; dukung `Range` (206) dan 416 |
-| `GET/HEAD /stream/{index}/{name}` | file tertentu; `name` dipakai untuk MIME |
-| `GET/HEAD /remux/{index}/{name}` | keluaran remux (RAM); `Range` didukung; 503 saat masih diproses |
-| `GET /fetch?url=` | pass-through streaming URL video langsung (addon Muvibox): `Range` diteruskan, body dipipe tanpa disk/cache, 502 kalau upstream gagal |
+| `POST /api/select` | `{"index":N}` — pilih file video |
+| `GET /stream` | file terpilih; dukung `HEAD` dan `Range` |
+| `GET /stream/:index/:name` | file tertentu; `name` dipakai untuk MIME/ekstensi |
+| `GET/HEAD /remux/:index/:name` | hasil mux ffmpeg (`-c copy`) dari RAM; `Range` didukung; 404 bila bukan file itu, 503 selama masih diproses |
+| `GET/HEAD /fetch?url=...` | proxy streaming media direct (Range diteruskan; RAM, tanpa disk) |
+| `GET /info` | ringkasan siap/nama/ukuran/cache (dipakai e2e) |
+| `GET /healthz` | `ok` |
 
-## Absolute Cinema (addon Stremio)
+Contoh:
 
-Tab 🗼Anime Pop/Top/Airing/AniList, Netflix, dan Top Rated berasal dari addon
-[`cinema.debrid.in`](https://cinema.debrid.in/manifest.json). Katalog anime
-(Kitsu/AniList) tidak menyediakan daftar episode, jadi anime diputar lewat
-pemilihan rilis (batch/season) — sebelum termuat, episode dipilih dari daftar
-file torrent di sidebar. Stream dari addon ini torrent murni (infoHash) dan
-digabung ke daftar stream bersama Torrentio + Muvibox (dedupe infoHash/url).
-Katalog Netflix/Top Rated berkunci `tt` sehingga meta ambil dari Cinemeta
-seperti biasa.
+```sh
+curl http://127.0.0.1:8080/api/state
+curl -X POST http://127.0.0.1:8080/api/magnet \
+  -H 'Content-Type: application/json' \
+  -d '{"magnet":"magnet:?xt=urn:btih:..."}'
+curl -I http://127.0.0.1:8080/stream
+curl -H 'Range: bytes=0-1048575' -o chunk.bin http://127.0.0.1:8080/stream
+```
 
-## Muvibox (addon Stremio)
+## Remux (muxer)
 
-Di dialog pencarian ada tab katalog dari addon Stremio
-[`muvibox`](https://muvibox.inulpc.web.id/manifest.json): 🔥Trending
-(mendukung pencarian via kotak yang sama), 🇮🇩Indo, Korea, China, India,
-Horror, Anime, Comedy, Romance, Action — katalog movie+series digabung per
-tab. Meta `mb:` diambil dari addon ini, daftar episode ikut metanya.
-Saat membuka judul, daftar stream menggabungkan Torrentio + Muvibox
-(dedupe infoHash/url).
+Episode terpilih di-remux **ffmpeg** dengan `-map 0 -c copy -f matroska pipe:1`
+sehingga hasilnya punya index (`Cues`) tanpa transcode; semua track (audio,
+subtitle, font) disalin bit-per-bit.
 
-Stream "Muvibox Free" berupa link direct MP4 (bukan torrent) yang dibungkus
-halaman player: bungkusnya dibuka dan URL video aslinya diputar melalui
-`GET /fetch?url=` — proxy RAM pass-through, jadi tetap nol disk dan seek
-menjadi Range request ke CDN asal. Token pada link tersebut terbatas waktu,
-jadi link direct tidak disimpan untuk resume; ambil daftar stream ulang
-tiap mau memutar. Baris berlangganan (`Muvibox Pro`) langsung dibuka di tab
-baru.
+- Input ffmpeg adalah endpoint `/stream` milik server sendiri, jadi ia bisa
+  seek lewat `Range`; tidak ada byte media yang lewat disk.
+- Keluaran dipipe ke RAM. Setiap byte memotong budget `MAX_MEMORY_MB` yang sama
+  dengan cache piece (`memstorage.Reserve`), jadi cache otomatis meng-LRU
+  menyusut dan total RAM tidak pernah melewati batas env.
+- Sumber ffmpeg: `./tmp/ffmpeg` (`./tmp/ffmpeg.exe` di Windows) → ffmpeg dari
+  `PATH` → build statis yang diunduh sekali dari ffmpeg-static ke `./tmp`.
+  Kalau gagal, remux dilewati dan player tetap dilayani `/stream`.
+- Satu job pada satu waktu; ganti episode membatalkan job lama dan
+  mengembalikan budgetnya. Hasil untuk file yang sama dipakai ulang.
+- UI hanya pindah ke `/remux` kalau belum ada playback berjalan (lihat
+  `state.remux`), jadi file yang sudah diputar dari `/stream` tidak di-reload.
+- Hasil mux harus muat dalam budget `MAX_MEMORY_MB`; episode yang lebih besar
+  dari budget membuat remux dibatalkan dan player tetap memutar `/stream`.
 
-## Remux
+## Cache & zero disk
 
-Setiap episode terpilih diremux **ffmpeg** untuk menjamin file punya index
-(`Cues`) — tanpa itu player bisa dipaksa memindai seluruh file sebelum mutar:
-
-- Sumber ffmpeg: `./tmp/ffmpeg` (Windows: `./tmp/ffmpeg.exe`) → ffmpeg dari
-  `PATH` → build statis yang diunduh otomatis ke `./tmp` (Linux:
-  johnvansickle.com, Windows: gyan.dev; sekali saja).
-- Perintah: `ffmpeg -i http://127.0.0.1:<port>/stream/… -map 0 -c copy -f matroska pipe:1`
-  — semua track (audio/subtitle/font) disalin bit-per-bit, input dibaca lewat
-  endpoint stream sendiri secara streaming, keluaran dipipe langsung ke RAM:
-  **tetap zero disk**.
-- Setiap byte keluaran memotong budget `MAX_MEMORY_MB` yang sama dengan cache
-  piece (cache otomatis meng-LRU menyusut), jadi total RAM tidak pernah
-  melewati batas env.
-- UI otomatis memakai `/remux/...` hanya kalau player belum sempat memutar;
-  playback yang sudah jalan tidak pernah disela.
-- Ganti episode: job remux lama dihentikan, budgetnya dipulihkan. Job untuk
-  file yang sama tidak dijalankan ulang. Remux gagal (ffmpeg error/batas
-  memori) → player tetap dilayani `/stream` seperti biasa.
-
-## Cara kerja singkat
-
-- Satu torrent aktif. Magnet baru tidak mengunduh seluruh file: librqbit diberi
-  `only_files = []`, jadi piece hanya diambil saat stream memintanya.
-- Pemuatan magnet adalah satu job milik server (bukan request), bisa dibatalkan
-  lewat `/api/cancel`, dibatasi 45 detik menunggu metadata, dan job dengan magnet
-  yang sama dipakai bersama.
-- Setiap torrent aktif memegang satu stream "penjaga" di EOF supaya peer tidak
-  dilepas saat player belum membaca apa pun.
-- Cache RAM: piece di atas batas dibuang (LRU), indeksnya dikirim ke evictor,
-  lalu `forget_piece` menandainya belum punya agar bisa diunduh ulang.
-- File video disaring berdasarkan ekstensi, diurutkan menurut path huruf kecil;
-  indeks di API/stream mengikuti urutan itu, sedangkan `fileIndex` mengikuti
-  urutan file di dalam torrent.
+- `internal/memstorage` menyimpan piece di `map` + LRU (`container/list`), total dibatasi `MAX_MEMORY_MB` / `-cache-mb` (default 200 MiB).
+- Saat budget terlampaui, piece paling lama dibuang dan `Eviction{Hash, Index}` dikirim lewat channel `Evicted()`.
+- `server.syncEvictions()` memanggil `t.Piece(index).UpdateCompletion()` untuk piece yang dibuang, supaya torrent client menandainya belum lengkap dan mengunduhnya lagi saat di-seek. Eviction dari torrent lama diabaikan lewat info hash.
+- `cfg.DataDir = ""` dan `DefaultStorage` diganti `memstorage`; torrent client tidak pernah membuka file data.
+- Satu piece yang lebih besar dari limit tetap disimpan agar progres tidak macet.
 
 ## Test
 
-```bash
-cargo test        # unit: range, urutan file, URL, config, memstore, router
-cargo fmt
-cargo clippy --all-targets
+Unit test (hermetic, termasuk eviction virtual):
+
+```sh
+make vet
+make test
 ```
 
-Test router memakai `tower::ServiceExt::oneshot`, jadi route diuji tanpa membuka
-port dan tanpa torrent. Test streaming end-to-end tidak dijalankan otomatis
-karena butuh swarm nyata.
+`tests/eviction_test.go` menjalankan seeder + leecher di proses yang sama lewat localhost, torrent 8 MiB / 8 piece, cache 2 piece. Efeknya eviction, refetch setelah seek, dan isi byte diverifikasi tanpa internet (~0,2 detik). Kedua `DataDir` dicek tetap kosong.
 
-## Layout
+E2E butuh server hidup dan network torrent:
 
+```sh
+go run .                                                  # terminal 1
+ZANIME_E2E=1 go test -run TestE2E -timeout 90s ./tests    # terminal 2
 ```
-src/main.rs        entry point (tipis)
-src/lib.rs         config, app state, job magnet, route, stream Range, remux
-src/remux.rs       deteksi/unduh ffmpeg, kebutuhan remux
-src/memstore.rs    storage piece RAM + LRU eviction (budget dibagi dengan remux)
-vendor/librqbit    librqbit 8.1.1 yang dipatch (forget_piece)
-web/index.html     UI yang di-embed
-```
+
+Yang dicek e2e:
+
+- `/info`: `storage=memory`, file video, `cache_used <= cache_limit`
+- `HEAD /stream`: 200, `Content-Length`, `Accept-Ranges: bytes`
+- Range 0–128 KiB: 206 + `Content-Range`
+- seek 1 MiB dan 50% file: 206, offset benar
+- range sama dua kali: byte identik
+- `bytes=<size>-`: 416 + `Content-Range: bytes */<size>`
+- disk: `/proc/<pid>/fd` server tidak membuka file data (fd selain stdin/stdout/stderr)
+- UI: `/` memuat `movi-player` + Tailwind + endpoint `/api/magnet`
+- API: magnet invalid ditolak 400, `/api/state` berisi file + URL stream yang HEAD-nya 200, `/api/select` valid 200 dan index invalid 400
+
+Env test:
+
+- `ZANIME_URL` — default `http://127.0.0.1:8080`
+- `ZANIME_TIMEOUT` — timeout per request, default 15 detik
+- `ZANIME_E2E=1` — wajib untuk menjalankan e2e
+
+Jika satu piece torrent (4 MiB di magnet contoh) tidak selesai dalam timeout, test streaming di-skip, bukan gagal — swarm publik bisa lambat. Naikkan `ZANIME_TIMEOUT` bila perlu.
+
+## Batasan
+
+- Satu torrent aktif; menambah magnet baru akan mengganti torrent lama.
+- Hanya file dengan ekstensi video yang ditampilkan (`.mkv`, `.mp4`, `.webm`, `.avi`, `.mov`, `.ts`, `.m2ts`, …).
+- Tidak ada transcode; server hanya menyajikan byte dari torrent, ditambah salinan hasil mux `-c copy` (ffmpeg) di RAM bila tersedia.
+- Format yang bisa diputar tergantung browser: MoviPlayer memakai WebCodecs (Chrome/Edge terbaru paling aman). Safari tanpa WebCodecs akan fallback ke native `<video>`.

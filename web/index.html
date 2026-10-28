@@ -1064,16 +1064,9 @@
       searchBody.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Mengambil streams…</p>';
       try {
         const enc = encodeURIComponent(id);
-        // Tiga sumber sekaligus: Torrentio, Muvibox, Absolute Cinema.
-        // Salah satu boleh gagal/kosong tanpa mematikan yang lain.
-        const settled = await Promise.allSettled([
-          jget(`${TIO}/stream/${type}/${enc}.json`),
-          jget(`${MUV}/stream/${type}/${enc}.json`),
-          jget(`${AC}/stream/${type}/${enc}.json`),
-        ]);
-        const pools = settled
-          .filter((r) => r.status === 'fulfilled')
-          .map((r) => r.value.streams || []);
+        // Stream hanya dari Torrentio.
+        const res = await jget(`${TIO}/stream/${type}/${enc}.json`);
+        const pools = [res.streams || []];
         // Torrentio dedupe infoHash, MuvIndo dedupe url.
         const seen = new Set();
         sv.streams = pools.flat()

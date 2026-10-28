@@ -1,7 +1,10 @@
 # binaries
-/target
 /zanime
 zanime.exe
 
 # env
 .env
+
+# go
+*.test
+*.out

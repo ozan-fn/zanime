@@ -1,25 +1,30 @@
-BINARY := target/release/zanime
-CARGO ?= cargo
+BINARY := zanime
+GO ?= go
 
-.PHONY: build run test fmt lint clean
+# -s -w: buang tabel simbol + info DWARF (binary jauh lebih kecil, tetap bisa
+# dijalankan).
+LDFLAGS := -s -w
 
+.PHONY: build run vet test clean
+
+# Build di-strip lalu langsung dikompres upx kalau tersedia; kalau upx tidak
+# ada, build tetap selesai dan hanya memberi pesan.
 build:
-	$(CARGO) build --release
-	rm -f zanime
-	cp $(BINARY) .
-	upx --best --lzma zanime
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BINARY) .
+	@if command -v upx >/dev/null 2>&1; then \
+		upx --best --lzma ./$(BINARY); \
+	else \
+		echo "upx tidak terpasang: $(BINARY) dibiarkan tanpa kompresi"; \
+	fi
 
 run:
-	$(CARGO) run --release
+	$(GO) run .
+
+vet:
+	$(GO) vet ./...
 
 test:
-	$(CARGO) test
-
-fmt:
-	$(CARGO) fmt
-
-lint:
-	$(CARGO) clippy --all-targets
+	$(GO) test -race ./... -count=1 -timeout 15s
 
 clean:
-	$(CARGO) clean
+	rm -f $(BINARY) $(BINARY).exe
