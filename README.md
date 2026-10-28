@@ -90,7 +90,15 @@ untuk kembali mem-proxy lewat server bila CORS tidak bisa dipasang.
   objek paling lama (`LastModified` tertua) dihapus sampai muat; file yang
   lebih besar dari batas ditolak dan diputar dari torrent.
 - Remux `-c copy` dilewati karena S3 sudah melayani Range.
-- Upload berjalan sambil torrent diunduh (part 8 MiB), bukan menunggu file utuh.
+- Upload berjalan sambil torrent diunduh. Ukuran buffer/part mengikuti cache
+  RAM dibagi user yang sedang terhubung (`MAX_MEMORY_MB / user`, minimal 5 MiB):
+  cache 90 MiB + 1 user → satu part 90 MiB baru dikirim saat buffer penuh; dua
+  user → 45 MiB masing-masing.
+- Setiap piece yang byte-nya sudah dibaca untuk S3 langsung dibuang dari cache
+  (`Drop`) dan ditandai belum lengkap, jadi unduhan selalu berjalan tepat di
+  belakang upload (± satu part), bukan menumpuk sampai penuh; torrent akan
+  mengunduh ulang piece itu hanya kalau ada seek yang membutuhkannya. Upload
+  tetap jalan penuh karena data yang sudah dibaca tidak pernah diminta lagi.
 - Tiap browser ditandai cookie HttpOnly `zanime_uid`; satu user maksimal 2
   upload berjalan, permintaan berikutnya membatalkan yang tertua miliknya.
 - Tombol **Cache** di tiap episode (`POST /api/cache`) mengunggah di latar;
@@ -107,7 +115,7 @@ Buka `http://127.0.0.1:8080`:
 
 1. Tempel magnet, klik **Muat torrent**. Server menunggu metadata lalu menampilkan daftar file video, urut nama.
 2. Klik salah satu file. `src` player diarahkan ke `/stream/<index>/<nama>` dan playback langsung dicoba.
-3. Panel status menampilkan cache RAM, eviction, peer, kecepatan dua arah, dan byte yang tersedia. Angka ini didorong server lewat WebSocket `/api/ws` tiap 700 ms — UI tidak polling.
+3. Panel status menampilkan detail hidup: piece lengkap/parsial/hash, peer aktif·total·seeder·negosiasi, chunk useful/wasted, byte wire dan hash, isi RAM per piece, laju eviction/menit, kecepatan turun/turun-ke-S3, job upload + ukuran part + sisa waktu auto-abort, user/tab, uptime, heap, dan goroutine. Angka ini didorong server lewat WebSocket `/api/ws` tiap 700 ms — UI tidak polling.
 4. Di latar, episode terpilih di-remux (`-c copy`). Kalau hasilnya siap **sebelum** player benar-benar memutar, `src` diganti ke `/remux/<index>/<nama>` (salinan ber-index). Playback yang sudah jalan tidak pernah disela.
 5. Dialog pencarian memakai Cinemeta (judul/seri/episode). **Stream hanya diambil dari Torrentio** (magnet + `fileIndex` untuk season pack); katalog Muvibox dan Absolute Cinema tetap ada untuk browsing, tapi stream-nya tidak diambil dari sana. Kalau sebuah stream berisi URL media langsung (bukan torrent), UI memutarnya lewat proxy RAM `/fetch` (Range diteruskan, tanpa disk).
 

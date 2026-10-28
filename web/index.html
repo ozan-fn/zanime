@@ -151,55 +151,157 @@
             <span id="peers-wrap" class="text-[11px] text-zinc-500"><span id="peers" class="font-semibold text-zinc-300">0</span> peer</span>
           </div>
 
-          <div class="mt-3 space-y-3">
+          <div class="mt-3 space-y-3.5 text-[11px]">
             <div>
-              <div class="flex items-center justify-between text-[11px] text-zinc-500">
+              <div class="flex items-center justify-between">
+                <span class="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Torrent</span>
+                <span id="tor-hash" class="max-w-[8rem] truncate font-mono text-[10px] text-zinc-500">—</span>
+              </div>
+              <div class="mt-1 space-y-1">
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Piece</span>
+                  <span id="tor-pieces" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Di RAM</span>
+                  <span id="tor-ram" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Parsial</span>
+                  <span id="tor-partial" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Peer</span>
+                  <span id="tor-peers" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Seeder</span>
+                  <span id="tor-seeders" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Negosiasi</span>
+                  <span id="tor-handshake" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Chunk</span>
+                  <span id="tor-chunks" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Wire / hash</span>
+                  <span id="tor-wire" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="border-t border-border/60 pt-3">
+              <div class="flex items-center justify-between text-zinc-500">
                 <span>Cache RAM</span>
                 <span><span id="cache-text" class="text-zinc-300">0 B</span> · <span id="evictions" class="text-zinc-300">0</span> evict</span>
               </div>
               <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
                 <div id="cache-bar" class="h-full w-0 rounded-full bg-zinc-100 transition-[width] duration-500"></div>
               </div>
+              <div class="mt-1 flex items-baseline justify-between gap-3 text-zinc-600">
+                <span>Piece di RAM</span>
+                <span id="cache-pieces" class="tabular-nums text-zinc-400">—</span>
+              </div>
+              <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                <span>Eviction / menit</span>
+                <span id="evict-rate" class="tabular-nums text-zinc-400">—</span>
+              </div>
             </div>
-            <div>
-              <div class="flex items-center justify-between text-[11px] text-zinc-500">
+
+            <div class="border-t border-border/60 pt-3">
+              <div class="flex items-center justify-between text-zinc-500">
                 <span>Terunduh dari torrent</span>
                 <span id="dl-text" class="text-zinc-300">0 B</span>
               </div>
               <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
                 <div id="dl-bar" class="h-full w-0 rounded-full bg-zinc-100 transition-[width] duration-500"></div>
               </div>
+              <div class="mt-1 space-y-1">
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="flex items-center gap-1.5">
+                    <span id="net-down-ic" class="net-ic down" aria-hidden="true">↓</span>
+                    Peer → server
+                  </span>
+                  <span id="net-down" class="tabular-nums text-zinc-300">0 Mbps</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="flex items-center gap-1.5">
+                    <span id="net-up-ic" class="net-ic up" aria-hidden="true">↑</span>
+                    <span id="net-up-label">server → client</span>
+                  </span>
+                  <span id="net-up" class="tabular-nums text-zinc-300">0 Mbps</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span>Byte terbuang</span>
+                  <span id="dl-wasted" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+              </div>
             </div>
-            <div id="s3-block" class="hidden">
-              <div class="flex items-center justify-between gap-2 text-[11px] text-zinc-500">
-                <span class="min-w-0 truncate">S3 <span id="s3-bucket" class="text-zinc-600"></span></span>
+
+            <div id="s3-block" class="hidden border-t border-border/60 pt-3">
+              <div class="flex items-center justify-between gap-2 text-zinc-500">
+                <span class="min-w-0 truncate">Download tigris <span id="s3-bucket" class="text-zinc-600"></span></span>
                 <span id="s3-text" class="shrink-0 text-zinc-300">0 B / 4 GiB</span>
               </div>
               <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
                 <div id="s3-bar" class="h-full w-0 rounded-full bg-emerald-400/80 transition-[width] duration-500"></div>
               </div>
-              <div id="s3-upload" class="mt-1.5 hidden items-center justify-between text-[11px] text-zinc-500">
-                <span>Upload ke S3</span>
+              <div id="s3-upload" class="mt-1.5 hidden items-center justify-between text-zinc-500">
+                <span>Upload ke tigris</span>
                 <span id="s3-upload-text" class="text-zinc-300">0%</span>
               </div>
-            </div>
-            <div>
-              <div class="flex items-center justify-between text-[11px] text-zinc-500">
-                <span class="flex items-center gap-1.5">
-                  <span id="net-down-ic" class="net-ic down" aria-hidden="true">↓</span>
-                  peer → server
-                </span>
-                <span id="net-down" class="tabular-nums text-zinc-300">0 Mbps</span>
+              <div id="s3-upload-bar-wrap" class="mt-1 hidden h-1 overflow-hidden rounded-full bg-white/[0.06]">
+                <div id="s3-upload-bar" class="h-full w-0 rounded-full bg-emerald-300/70 transition-[width] duration-500"></div>
               </div>
-              <div class="flex items-center justify-between text-[11px] text-zinc-500">
-                <span class="flex items-center gap-1.5">
-                  <span id="net-up-ic" class="net-ic up" aria-hidden="true">↑</span>
-                  <span id="net-up-label">server → client</span>
-                </span>
-                <span id="net-up" class="tabular-nums text-zinc-300">0 Mbps</span>
+              <div class="mt-1 space-y-1">
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span>Kecepatan upload</span>
+                  <span id="s3-speed" class="tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span>Job upload</span>
+                  <span id="s3-jobs" class="tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span>Ukuran part</span>
+                  <span id="s3-part" class="tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span>Auto-abort tanpa tab</span>
+                  <span id="s3-abort" class="tabular-nums text-zinc-400">—</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="border-t border-border/60 pt-3">
+              <div class="flex items-center justify-between">
+                <span class="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Server</span>
+                <span id="srv-remux" class="text-[10px] text-zinc-500">—</span>
+              </div>
+              <div class="mt-1 space-y-1">
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span>User / tab</span>
+                  <span id="srv-users" class="tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span>Upload aktif</span>
+                  <span id="srv-uploads" class="tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span>Uptime</span>
+                  <span id="srv-uptime" class="tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span>Heap / goroutine</span>
+                  <span id="srv-heap" class="tabular-nums text-zinc-400">—</span>
+                </div>
               </div>
             </div>
           </div>
+        </div>
         </div>
       </section>
 
@@ -465,6 +567,14 @@
       return `${v.toFixed(digits)} ${units[i]}`;
     };
 
+    const fmtDur = (sec) => {
+      const s = Math.max(0, Math.round(sec));
+      if (s < 60) return `${s} dtk`;
+      const m = Math.floor(s / 60);
+      if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}d`;
+      return `${Math.floor(m / 60)}j ${String(m % 60).padStart(2, '0')}m`;
+    };
+
     // setSq: teks satu baris terpotong; saat hover, teks meluncur ke kiri
     // memperlihatkan bagian terpotongnya (marquee alternating) dan teks
     // lengkapnya jadi tooltip title=.
@@ -640,9 +750,42 @@
         const limit = state.cache.limit || 1;
         $('cache-text').textContent = `${fmt(used)} / ${fmt(limit)}`;
         $('cache-bar').style.width = `${Math.min(100, (used / limit) * 100)}%`;
-        $('evictions').textContent = String(state.cache.evictions || 0);
+        const evictions = state.cache.evictions || 0;
+        $('evictions').textContent = String(evictions);
+        const pieces = state.cache.pieces || 0;
+        $('cache-pieces').textContent = `${pieces} piece${tor ? ` / ${tor.pieces || 0}` : ''}`;
+
+        // Laju eviction dari selisih antar frame; frame < 1 dtk dilewati supaya
+        // angkanya tidak melonjak saat WS dan balasan fetch datang berdekatan.
+        const nowT = performance.now();
+        if (lastEvict && nowT - lastEvict.t >= 1000) {
+          const perMin = Math.max(0, evictions - lastEvict.n) / ((nowT - lastEvict.t) / 1000) * 60;
+          $('evict-rate').textContent = perMin >= 1 ? perMin.toFixed(0) : perMin > 0 ? '<1' : '0';
+          lastEvict = { n: evictions, t: nowT };
+        } else if (!lastEvict) {
+          lastEvict = { n: evictions, t: nowT };
+        }
       }
       $('peers').textContent = String(state.peers || 0);
+
+      // Detail torrent: progress piece, komposisi peer, dan byte terbuang.
+      const tor = state.torrent;
+      if (tor) {
+        const hash = state.info_hash || '';
+        $('tor-hash').textContent = hash ? `${hash.slice(0, 10)}…` : '—';
+        $('tor-hash').title = hash;
+        $('tor-pieces').textContent = `${tor.complete_pieces || 0}/${tor.pieces || 0} · ${fmt(tor.piece_length || 0)}/piece`;
+        $('tor-ram').textContent = fmt(tor.ram_bytes || 0);
+        $('tor-partial').textContent = `${tor.partial_pieces || 0} parsial · ${tor.busy_pieces || 0} hash`;
+        $('tor-peers').textContent = `${state.peers || 0} aktif · ${tor.total_peers || 0} total`;
+        $('tor-seeders').textContent = String(tor.seeders || 0);
+        $('tor-handshake').textContent = `${tor.half_open || 0} half-open · ${tor.pending_peers || 0} pending`;
+        $('tor-chunks').textContent = `${tor.chunks_useful || 0} useful · ${tor.chunks_wasted || 0} waste`;
+        $('tor-wire').textContent = `${fmt(tor.wire_in || 0)} · ${fmt(tor.hashed || 0)}`;
+        const wasted = tor.wasted_bytes || 0;
+        const share = tor.data_in ? (wasted / tor.data_in) * 100 : 0;
+        $('dl-wasted').textContent = `${fmt(wasted)} · ${share.toFixed(1)}%`;
+      }
 
       const total = state.length || 0;
       // Unduhan kumulatif bisa melebihi ukuran torrent saat piece diambil ulang.
@@ -667,9 +810,27 @@
         up.classList.toggle('flex', busy || Boolean(s3.error));
         const upText = $('s3-upload-text');
         upText.className = s3.error ? 'text-rose-300' : 'text-zinc-300';
+        const upBar = $('s3-upload-bar');
+        $('s3-upload-bar-wrap').classList.toggle('hidden', !busy);
         if (busy) {
-          upText.textContent = `${fmt(s3.uploaded || 0)} / ${fmt(s3.size || 0)} · ${Math.round(s3.progress || 0)}%`;
+          const pct = Math.min(100, s3.progress || 0);
+          upText.textContent = `${fmt(s3.uploaded || 0)} / ${fmt(s3.size || 0)} · ${Math.round(pct)}%`;
+          upBar.style.width = `${pct}%`;
         } else if (s3.error) upText.textContent = 'gagal · fallback torrent';
+
+        // Kecepatan upload dari selisih `uploaded`; job berganti = reset.
+        const nowT = performance.now();
+        if (busy && lastUpload && nowT - lastUpload.t >= 500) {
+          const bytesPerSec = Math.max(0, (s3.uploaded || 0) - lastUpload.n) / ((nowT - lastUpload.t) / 1000);
+          $('s3-speed').textContent = `${(bytesPerSec / 1e6).toFixed(2)} MB/s`;
+          lastUpload = { n: s3.uploaded || 0, t: nowT };
+        } else if (!busy || !lastUpload) {
+          lastUpload = busy ? { n: s3.uploaded || 0, t: nowT } : null;
+          if (!busy) $('s3-speed').textContent = '—';
+        }
+        $('s3-jobs').textContent = `${s3.jobs || 0} aktif · ${s3.job_total || 0} total`;
+        $('s3-part').textContent = fmt(s3.part_size || 0);
+        $('s3-abort').textContent = s3.abort_in > 0 ? `sisa ${fmtDur(s3.abort_in)}` : 'segera';
 
         // Pasang src baru setelah upload selesai, supaya player tidak
         // menggantung menunggu request /stream yang panjang.
@@ -720,6 +881,21 @@
         }
       }
 
+      // Status proses server: user/tab, upload, uptime, memori, remux.
+      const users = state.users;
+      if (users) {
+        $('srv-users').textContent = `${users.active || 0} user · ${users.tabs || 0} tab`;
+        $('srv-uploads').textContent = `${users.uploads || 0}${users.upload_limit ? ` · maks ${users.upload_limit}/user` : ''}`;
+      }
+      const srv = state.server;
+      if (srv) {
+        $('srv-uptime').textContent = fmtDur(srv.uptime || 0);
+        $('srv-heap').textContent = `${fmt(srv.heap || 0)} · ${srv.goroutines || 0}`;
+        $('srv-remux').textContent = state.remux
+          ? `remux #${state.remux.index} ${state.remux.ready ? 'siap' : 'proses'}`
+          : 'remux mati';
+      }
+
       applyNet(state.net);
     }
 
@@ -727,6 +903,8 @@
      * Dua arah: peer → server (unduhan dari swarm) dan server → client
      * (byte yang keluar ke player). Panah menyala saat ada aliran. */
     let lastNet = null;
+    let lastEvict = null;
+    let lastUpload = null;
     // Mode langsung: byte video datang dari Tigris, jadi arus server → client
     // tidak dihitung (bukan 0 karena macet).
     let s3DirectPlayback = false;

@@ -177,3 +177,33 @@ func TestReserveSharesBudget(t *testing.T) {
 	}
 	c.Release(10)
 }
+
+// Drop membebaskan piece yang sudah aman di tempat lain (mis. sudah
+// terunggah) tanpa menunggu budget penuh, dan tidak dihitung sebagai eviction.
+func TestCache_DropFreesPieces(t *testing.T) {
+	c := New(4 * pieceLen)
+	info, ti := openTorrent(t, c, 4)
+
+	writePiece(t, ti, info, 0, 'a')
+	writePiece(t, ti, info, 1, 'b')
+	writePiece(t, ti, info, 2, 'c')
+	c.Drop(metainfo.Hash{}, 0, 1)
+
+	if used := c.Used(); used != pieceLen {
+		t.Fatalf("cache used = %d, want %d", used, pieceLen)
+	}
+	for _, index := range []int{0, 1} {
+		if ti.Piece(info.Piece(index)).Completion().Complete {
+			t.Fatalf("dropped piece %d should be incomplete", index)
+		}
+		if err := readPiece(ti, info, index, 16); !errors.Is(err, io.EOF) {
+			t.Fatalf("read dropped piece %d error = %v, want io.EOF", index, err)
+		}
+	}
+	if !ti.Piece(info.Piece(2)).Completion().Complete {
+		t.Fatal("piece 2 should still be complete")
+	}
+	if c.Evictions() != 0 {
+		t.Fatalf("evictions = %d, want 0 (Drop is not cache pressure)", c.Evictions())
+	}
+}

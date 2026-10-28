@@ -53,6 +53,13 @@ func (c *Client) Used() int64              { return c.cache.usage() }
 func (c *Client) Evictions() int64         { return c.cache.evictionCount() }
 func (c *Client) Evicted() <-chan Eviction { return c.cache.evicted }
 
+// Pieces returns how many pieces currently sit in RAM.
+func (c *Client) Pieces() int {
+	c.cache.mu.Lock()
+	defer c.cache.mu.Unlock()
+	return c.cache.lru.Len()
+}
+
 // Reserve takes n bytes out of the same budget the piece cache uses, dropping
 // least recently used pieces to make room. It reports false when the budget
 // cannot fit n bytes even after eviction, so callers can cancel instead of
@@ -83,6 +90,24 @@ func (c *Client) Release(n int64) {
 		c.cache.used = 0
 	}
 	c.cache.mu.Unlock()
+}
+
+// Drop frees pieces from..to of a torrent without waiting for the budget to
+// run out, so bytes that are already safe elsewhere (e.g. uploaded to S3) stop
+// occupying RAM. Callers must resync piece completion afterwards.
+func (c *Client) Drop(hash metainfo.Hash, from, to int) {
+	c.cache.mu.Lock()
+	defer c.cache.mu.Unlock()
+	for i := from; i <= to; i++ {
+		k := key{hash: hash, index: i}
+		el := c.cache.entries[k]
+		if el == nil {
+			continue
+		}
+		c.cache.lru.Remove(el)
+		delete(c.cache.entries, k)
+		c.cache.used -= int64(len(el.Value.(*entry).data))
+	}
 }
 
 func (c *Client) OpenTorrent(_ context.Context, _ *metainfo.Info, infoHash metainfo.Hash) (storage.TorrentImpl, error) {

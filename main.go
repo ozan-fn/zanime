@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -148,6 +149,7 @@ type server struct {
 	web      fs.FS
 	port     int // HTTP port ffmpeg reads /stream from; 0 = not listening yet
 	remux    *remux.Manager
+	started  time.Time
 
 	addMu sync.Mutex // serializes magnet loads
 
@@ -156,6 +158,9 @@ type server struct {
 	s3Jobs    map[string]*s3Upload // key -> upload, reused by every range request
 	s3Clients atomic.Int32         // tab yang sedang terhubung lewat /api/ws
 	s3Seen    atomic.Int64         // Unix detik aktivitas user terakhir
+
+	wsMu    sync.Mutex
+	wsUsers map[string]int // user cookie -> jumlah tab terbuka
 
 	mu         sync.RWMutex
 	t          *torrent.Torrent
@@ -169,7 +174,7 @@ type server struct {
 
 func newServer(cl *torrent.Client, mem *memstorage.Client, store *s3store.Store, web fs.FS, port int) *server {
 	return &server{cl: cl, mem: mem, store: store, web: web, port: port, remux: remux.NewManager(mem), selected: -1,
-		s3Jobs: make(map[string]*s3Upload)}
+		started: time.Now(), s3Jobs: make(map[string]*s3Upload), wsUsers: make(map[string]int)}
 }
 
 // startRemux muxes the selected file in the background: ffmpeg reads our own
@@ -383,12 +388,18 @@ func (s *server) state() gin.H {
 			"used":      s.mem.Used(),
 			"limit":     s.mem.Limit(),
 			"evictions": s.mem.Evictions(),
+			"pieces":    s.mem.Pieces(),
 		},
 	}
 	// Byte kumulatif; UI menghitung Mbps dari selisih antar frame.
 	fromPeers := int64(0)
 	if t != nil {
 		stats := t.Stats()
+		complete, partial, busy := pieceCounts(t)
+		pieceLen := int64(0)
+		if info := t.Info(); info != nil {
+			pieceLen = info.PieceLength
+		}
 		resp["name"] = t.Name()
 		resp["info_hash"] = t.InfoHash().String()
 		resp["length"] = t.Length()
@@ -396,19 +407,60 @@ func (s *server) state() gin.H {
 		resp["downloaded"] = stats.BytesReadUsefulData.Int64()
 		resp["peers"] = stats.ActivePeers
 		fromPeers = stats.BytesReadUsefulData.Int64()
+		resp["torrent"] = gin.H{
+			"pieces":          t.NumPieces(),
+			"piece_length":    pieceLen,
+			"ram_bytes":       t.BytesCompleted(),
+			"complete_pieces": complete,
+			"partial_pieces":  partial,
+			"busy_pieces":     busy,
+			"total_peers":     stats.TotalPeers,
+			"seeders":         stats.ConnectedSeeders,
+			"half_open":       stats.HalfOpenPeers,
+			"pending_peers":   stats.PendingPeers,
+			"chunks_read":     stats.ChunksRead.Int64(),
+			"chunks_useful":   stats.ChunksReadUseful.Int64(),
+			"chunks_wasted":   stats.ChunksReadWasted.Int64(),
+			"wire_in":         stats.BytesRead.Int64(),
+			"data_in":         stats.BytesReadData.Int64(),
+			"hashed":          stats.BytesHashed.Int64(),
+			"wasted_bytes":    max(int64(0), stats.BytesReadData.Int64()-stats.BytesReadUsefulIntendedData.Int64()),
+		}
 	}
 	if f := fileAtIn(files, selected); f != nil {
 		resp["size"] = f.Length()
 	}
-	resp["net"] = gin.H{"from_peers": fromPeers, "to_client": s.served.Load()}
+	activeUploads, toS3, jobCount := s.uploadStats()
+	resp["net"] = gin.H{"from_peers": fromPeers, "to_client": s.served.Load(), "to_s3": toS3}
+	resp["users"] = gin.H{
+		"active":       s.activeUsers(),
+		"tabs":         s.s3Clients.Load(),
+		"uploads":      activeUploads,
+		"upload_limit": maxJobsPerUser,
+	}
+	var heap runtime.MemStats
+	runtime.ReadMemStats(&heap)
+	resp["server"] = gin.H{
+		"uptime":     int64(time.Since(s.started).Seconds()),
+		"goroutines": runtime.NumGoroutine(),
+		"heap":       heap.HeapAlloc,
+		"sys":        heap.Sys,
+		"jobs":       jobCount,
+	}
 	if s.store != nil {
+		idle := int64(time.Since(time.Unix(s.s3Seen.Load(), 0)).Seconds())
 		info := gin.H{
-			"enabled": true,
-			"direct":  s.s3Direct,
-			"bucket":  s.store.Bucket(),
-			"prefix":  s.store.Prefix(),
-			"used":    s.store.Used(),
-			"limit":   s.store.Limit(),
+			"enabled":   true,
+			"direct":    s.s3Direct,
+			"bucket":    s.store.Bucket(),
+			"prefix":    s.store.Prefix(),
+			"used":      s.store.Used(),
+			"limit":     s.store.Limit(),
+			"jobs":      activeUploads,
+			"job_total": jobCount,
+			"part_size": s.uploadPartSize(),
+			"idle":      idle,
+			"abort_in":  max(int64(0), int64(s3IdleTimeout.Seconds())-idle),
 		}
 		if t != nil {
 			if f := fileAtIn(files, selected); f != nil {
@@ -441,6 +493,41 @@ func (s *server) state() gin.H {
 	return resp
 }
 
+// pieceCounts summarizes the torrent's piece states in one pass over the
+// state runs: complete in RAM, partially downloaded, and being hashed/marked.
+func pieceCounts(t *torrent.Torrent) (complete, partial, busy int) {
+	for _, run := range t.PieceStateRuns() {
+		if run.Complete {
+			complete += run.Length
+			continue
+		}
+		if run.Partial {
+			partial += run.Length
+		}
+		if run.Hashing || run.QueuedForHash || run.Marking {
+			busy += run.Length
+		}
+	}
+	return complete, partial, busy
+}
+
+// uploadStats counts running jobs and the bytes handed to S3 so far, across
+// every cached episode.
+func (s *server) uploadStats() (active int, total int64, jobs int) {
+	s.s3Mu.Lock()
+	defer s.s3Mu.Unlock()
+	jobs = len(s.s3Jobs)
+	for _, job := range s.s3Jobs {
+		total += job.read.Load()
+		select {
+		case <-job.done:
+		default:
+			active++
+		}
+	}
+	return active, total, jobs
+}
+
 // apiWS pushes the state as JSON every 700 ms; the UI never polls.
 func (s *server) apiWS(c *gin.Context) {
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
@@ -451,9 +538,12 @@ func (s *server) apiWS(c *gin.Context) {
 
 	s.s3Clients.Add(1)
 	s.s3Seen.Store(time.Now().Unix())
+	user := userOf(c)
+	s.addWSUser(user)
 	defer func() {
 		s.s3Clients.Add(-1)
 		s.s3Seen.Store(time.Now().Unix())
+		s.removeWSUser(user)
 	}()
 
 	// Frame dari klien diabaikan; ReadMessage juga memproses ping/pong dan
@@ -791,6 +881,36 @@ func (s *server) keepKeys(uploading string) map[string]bool {
 	return keep
 }
 
+// uploadPartSize sizes the S3 buffer from the RAM cache, split across the
+// users currently connected: 90 MiB with one user, 45 MiB with two.
+func (s *server) uploadPartSize() int64 {
+	part := s.mem.Limit()
+	if users := s.activeUsers(); users > 1 {
+		part /= int64(users)
+	}
+	return max(part, 5<<20) // S3 minimum per part
+}
+
+func (s *server) addWSUser(id string) {
+	s.wsMu.Lock()
+	defer s.wsMu.Unlock()
+	s.wsUsers[id]++
+}
+
+func (s *server) removeWSUser(id string) {
+	s.wsMu.Lock()
+	defer s.wsMu.Unlock()
+	if s.wsUsers[id]--; s.wsUsers[id] <= 0 {
+		delete(s.wsUsers, id)
+	}
+}
+
+func (s *server) activeUsers() int {
+	s.wsMu.Lock()
+	defer s.wsMu.Unlock()
+	return len(s.wsUsers)
+}
+
 func (s *server) s3Job(key string) *s3Upload {
 	s.s3Mu.Lock()
 	defer s.s3Mu.Unlock()
@@ -833,8 +953,8 @@ func (s *server) startS3Upload(key string, f *torrent.File, owner string, retry 
 			reader := f.NewReader()
 			defer func() { _ = reader.Close() }()
 			reader.SetReadahead(4 << 20)
-			evicted, err = s.store.Put(ctx, key, f.Length(),
-				progressReader{r: reader, n: &job.read}, keep)
+			evicted, err = s.store.Put(ctx, key, f.Length(), s.uploadPartSize(),
+				s.purgeAfterRead(f, reader, &job.read), keep)
 		}
 
 		s.s3Mu.Lock()
@@ -849,15 +969,67 @@ func (s *server) startS3Upload(key string, f *torrent.File, owner string, retry 
 	return job
 }
 
-type progressReader struct {
-	r io.Reader
-	n *atomic.Int64
+// purgeAfterRead wraps the upload reader so a piece leaves RAM as soon as its
+// bytes have been read for S3. The piece is marked incomplete again, so the
+// torrent refetches it only when a later seek needs it: RAM now holds about
+// one part instead of the whole episode, and the download keeps running a
+// piece behind the upload instead of racing ahead of it.
+func (s *server) purgeAfterRead(f *torrent.File, r io.Reader, progress *atomic.Int64) io.Reader {
+	t := f.Torrent()
+	pieceLen := int64(1)
+	if info := t.Info(); info != nil && info.PieceLength > 0 {
+		pieceLen = int64(info.PieceLength)
+	}
+	last := f.EndPieceIndex()
+	return &purgeReader{
+		r: r, n: progress, drop: func(from, to int) {
+			if to > last-1 {
+				to = last - 1
+			}
+			if to < from {
+				return
+			}
+			s.mem.Drop(t.InfoHash(), from, to)
+			for i := from; i <= to; i++ {
+				t.Piece(i).UpdateCompletion()
+			}
+		},
+		base: f.Offset(), pieceLen: pieceLen, next: f.BeginPieceIndex(), end: last,
+	}
 }
 
-func (p progressReader) Read(b []byte) (int, error) {
+type purgeReader struct {
+	r        io.Reader
+	n        *atomic.Int64
+	drop     func(from, to int)
+	base     int64 // file offset inside the torrent
+	pieceLen int64
+	next     int // first piece still needed in RAM
+	end      int // one past the file's last piece
+	read     int64
+}
+
+func (p *purgeReader) Read(b []byte) (int, error) {
 	n, err := p.r.Read(b)
-	p.n.Add(int64(n))
+	if n > 0 {
+		p.n.Add(int64(n))
+		p.read += int64(n)
+		p.release()
+	}
 	return n, err
+}
+
+// release frees pieces whose last byte is already read. The piece at the read
+// position is kept, so the upload never asks for data it just dropped.
+func (p *purgeReader) release() {
+	piece := p.end
+	if cur := int((p.base + p.read) / p.pieceLen); cur < piece {
+		piece = max(cur, 0)
+	}
+	if piece > p.next {
+		p.drop(p.next, piece-1)
+		p.next = piece
+	}
 }
 
 // serveS3 proxies the object with Range support, so the player stays

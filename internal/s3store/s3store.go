@@ -120,9 +120,10 @@ func (s *Store) refresh() {
 }
 
 // Put evicts the oldest objects until size fits, then uploads body as key.
-// keep names objects that must survive (the video currently playing). It
-// returns the evicted keys so callers can drop their stale cache markers.
-func (s *Store) Put(ctx context.Context, key string, size int64, body io.Reader, keep map[string]bool) ([]string, error) {
+// partSize is the upload buffer: the part is sent once it is full. keep names
+// objects that must survive (the video currently playing). It returns the
+// evicted keys so callers can drop their stale cache markers.
+func (s *Store) Put(ctx context.Context, key string, size, partSize int64, body io.Reader, keep map[string]bool) ([]string, error) {
 	if size <= 0 {
 		return nil, fmt.Errorf("empty file")
 	}
@@ -156,8 +157,13 @@ func (s *Store) Put(ctx context.Context, key string, size int64, body io.Reader,
 		evicted = append(evicted, old.key)
 	}
 
+	if partSize <= 0 {
+		partSize = 8 << 20
+	}
+	partSize = max(partSize, 5<<20) // S3 minimum per part
+	partSize = min(partSize, 5<<30) // S3 maximum per part
 	uploader := transfermanager.New(s.client, func(o *transfermanager.Options) {
-		o.PartSizeBytes = 8 << 20 // ~8 MiB buffer, one part in flight
+		o.PartSizeBytes = partSize
 		o.Concurrency = 1
 	})
 	_, err = uploader.UploadObject(ctx, &transfermanager.UploadObjectInput{

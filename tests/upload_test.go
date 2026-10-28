@@ -113,7 +113,7 @@ func TestS3LiveStoreUsageAndRange(t *testing.T) {
 	content := []byte("range test 0123456789")
 	store := s3store.New(client, bucket, fmt.Sprintf("zanime-test/%d", time.Now().UnixNano()), 1<<40)
 	key := store.Key("hash", "clip.mp4")
-	if _, err := store.Put(ctx, key, int64(len(content)), bytes.NewReader(content), nil); err != nil {
+	if _, err := store.Put(ctx, key, int64(len(content)), 0, bytes.NewReader(content), nil); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	t.Cleanup(func() {
