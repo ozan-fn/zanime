@@ -93,7 +93,7 @@ func e2eDo(base, method, path string, headers map[string]string) (*http.Response
 	if err != nil {
 		return nil, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	return resp, body, err
 }
@@ -378,7 +378,7 @@ func e2eJSON(base, method, path string, payload any) (*http.Response, []byte, er
 	if err != nil {
 		return nil, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	responseBody, err := io.ReadAll(resp.Body)
 	return resp, responseBody, err
 }

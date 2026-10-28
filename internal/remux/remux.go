@@ -94,7 +94,7 @@ func download(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return fmt.Errorf("unduh ffmpeg: HTTP %s", res.Status)
 	}
@@ -111,16 +111,16 @@ func download(ctx context.Context) error {
 		return err
 	}
 	if _, err := io.Copy(f, res.Body); err != nil {
-		f.Close()
-		os.Remove(part)
+		_ = f.Close()
+		_ = os.Remove(part)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(part)
+		_ = os.Remove(part)
 		return err
 	}
 	if err := os.Chmod(part, 0o755); err != nil && runtime.GOOS != "windows" {
-		os.Remove(part)
+		_ = os.Remove(part)
 		return err
 	}
 	return os.Rename(part, local)

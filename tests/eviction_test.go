@@ -139,7 +139,7 @@ func virtualHTTPHandler(tr *torrent.Torrent) http.Handler {
 	handler := func(c *gin.Context) {
 		f := tr.Files()[0]
 		reader := f.NewReader()
-		defer reader.Close()
+		defer func() { _ = reader.Close() }()
 		reader.SetReadahead(virtualPieceLen)
 		stream.Serve(c, f.DisplayPath(), reader)
 	}
@@ -176,7 +176,7 @@ func tryReadVirtualByte(base string, offset int64) (byte, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return 0, err

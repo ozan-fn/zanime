@@ -8,8 +8,8 @@ import (
 
 func TestLoadDotEnv(t *testing.T) {
 	const name = "ZANIME_TEST_DOTENV_VALUE"
-	os.Unsetenv(name)
-	t.Cleanup(func() { os.Unsetenv(name) })
+	_ = os.Unsetenv(name)
+	t.Cleanup(func() { _ = os.Unsetenv(name) })
 
 	path := filepath.Join(t.TempDir(), ".env")
 	content := "# comment\n\n" + name + "=42\nIGNORED LINE\n"

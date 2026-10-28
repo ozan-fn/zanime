@@ -81,7 +81,7 @@
         </div>
         <div>
           <h1 class="text-lg font-semibold tracking-tight text-white">kafuu</h1>
-          <p class="text-xs text-zinc-500">torrent streaming · RAM-only cache</p>
+          <p class="text-xs text-zinc-500">torrent → S3 → player · RAM-only cache</p>
         </div>
       </div>
       <div class="flex items-center gap-2">
@@ -163,11 +163,24 @@
             </div>
             <div>
               <div class="flex items-center justify-between text-[11px] text-zinc-500">
-                <span>Tersedia dari torrent</span>
+                <span>Terunduh dari torrent</span>
                 <span id="dl-text" class="text-zinc-300">0 B</span>
               </div>
               <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
                 <div id="dl-bar" class="h-full w-0 rounded-full bg-zinc-100 transition-[width] duration-500"></div>
+              </div>
+            </div>
+            <div id="s3-block" class="hidden">
+              <div class="flex items-center justify-between gap-2 text-[11px] text-zinc-500">
+                <span class="min-w-0 truncate">S3 <span id="s3-bucket" class="text-zinc-600"></span></span>
+                <span id="s3-text" class="shrink-0 text-zinc-300">0 B / 4 GiB</span>
+              </div>
+              <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                <div id="s3-bar" class="h-full w-0 rounded-full bg-emerald-400/80 transition-[width] duration-500"></div>
+              </div>
+              <div id="s3-upload" class="mt-1.5 hidden items-center justify-between text-[11px] text-zinc-500">
+                <span>Upload ke S3</span>
+                <span id="s3-upload-text" class="text-zinc-300">0%</span>
               </div>
             </div>
             <div>
@@ -181,7 +194,7 @@
               <div class="flex items-center justify-between text-[11px] text-zinc-500">
                 <span class="flex items-center gap-1.5">
                   <span id="net-up-ic" class="net-ic up" aria-hidden="true">↑</span>
-                  server → client
+                  <span id="net-up-label">server → client</span>
                 </span>
                 <span id="net-up" class="tabular-nums text-zinc-300">0 Mbps</span>
               </div>
@@ -274,7 +287,7 @@
 
   <footer class="mt-6 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] pt-4 text-[11px] text-zinc-600">
       <span>kafuu · torrent streaming · Gin + anacrolix/torrent</span>
-      <span>cache maksimal <span id="footer-cache">200 MiB</span> · tanpa file data di disk</span>
+      <span>cache maksimal <span id="footer-cache">200 MiB</span> · tanpa file data di disk · video di S3 privat</span>
     </footer>
   </div>
 
@@ -297,6 +310,7 @@
     // tidak boleh menyela playback yang sudah jalan.
     let everPlayed = false;
     let directPlay = false; // sedang memutar stream direct (/fetch), bukan torrent
+    let pendingIndex = null; // file yang menunggu upload S3 selesai
 
     // Magnet + episode terakhir bertahan setelah reload.
     const LAST_KEY = 'zanime.last';
@@ -495,16 +509,43 @@
       return body;
     }
 
+    // Tombol "Cache" per episode: mulai unggah ke S3 tanpa mengganti apa yang
+    // sedang diputar, supaya episode berikutnya siap instan.
+    const cacheLabel = (c) =>
+      c?.state === 'uploading' ? `${Math.round(c.progress || 0)}%`
+        : c?.state === 'ready' ? 'Siap'
+          : c?.state === 'error' ? 'Ulang' : 'Cache';
+
+    const cacheClass = (c) => {
+      const base = 'ml-2 h-7 shrink-0 rounded-md border px-2 text-[10px] font-medium tabular-nums transition ';
+      if (c?.state === 'ready') return base + 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300';
+      if (c?.state === 'error') return base + 'border-rose-400/30 bg-rose-400/10 text-rose-300';
+      if (c?.state === 'uploading') return base + 'border-border bg-zinc-800 text-zinc-300';
+      return base + 'border-border bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-white';
+    };
+
+    async function startCache(file) {
+      try {
+        const state = await api('/api/cache', { method: 'POST', body: JSON.stringify({ index: file.index }) });
+        applyState(state);
+      } catch (err) {
+        setStatus(err.message, 'error');
+      }
+    }
+
     function renderFiles(files, selected) {
       filesEl.replaceChildren();
       for (const file of files) {
         const active = file.index === selected;
-        const btn = document.createElement('button');
-        btn.type = 'button';
+        // div + role=button supaya tombol Cache bisa bersarang (button di
+        // dalam button tidak valid).
+        const btn = document.createElement('div');
         btn.dataset.index = String(file.index);
+        btn.setAttribute('role', 'button');
+        btn.tabIndex = 0;
         btn.setAttribute('aria-current', active ? 'true' : 'false');
         btn.className = [
-          'file-row group flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition',
+          'file-row group flex w-full cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition focus-visible:outline focus-visible:outline-1 focus-visible:outline-zinc-500',
           active
             ? 'border-border bg-zinc-800/60'
             : 'border-transparent hover:border-border hover:bg-zinc-800/40',
@@ -545,7 +586,28 @@
         size.textContent = fmt(file.size);
 
         btn.append(lead, body, size);
-        btn.addEventListener('click', () => selectFile(file));
+        if (lastState?.s3?.enabled) {
+          const cache = document.createElement('button');
+          cache.type = 'button';
+          cache.dataset.cache = String(file.index);
+          cache.className = cacheClass(file.cache);
+          cache.textContent = cacheLabel(file.cache);
+          cache.title = 'Cache episode ini ke S3';
+          cache.addEventListener('click', (e) => {
+            e.stopPropagation();
+            startCache(file);
+          });
+          btn.appendChild(cache);
+        }
+        const pick = () => selectFile(file);
+        btn.addEventListener('click', pick);
+        btn.addEventListener('keydown', (e) => {
+          if (e.target !== btn) return; // tombol Cache punya aksi sendiri
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            pick();
+          }
+        });
         filesEl.appendChild(btn);
       }
     }
@@ -582,11 +644,71 @@
       }
       $('peers').textContent = String(state.peers || 0);
 
-      const dl = state.downloaded || 0;
       const total = state.length || 0;
+      // Unduhan kumulatif bisa melebihi ukuran torrent saat piece diambil ulang.
+      const dl = total ? Math.min(state.downloaded || 0, total) : (state.downloaded || 0);
       $('dl-text').textContent = total ? `${fmt(dl)} / ${fmt(total)}` : fmt(dl);
       $('dl-bar').style.width = total ? `${Math.min(100, (dl / total) * 100)}%` : '0%';
 
+      // S3: pemakaian bucket (batas default 4 GiB) dan progres upload file
+      // terpilih. Player baru mulai setelah upload selesai.
+      const s3 = state.s3;
+      $('s3-block').classList.toggle('hidden', !s3?.enabled);
+      if (s3?.enabled) {
+        $('s3-bucket').textContent = s3.bucket ? `· ${s3.bucket}/${s3.prefix}` : '';
+        const s3Used = s3.used || 0;
+        const s3Limit = s3.limit || 1;
+        $('s3-text').textContent = `${fmt(s3Used)} / ${fmt(s3Limit)}`;
+        $('s3-bar').style.width = `${Math.min(100, (s3Used / s3Limit) * 100)}%`;
+
+        const up = $('s3-upload');
+        const busy = Boolean(s3.uploading);
+        up.classList.toggle('hidden', !busy && !s3.error);
+        up.classList.toggle('flex', busy || Boolean(s3.error));
+        const upText = $('s3-upload-text');
+        upText.className = s3.error ? 'text-rose-300' : 'text-zinc-300';
+        if (busy) {
+          upText.textContent = `${fmt(s3.uploaded || 0)} / ${fmt(s3.size || 0)} · ${Math.round(s3.progress || 0)}%`;
+        } else if (s3.error) upText.textContent = 'gagal · fallback torrent';
+
+        // Pasang src baru setelah upload selesai, supaya player tidak
+        // menggantung menunggu request /stream yang panjang.
+        s3DirectPlayback = Boolean(s3.direct);
+        $('net-up-label').textContent = s3DirectPlayback ? 'tigris → client' : 'server → client';
+        if (s3DirectPlayback) $('net-up').textContent = '—';
+
+        if (pendingIndex !== null && pendingIndex === state.selected) {
+          const f = files.find((x) => x.index === pendingIndex);
+          if (s3.ready) {
+            pendingIndex = null;
+            if (f) {
+              everPlayed = true;
+              player.src = f.url;
+              setStatus(`Siap memutar ${f.name} dari S3.`, 'ok');
+            }
+          } else if (s3.error) {
+            pendingIndex = null;
+            if (f) {
+              player.src = f.url;
+              setStatus(`S3 gagal: ${s3.error}. Memutar dari torrent.`, 'error');
+            }
+          }
+        }
+      }
+
+      // Status cache tiap episode (tombol di baris file), diperbarui tanpa
+      // membangun ulang seluruh daftar.
+      for (const file of files) {
+        const el = filesEl.querySelector(`[data-cache="${file.index}"]`);
+        if (!el) continue;
+        const st = file.cache?.state;
+        el.textContent = cacheLabel(file.cache);
+        el.className = cacheClass(file.cache);
+        el.disabled = st === 'ready' || st === 'uploading';
+        el.title = st === 'ready' ? 'Sudah ada di S3'
+          : st === 'uploading' ? 'Sedang di-cache ke S3'
+            : st === 'error' ? 'Gagal, klik untuk coba lagi' : 'Cache episode ini ke S3';
+      }
       // Remux siap untuk episode terpilih dan player belum sempat memutar:
       // pindah ke versi berindex supaya seek lancar tanpa pindai ulang.
       if (state.remux?.ready && !everPlayed && state.remux.index === state.selected
@@ -605,6 +727,9 @@
      * Dua arah: peer → server (unduhan dari swarm) dan server → client
      * (byte yang keluar ke player). Panah menyala saat ada aliran. */
     let lastNet = null;
+    // Mode langsung: byte video datang dari Tigris, jadi arus server → client
+    // tidak dihitung (bukan 0 karena macet).
+    let s3DirectPlayback = false;
     function applyNet(net) {
       const now = performance.now();
       const from = net?.from_peers || 0;
@@ -616,9 +741,14 @@
           const up = Math.max(0, to - lastNet.to) / dt * 8 / 1e6;
           const fmtMbps = (v) => (v >= 10 ? v.toFixed(1) : v.toFixed(2));
           $('net-down').textContent = `${fmtMbps(down)} Mbps`;
-          $('net-up').textContent = `${fmtMbps(up)} Mbps`;
+          if (s3DirectPlayback) {
+            $('net-up').textContent = '—';
+            $('net-up-ic').classList.remove('on');
+          } else {
+            $('net-up').textContent = `${fmtMbps(up)} Mbps`;
+            $('net-up-ic').classList.toggle('on', up >= 0.05);
+          }
           $('net-down-ic').classList.toggle('on', down >= 0.05);
-          $('net-up-ic').classList.toggle('on', up >= 0.05);
         }
       }
       lastNet = { t: now, from, to };
@@ -635,6 +765,13 @@
       npTh.classList.toggle('hidden', !th);
       setSq($('np-title'), file.name);
       setSq($('np-sub'), `${fmt(file.size)} · ${file.path || file.name}`);
+      // S3 aktif: unggah dulu, src dipasang applyState setelah siap. Kalau
+      // objeknya sudah ada (upload selesai duluan), langsung putar.
+      if (lastState?.s3?.enabled && !(lastState.s3.ready && lastState.selected === file.index)) {
+        pendingIndex = file.index;
+        setStatus(`Menyiapkan ${file.name} di S3…`, 'info');
+        return;
+      }
       player.src = file.url;
     }
 

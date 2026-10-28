@@ -16,6 +16,7 @@ Player memakai [MoviPlayer](https://moviplayer.com/) dari CDN (`<movi-player>`),
 main.go                        gin server, API magnet/file, embed web/
 web/index.html                 UI Tailwind + <movi-player>, di-embed lewat go:embed
 internal/config/               loader .env (PORT, MAX_MEMORY_MB)
+internal/s3store/              upload streaming ke S3 privat + batas 4 GiB
 internal/stream/               handler HTTP Range/seek (dipakai main + test)
 internal/stream/*_test.go      unit test HEAD/Range/seek/416
 internal/memstorage/           storage torrent RAM-only, LRU
@@ -57,6 +58,10 @@ MAX_MEMORY_MB=200
 
 - `PORT` — port HTTP di `127.0.0.1`.
 - `MAX_MEMORY_MB` — batas RAM total: cache piece + buffer remux (MiB).
+- `S3_BUCKET` — bucket privat (Tigris). Kosong = putar langsung dari torrent.
+- `S3_PREFIX` — folder di bucket, default `zanime`.
+- `S3_LIMIT_MB` — batas total folder itu, default `4096` (4 GiB).
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL_S3`, `AWS_REGION` — kredensial S3.
 
 Flag CLI menimpa nilai `.env`:
 
@@ -65,6 +70,36 @@ go run .                       # magnet contoh, 127.0.0.1:8080, cache dari .env
 go run . -magnet ''            # mulai tanpa torrent, isi magnet dari UI
 go run . -addr 0.0.0.0:8080 -cache-mb 128
 ```
+
+## S3 (opsional)
+
+Dengan `S3_BUCKET` terisi, episode yang dipilih diunggah **penuh** ke bucket
+private lebih dulu (`<prefix>/<infohash>/<nama file>`, streaming dari torrent,
+tanpa file lokal), lalu `/stream` menjawab `302` ke presigned URL S3 sehingga
+byte video mengalir **langsung Tigris → browser**, bukan lewat server. `Range`
+diteruskan ke S3, jadi seek tetap jalan. UI menampilkan pemakaian folder dan
+progres upload; selama upload berjalan player belum diarahkan ke `/stream`.
+
+Akses langsung dari browser butuh aturan CORS di bucket (GET/HEAD, header `*`,
+expose `Content-Length, Content-Range, Accept-Ranges, ETag`). Set `S3_DIRECT=0`
+untuk kembali mem-proxy lewat server bila CORS tidak bisa dipasang.
+
+- Objek yang sudah ada dengan ukuran sama dilewati (`HeadObject`), jadi
+  me-restart server tidak mengunggah ulang episode yang sama.
+- Pemakaian folder dibaca lewat `ListObjectsV2` (cache 15 dtk). Saat penuh,
+  objek paling lama (`LastModified` tertua) dihapus sampai muat; file yang
+  lebih besar dari batas ditolak dan diputar dari torrent.
+- Remux `-c copy` dilewati karena S3 sudah melayani Range.
+- Upload berjalan sambil torrent diunduh (part 8 MiB), bukan menunggu file utuh.
+- Tiap browser ditandai cookie HttpOnly `zanime_uid`; satu user maksimal 2
+  upload berjalan, permintaan berikutnya membatalkan yang tertua miliknya.
+- Tombol **Cache** di tiap episode (`POST /api/cache`) mengunggah di latar;
+  badge baris menunjukkan persen, `Siap`, atau `Ulang`. Episode yang sudah
+  `Siap` langsung diputar saat dipilih.
+- Setelah restart, episode yang sudah ada di S3 ditandai `Siap` lewat
+  `HeadObject` (satu probe per magnet), jadi tidak diunggah ulang.
+- Kalau tidak ada tab `/api/ws` terhubung selama 16 menit, upload yang jalan
+  dibatalkan.
 
 ## UI
 
@@ -92,10 +127,12 @@ Tombol **Batalkan** menghentikan job magnet di server (`POST /api/cancel`) tanpa
 | `POST /api/magnet` | `{"magnet":"...","fileIndex":N}` — ganti torrent aktif, tunggu metadata; `fileIndex` opsional (urutan file di torrent) |
 | `POST /api/cancel` | batalkan pemuatan magnet yang sedang jalan |
 | `POST /api/select` | `{"index":N}` — pilih file video |
+| `POST /api/cache` | `{"index":N}` — cache episode ke S3 tanpa mengganti yang diputar |
 | `GET /stream` | file terpilih; dukung `HEAD` dan `Range` |
 | `GET /stream/:index/:name` | file tertentu; `name` dipakai untuk MIME/ekstensi |
 | `GET/HEAD /remux/:index/:name` | hasil mux ffmpeg (`-c copy`) dari RAM; `Range` didukung; 404 bila bukan file itu, 503 selama masih diproses |
 | `GET/HEAD /fetch?url=...` | proxy streaming media direct (Range diteruskan; RAM, tanpa disk) |
+| `GET/HEAD /stream...` | `302` ke presigned S3 setelah upload selesai (`S3_DIRECT=1`), atau proxy Range dari S3 |
 | `GET /info` | ringkasan siap/nama/ukuran/cache (dipakai e2e) |
 | `GET /healthz` | `ok` |
 
