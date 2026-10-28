@@ -2,11 +2,11 @@
 //! punya" lewat librqbit yang dipatch, jadi bisa diunduh ulang saat di-seek.
 use anyhow::{Context, Result};
 use librqbit::storage::{BoxStorageFactory, StorageFactory, StorageFactoryExt, TorrentStorage};
-use librqbit::{ManagedTorrentShared, TorrentMetadata};
+use librqbit::{ManagedTorrent, ManagedTorrentShared, TorrentMetadata};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -61,6 +61,9 @@ pub struct MemStorageFactory {
     pub limit: Arc<AtomicU64>,
     pub evicted: UnboundedSender<u32>,
     pub stats: Arc<Stats>,
+    /// Diisi handle torrent setelah add_torrent selesai. Dipakai pread untuk
+    /// meminta unduhan ulang piece yang hilang dari RAM (want_piece).
+    pub torrent: Arc<OnceLock<Arc<ManagedTorrent>>>,
 }
 
 impl Clone for MemStorageFactory {
@@ -69,6 +72,7 @@ impl Clone for MemStorageFactory {
             limit: self.limit.clone(),
             evicted: self.evicted.clone(),
             stats: self.stats.clone(),
+            torrent: self.torrent.clone(),
         }
     }
 }
@@ -91,6 +95,7 @@ impl StorageFactory for MemStorageFactory {
             self.limit.clone(),
             self.evicted.clone(),
             self.stats.clone(),
+            self.torrent.clone(),
         ))
     }
 
@@ -112,6 +117,9 @@ struct Inner {
     limit: Arc<AtomicU64>,
     evicted: UnboundedSender<u32>,
     stats: Arc<Stats>,
+    /// Handle torrent (diisi belakangan oleh pemiliknya) supaya pread bisa
+    /// meminta unduhan ulang piece yang hilang dari RAM.
+    torrent: Arc<OnceLock<Arc<ManagedTorrent>>>,
     state: Mutex<State>,
 }
 
@@ -166,6 +174,7 @@ impl MemStorage {
         limit: Arc<AtomicU64>,
         evicted: UnboundedSender<u32>,
         stats: Arc<Stats>,
+        torrent: Arc<OnceLock<Arc<ManagedTorrent>>>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -174,14 +183,12 @@ impl MemStorage {
                 limit,
                 evicted,
                 stats,
+                torrent,
                 state: Mutex::new(State::default()),
             }),
         }
     }
 }
-
-/// Pesan error untuk piece yang hilang dari RAM (dipakai untuk klasifikasi).
-const ERR_EVICTED: &str = "sudah dibuang dari RAM";
 
 impl TorrentStorage for MemStorage {
     fn init(&mut self, _: &ManagedTorrentShared, _: &TorrentMetadata) -> Result<()> {
@@ -190,20 +197,27 @@ impl TorrentStorage for MemStorage {
 
     fn pread_exact(&self, file_id: usize, offset: u64, buf: &mut [u8]) -> Result<()> {
         let abs = self.inner.at(file_id, offset)?;
-        // Piece bisa baru saja dibuang sementara evictor belum sempat
-        // melapor ke librqbit (forget_piece). Setelah laporan itu tiba,
-        // Filestream akan mengunduh ulang — jadi tunggu, jangan langsung
-        // gagalkan bacaan.
-        for attempt in 0..40 {
+        // Piece bisa hilang dari RAM (baru dibuang, forget_piece belum tiba,
+        // atau tulis ulang belum selesai). FileStream sudah lewat cek "have"
+        // sebelum memanggil pread, jadi kalau kita hanya menunggu, tidak ada
+        // yang memicu unduhan ulang dan bacaan menggantung sampai mati.
+        // Solusi: minta sendiri piece itu ke swarm (want_piece), lalu tunggu
+        // tulisan ulangnya masuk ke RAM.
+        for attempt in 0..400 {
             let mut st = self.inner.state.lock().unwrap();
             st.tick += 1;
             match Self::pread_once(&self.inner, &mut st, abs, buf) {
                 Ok(()) => return Ok(()),
-                Err(error) if attempt < 39 && error.to_string().contains(ERR_EVICTED) => {
+                Err(pid) => {
                     drop(st);
+                    if let Some(torrent) = self.inner.torrent.get() {
+                        let _ = torrent.want_piece(pid);
+                    }
+                    if attempt == 399 {
+                        anyhow::bail!("piece {pid} tidak kunjung diunduh ulang");
+                    }
                     std::thread::sleep(Duration::from_millis(50));
                 }
-                Err(error) => return Err(error),
             }
         }
         unreachable!("loop selalu return")
@@ -257,19 +271,21 @@ impl TorrentStorage for MemStorage {
 }
 
 impl MemStorage {
-    fn pread_once(inner: &Inner, st: &mut State, mut abs: u64, buf: &mut [u8]) -> Result<()> {
+    /// Baca `buf` mulai offset absolut. `Err(pid)` = piece `pid` tidak ada
+    /// utuh di RAM (belum diunduh / setengah tulis / sudah dibuang).
+    fn pread_once(inner: &Inner, st: &mut State, mut abs: u64, buf: &mut [u8]) -> Result<(), u32> {
         let mut done = 0;
         while done < buf.len() {
             let pid = (abs / inner.piece_len) as u32;
             let off = (abs % inner.piece_len) as usize;
             let tick = st.tick;
             let Some((piece, used)) = st.pieces.get_mut(&pid) else {
-                anyhow::bail!("piece {pid} {ERR_EVICTED}");
+                return Err(pid);
             };
             *used = tick;
             let n = (buf.len() - done).min(piece.len().saturating_sub(off));
             if n == 0 {
-                anyhow::bail!("piece {pid} belum lengkap");
+                return Err(pid);
             }
             buf[done..done + n].copy_from_slice(&piece[off..off + n]);
             done += n;
@@ -298,6 +314,7 @@ mod tests {
             Arc::new(AtomicU64::new(limit)),
             tx,
             stats.clone(),
+            Arc::new(OnceLock::new()),
         );
         (storage, rx, stats)
     }

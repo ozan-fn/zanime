@@ -16,8 +16,10 @@ RAM sehingga player dapat versi berindex — lihat [Remux](#remux).
 
 - **Rust** + **axum** (HTTP, WebSocket) + **tokio**.
 - **librqbit** untuk BitTorrent. Salinan di `vendor/librqbit` dipatch dengan
-  `forget_piece`: piece yang dibuang dari RAM ditandai "belum punya" sehingga
-  bisa diunduh ulang saat player seek kembali.
+  `forget_piece` + `want_piece`: piece yang dibuang dari RAM ditandai "belum
+  punya" dan bacaan yang menemukan piece hilang langsung memintanya ke swarm
+  lagi, jadi reload halaman tidak pernah menggantung menunggu piece yang
+  sebenarnya sudah tidak ada.
 - Storage piece: `src/memstore.rs` (LRU, batas `MAX_MEMORY_MB`).
 - Remux opsional: ffmpeg sistem / statis di `./tmp/ffmpeg` (`src/remux.rs`).
 
@@ -32,6 +34,19 @@ cargo run --release -- --addr 0.0.0.0:8080 --cache-mb 200 --magnet "magnet:?xt=.
 
 Buka `http://localhost:8080`, tempel magnet, lalu klik salah satu file video.
 `/api/ws` mendorong status tiap 0,7 detik; UI tidak memakai polling.
+
+Pencarian peer: session listen di port TCP 4240–4260 (peer masuk) dengan
+UPnP otomatis, DHT diingat ke `./tmp/dht.json` (bukan media — restart tidak
+bootstrap dari nol), dan ada tracker umum cadangan untuk magnet yang sedikit
+tracker. Waktu tunggu metadata magnet maksimal 90 detik. Port peer diprint
+saat startup; kalau UPnP ditolak router, teruskan port itu manual.
+
+Checklist performa torrent: koneksi masuk (port+UPnP), DHT hangat, tracker
+cadangan, PEX (aktif otomatis di librqbit), unggah aktif (tit-for-tat, tidak
+dimatikan), rate limit tak terbatas, timeout peer default 10 dtk. Yang tidak
+didukung librqbit (limitasi library, bukan konfigurasi): uTP dan enkripsi MSE
+— semua koneksi TCP polos. Media tetap nol disk; `./tmp` hanya berisi binary
+ffmpeg opsional dan cache routing DHT.
 
 ## Konfigurasi
 

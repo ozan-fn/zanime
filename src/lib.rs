@@ -18,6 +18,7 @@ use axum::routing::{get, post};
 use axum::{Router, serve};
 use bytes::{Bytes, BytesMut};
 use librqbit::api::TorrentIdOrHash;
+use librqbit::dht::PersistentDhtConfig;
 use librqbit::storage::StorageFactoryExt;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session, SessionOptions,
@@ -29,8 +30,8 @@ use serde_json::{Value, json};
 use std::io::SeekFrom;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::net::TcpListener;
@@ -43,7 +44,20 @@ use tokio::time::timeout;
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const MIB: u64 = 1024 * 1024;
-const METADATA_TIMEOUT: Duration = Duration::from_secs(45);
+const METADATA_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Tracker umum sebagai cadangan: dipakai semua torrent selain tracker yang
+/// dibawa magnet, supaya pencarian peer tidak bergantung pada DHT dingin.
+const DEFAULT_TRACKERS: &[&str] = &[
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://tracker.openbittorrent.com:6969/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://opentracker.io:6969/announce",
+    "udp://tracker.tiny-vps.com:6969/announce",
+    "http://tracker.opentrackr.org:1337/announce",
+];
 const WS_DELAY: Duration = Duration::from_millis(700);
 /// Berapa banyak dari ekor file yang dibaca lebih dulu: index container (MKV
 /// Cues, MP4 moov non-faststart) ada di sana, dan tanpa itu player hanya bisa
@@ -343,10 +357,14 @@ async fn load_torrent(app: Arc<App>, job: Arc<LoadJob>, magnet: String) -> Resul
     }
 
     let (evict_tx, evict_rx) = mpsc::unbounded_channel::<u32>();
+    // Slot handle torrent: diisi setelah add_torrent, dipakai storage untuk
+    // meminta unduhan ulang piece yang hilang dari RAM (want_piece).
+    let torrent_slot: Arc<OnceLock<Arc<ManagedTorrent>>> = Arc::new(OnceLock::new());
     let factory = MemStorageFactory {
         limit: app.mem_limit.clone(),
         evicted: evict_tx,
         stats: app.stats.clone(),
+        torrent: torrent_slot.clone(),
     };
     let opts = || AddTorrentOptions {
         paused: false,
@@ -382,6 +400,7 @@ async fn load_torrent(app: Arc<App>, job: Arc<LoadJob>, magnet: String) -> Resul
         }
         AddTorrentResponse::ListOnly(_) => return Err("mode list-only tidak didukung".into()),
     };
+    let _ = torrent_slot.set(handle.clone());
 
     let deadline = Instant::now() + METADATA_TIMEOUT;
     while handle.metadata.load().is_none() {
@@ -1210,13 +1229,30 @@ pub async fn run() -> Result<()> {
     let session = Session::new_with_opts(
         PathBuf::from("./downloads"),
         SessionOptions {
-            disable_dht_persistence: true,
+            // Terima koneksi peer masuk. Tanpa ini librqbit tidak listen
+            // sama sekali sehingga semua koneksi harus keluar sendiri —
+            // itulah sebabnya mencari peer lama sekali.
+            listen_port_range: Some(4240..4260),
+            // Coba buka port di router (UPnP) agar peer bisa masuk.
+            enable_upnp_port_forwarding: true,
+            // Tabel routing DHT diingat ke ./tmp (bukan media): restart
+            // tidak lagi bootstrap DHT dari nol, peer cepat ketemu lagi.
+            dht_config: Some(PersistentDhtConfig {
+                config_filename: Some(PathBuf::from("./tmp/dht.json")),
+                ..Default::default()
+            }),
+            // Cadangan tracker umum bila magnet bawaannya sedikit tracker.
+            trackers: DEFAULT_TRACKERS
+                .iter()
+                .filter_map(|t| url::Url::parse(t).ok())
+                .collect(),
             ..Default::default()
         },
     )
     .await
     .context("gagal membuat session torrent")?;
 
+    let peer_port = session.tcp_listen_port();
     let app = Arc::new(App {
         session,
         cache_mb: config.cache_mb,
@@ -1236,7 +1272,7 @@ pub async fn run() -> Result<()> {
         listener.local_addr().context("alamat listener")?.port(),
         Ordering::SeqCst,
     );
-    log::listening(&browser_url(&config.addr), config.cache_mb);
+    log::listening(&browser_url(&config.addr), config.cache_mb, peer_port);
 
     if !config.magnet.is_empty() {
         match magnet_hash(&config.magnet) {
@@ -1270,8 +1306,14 @@ mod log {
         println!("torrent siap: {name} ({files} file video)");
     }
 
-    pub fn listening(url: &str, cache_mb: u64) {
+    pub fn listening(url: &str, cache_mb: u64, peer_port: Option<u16>) {
         println!("listening on {url} (memory cache {cache_mb} MiB, zero disk)");
+        match peer_port {
+            Some(port) => println!(
+                "port peer: {port} — kalau UPnP gagal, teruskan port ini di router agar peer bisa masuk"
+            ),
+            None => println!("port peer: tidak ada (koneksi hanya keluar)"),
+        }
     }
 }
 
@@ -1540,6 +1582,7 @@ mod stream_tests {
         )
         .await
         .expect("session pengunduh");
+        let torrent_slot: Arc<OnceLock<Arc<ManagedTorrent>>> = Arc::new(OnceLock::new());
         let handle = leech_session
             .add_torrent(
                 AddTorrent::from_bytes(bytes),
@@ -1555,6 +1598,7 @@ mod stream_tests {
                             limit: Arc::new(AtomicU64::new(2 * PIECE as u64)),
                             evicted: evict_tx,
                             stats: stats.clone(),
+                            torrent: torrent_slot.clone(),
                         }
                         .boxed(),
                     ),
@@ -1565,6 +1609,7 @@ mod stream_tests {
             .expect("tambah torrent pengunduh")
             .into_handle()
             .expect("handle pengunduh");
+        let _ = torrent_slot.set(handle.clone());
         handle
             .wait_until_initialized()
             .await

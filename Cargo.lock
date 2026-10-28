@@ -3407,6 +3407,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower",
+ "url",
  "zip",
 ]
 
