@@ -60,48 +60,28 @@ func (c *Client) Pieces() int {
 	return c.cache.lru.Len()
 }
 
-// Reserve takes n bytes out of the same budget the piece cache uses, dropping
-// least recently used pieces to make room. It reports false when the budget
-// cannot fit n bytes even after eviction, so callers can cancel instead of
-// going over the memory limit.
-func (c *Client) Reserve(n int64) bool {
-	if n <= 0 {
-		return true
-	}
-	c.cache.mu.Lock()
-	evicted := c.cache.makeRoom(n)
-	ok := c.cache.used+n <= c.cache.limit
-	if ok {
-		c.cache.used += n
-	}
-	c.cache.mu.Unlock()
-	c.cache.report(evicted)
-	return ok
-}
-
-// Release gives n bytes reserved with Reserve back to the budget.
-func (c *Client) Release(n int64) {
-	if n <= 0 {
-		return
-	}
-	c.cache.mu.Lock()
-	c.cache.used -= n
-	if c.cache.used < 0 {
-		c.cache.used = 0
-	}
-	c.cache.mu.Unlock()
-}
-
-// Drop frees pieces from..to of a torrent without waiting for the budget to
-// run out, so bytes that are already safe elsewhere (e.g. uploaded to S3) stop
-// occupying RAM. Callers must resync piece completion afterwards.
-func (c *Client) Drop(hash metainfo.Hash, from, to int) {
+// PiecesOf returns how many pieces of one torrent sit in RAM, so the status
+// panel does not count leftovers from a torrent that was already replaced.
+func (c *Client) PiecesOf(hash metainfo.Hash) int {
 	c.cache.mu.Lock()
 	defer c.cache.mu.Unlock()
-	for i := from; i <= to; i++ {
-		k := key{hash: hash, index: i}
-		el := c.cache.entries[k]
-		if el == nil {
+	n := 0
+	for k := range c.cache.entries {
+		if k.hash == hash {
+			n++
+		}
+	}
+	return n
+}
+
+// DropAll frees every piece of one torrent, e.g. when the user switches to a
+// new magnet: the old pieces would otherwise keep occupying the budget until
+// LRU happened to evict them.
+func (c *Client) DropAll(hash metainfo.Hash) {
+	c.cache.mu.Lock()
+	defer c.cache.mu.Unlock()
+	for k, el := range c.cache.entries {
+		if k.hash != hash {
 			continue
 		}
 		c.cache.lru.Remove(el)
@@ -164,7 +144,11 @@ func (c *cache) read(k key, b []byte, off int64) (int, error) {
 	if el == nil {
 		return 0, io.EOF
 	}
-	c.lru.MoveToFront(el)
+	// Pembacaan berurutan menyentuh piece yang sama berkali-kali; sentuhan
+	// pertama sudah cukup untuk LRU, sisanya hanya menambah kerja di bawah lock.
+	if c.lru.Front() != el {
+		c.lru.MoveToFront(el)
+	}
 	e := el.Value.(*entry)
 	if off >= int64(len(e.data)) {
 		return 0, io.EOF
@@ -190,8 +174,9 @@ func (c *cache) write(k key, length int64, b []byte, off int64) (int, error) {
 		el = c.lru.PushFront(e)
 		c.entries[k] = el
 		c.used += length
+	} else if c.lru.Front() != el {
+		c.lru.MoveToFront(el)
 	}
-	c.lru.MoveToFront(el)
 	e := el.Value.(*entry)
 	n := copy(e.data[off:], b)
 	e.complete = false

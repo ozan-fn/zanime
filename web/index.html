@@ -30,7 +30,6 @@
   <style>
     html, body { height: 100%; }
     body { background: #09090b; }
-    /* Pola "Full Width Responsive" dari docs MoviPlayer. */
     movi-player { width: 100%; aspect-ratio: 16 / 9; background: #000; }
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
@@ -81,7 +80,7 @@
         </div>
         <div>
           <h1 class="text-lg font-semibold tracking-tight text-white">kafuu</h1>
-          <p class="text-xs text-zinc-500">torrent → S3 → player · RAM-only cache</p>
+          <p class="text-xs text-zinc-500">Streaming torrent lewat HLS</p>
         </div>
       </div>
       <div class="flex items-center gap-2">
@@ -90,12 +89,11 @@
           <i data-lucide="search" class="h-3.5 w-3.5"></i>
           Cari
         </button>
-        <span class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[11px] text-zinc-400">
-          <i data-lucide="hard-drive" class="h-3 w-3"></i> zero disk
-        </span>
-        <span class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[11px] text-zinc-400">
-          <i data-lucide="play-square" class="h-3 w-3"></i> movi-player
-        </span>
+        <button id="transcode-btn" type="button" aria-pressed="false"
+          class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[11px] text-zinc-400 transition hover:bg-zinc-800 hover:text-white">
+          <i data-lucide="cpu" class="h-3 w-3"></i>
+          <span>transcode: off</span>
+        </button>
       </div>
     </header>
 
@@ -163,7 +161,7 @@
                   <span id="tor-pieces" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
                 </div>
                 <div class="flex items-baseline justify-between gap-3 text-zinc-600">
-                  <span class="shrink-0">Di RAM</span>
+                  <span class="shrink-0">Byte lengkap</span>
                   <span id="tor-ram" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
                 </div>
                 <div class="flex items-baseline justify-between gap-3 text-zinc-600">
@@ -212,8 +210,7 @@
             </div>
 
             <div class="border-t border-border/60 pt-3">
-              <div class="flex items-center justify-between text-zinc-500">
-                <span>Terunduh dari torrent</span>
+              <div class="flex items-center justify-between text-zinc-500">                  <span>Terunduh (semua file)</span>
                 <span id="dl-text" class="text-zinc-300">0 B</span>
               </div>
               <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
@@ -241,54 +238,15 @@
               </div>
             </div>
 
-            <div id="s3-block" class="hidden border-t border-border/60 pt-3">
-              <div class="flex items-center justify-between gap-2 text-zinc-500">
-                <span class="min-w-0 truncate">Download tigris <span id="s3-bucket" class="text-zinc-600"></span></span>
-                <span id="s3-text" class="shrink-0 text-zinc-300">0 B / 4 GiB</span>
-              </div>
-              <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
-                <div id="s3-bar" class="h-full w-0 rounded-full bg-emerald-400/80 transition-[width] duration-500"></div>
-              </div>
-              <div id="s3-upload" class="mt-1.5 hidden items-center justify-between text-zinc-500">
-                <span>Upload ke tigris</span>
-                <span id="s3-upload-text" class="text-zinc-300">0%</span>
-              </div>
-              <div id="s3-upload-bar-wrap" class="mt-1 hidden h-1 overflow-hidden rounded-full bg-white/[0.06]">
-                <div id="s3-upload-bar" class="h-full w-0 rounded-full bg-emerald-300/70 transition-[width] duration-500"></div>
-              </div>
-              <div class="mt-1 space-y-1">
-                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
-                  <span>Kecepatan upload</span>
-                  <span id="s3-speed" class="tabular-nums text-zinc-400">—</span>
-                </div>
-                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
-                  <span>Job upload</span>
-                  <span id="s3-jobs" class="tabular-nums text-zinc-400">—</span>
-                </div>
-                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
-                  <span>Ukuran part</span>
-                  <span id="s3-part" class="tabular-nums text-zinc-400">—</span>
-                </div>
-                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
-                  <span>Auto-abort tanpa tab</span>
-                  <span id="s3-abort" class="tabular-nums text-zinc-400">—</span>
-                </div>
-              </div>
-            </div>
-
             <div class="border-t border-border/60 pt-3">
               <div class="flex items-center justify-between">
                 <span class="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Server</span>
-                <span id="srv-remux" class="text-[10px] text-zinc-500">—</span>
+                <span id="srv-hls" class="text-[10px] text-zinc-500">—</span>
               </div>
               <div class="mt-1 space-y-1">
                 <div class="flex items-baseline justify-between gap-3 text-zinc-600">
                   <span>User / tab</span>
                   <span id="srv-users" class="tabular-nums text-zinc-400">—</span>
-                </div>
-                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
-                  <span>Upload aktif</span>
-                  <span id="srv-uploads" class="tabular-nums text-zinc-400">—</span>
                 </div>
                 <div class="flex items-baseline justify-between gap-3 text-zinc-600">
                   <span>Uptime</span>
@@ -302,25 +260,18 @@
             </div>
           </div>
         </div>
-        </div>
       </section>
 
       <section class="flex min-w-0 flex-col gap-3">
         <div class="overflow-hidden rounded-xl border border-border bg-black">
-          <!--
-            Semua atribut di bawah ada di docs MoviPlayer (MoviElement → Attributes).
-            persist: hanya yang terdaftar yang diingat (bahasa subtitle sengaja tidak
-            dimasukkan — ditangani script di bawah lewat API player, lihat applySubtitle).
-          -->
-          <!-- probesize/probeduration dibiarkan default: cap kecil membuat ffmpeg
-               tidak sempat membaca info durasi, jadi timeline tampil 00:00. -->
+          <!-- MoviPlayer memutar HLS (menu audio per track + subtitle). -->
 <movi-player id="player"
             controls autoplay playsinline thumb
             theme="dark"
             buffersize="64"
             bindav="false"
             subtitlepicker
-            persist="loop muted volume speed ambient stablevolume hdr aspect cropbars audiolang"
+            persist="loop muted volume speed ambient stablevolume hdr aspect audiolang subtitlelang"
             persistkey="zanime"></movi-player>
           <div id="now-playing" class="hidden items-center justify-between gap-3 border-t border-border bg-card px-4 py-3">
             <img id="np-thumb" alt="" class="hidden h-11 w-20 shrink-0 rounded-md border border-border bg-zinc-900 object-cover" />
@@ -337,7 +288,7 @@
           <svg viewBox="0 0 24 24" class="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-600" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path>
           </svg>
-          <span>MKV, HEVC, AV1, dan subtitle di dalam file diputar lokal oleh MoviPlayer (WebCodecs + FFmpeg WASM). Server hanya mengirim byte lewat Range request; tidak ada transcoding.</span>
+          <span>Semua video diproses lewat ffmpeg dan dikirim ke player sebagai HLS. Nyalakan <strong class="font-medium text-zinc-300">transcode</strong> kalau file tidak bisa diputar langsung di browser.</span>
         </div>
       </section>
     </main>
@@ -388,16 +339,15 @@
   </dialog>
 
   <footer class="mt-6 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] pt-4 text-[11px] text-zinc-600">
-      <span>kafuu · torrent streaming · Gin + anacrolix/torrent</span>
-      <span>cache maksimal <span id="footer-cache">200 MiB</span> · tanpa file data di disk · video di S3 privat</span>
+      <span>kafuu · streaming torrent</span>
+      <span>cache <span id="footer-cache">200 MiB</span> · data torrent tidak ditulis ke disk</span>
     </footer>
   </div>
 
-  <!-- CDN module build sesuai docs MoviPlayer (v0.4.1). -->
+  <!-- MoviPlayer: player HLS/MKV/HEVC + menu audio & subtitle. -->
   <script type="module" src="https://cdn.jsdelivr.net/npm/movi-player@0.4.1/dist/element.js"></script>
   <script>
     const $ = (id) => document.getElementById(id);
-    const player = $('player');
     const form = $('magnet-form');
     const magnetInput = $('magnet');
     const loadBtn = $('load-btn');
@@ -406,13 +356,31 @@
     const filesEl = $('files');
     const statsCard = $('stats-card');
     const nowPlaying = $('now-playing');
+    const player = $('player');
 
     let lastFileKey = '';
-    // true begitu player benar-benar memutar: remux yang siap belakangan
-    // tidak boleh menyela playback yang sudah jalan.
-    let everPlayed = false;
     let directPlay = false; // sedang memutar stream direct (/fetch), bukan torrent
-    let pendingIndex = null; // file yang menunggu upload S3 selesai
+    let wantedKey = '';     // url playlist HLS yang sedang dimuat
+
+    /* Semua playback lewat ffmpeg: server selalu menyiapkan HLS (copy atau
+     * transcode) dan <movi-player> yang memutarnya, termasuk menu audio dan
+     * subtitle. Playlist baru dimuat setelah server menandai sesinya siap
+     * (state.hls.ready); sebelum itu playlist belum ada. */
+    function loadHLS(index, playlist) {
+      const url = `/hls/${index}/${playlist || 'index.m3u8'}`;
+      if (wantedKey === url) return false;
+      wantedKey = url;
+      player.src = url;
+      player.load?.();
+      return true;
+    }
+
+    // Buang playback sekarang; applyState memuat ulang begitu sesi baru siap
+    // (dipakai saat ganti file dan saat toggle transcode).
+    function resetPlayer() {
+      wantedKey = '';
+      if (player.hasAttribute('src')) player.removeAttribute('src');
+    }
 
     // Magnet + episode terakhir bertahan setelah reload.
     const LAST_KEY = 'zanime.last';
@@ -471,92 +439,6 @@
       return null;
     }
 
-    /* ------------------------------------------------------------------ *
-     * Subtitle auto-load — hanya pakai API yang ada di docs:
-     *   - player.player.getSubtitleTracks()            (MoviPlayer, semua track)
-     *   - player.player.selectSubtitleTrack(id | null)
-     *   - event DOM loadstart / loadedmetadata / trackschange / loadeddata
-     *   - event inti subtitleTrackChange { lang, label } | { lang: null }
-     *
-     * Kenapa tidak getSubtitleLangs() di element: docs element mendefinisikannya
-     * sebagai daftar subtitle eksternal, jadi subtitle yang tertanam di MKV
-     * tidak muncul di sana dan auto-load tidak pernah menemukan apa-apa.
-     *
-     * Aturan:
-     *   - belum pernah memilih  -> Indonesia, lalu English, lalu track pertama
-     *   - terakhir memilih bahasa X -> track dengan bahasa/label sama dinyalakan
-     *   - terakhir mematikan subtitle -> tetap mati
-     *   - file tanpa bahasa pilihan itu -> jatuh ke urutan Indonesia > English > sisanya
-     * ------------------------------------------------------------------ */
-    const SUB_KEY = 'zanime.subtitle';
-    const readSubPref = () => {
-      try { return JSON.parse(localStorage.getItem(SUB_KEY)); } catch { return null; }
-    };
-    const writeSubPref = (pref) => {
-      try { localStorage.setItem(SUB_KEY, JSON.stringify(pref)); } catch { /* storage penuh/diblokir */ }
-    };
-
-    // Urutan prioritas: Indonesia -> English -> sisanya (track pertama).
-    // Dicocokkan ke kode bahasa track DAN labelnya.
-    const SUB_PRIORITY = [
-      { lang: /^(id|ind|in)([-_]|$)/i, label: /indonesia|bahasa/i },
-      { lang: /^(en|eng)([-_]|$)/i, label: /english|inggris/i },
-    ];
-    const pickByPriority = (tracks) => {
-      for (const rule of SUB_PRIORITY) {
-        const hit = tracks.find((t) => rule.lang.test(t.language || '') || rule.label.test(t.label || ''));
-        if (hit) return hit;
-      }
-      return tracks[0];
-    };
-
-    let subtitleDone = false;
-    let applyingSubtitle = false;
-
-    async function applySubtitle() {
-      if (subtitleDone) return;
-      const core = player.player;
-      const tracks = core?.getSubtitleTracks?.() || [];
-      if (!tracks.length) return; // belum siap / file tanpa subtitle — dicoba lagi di event berikutnya
-      subtitleDone = true;
-
-      const pref = readSubPref();
-      let target = null;
-      if (!pref) {
-        target = pickByPriority(tracks);
-      } else if (!pref.off) {
-        target = tracks.find((t) => pref.lang && pref.lang !== 'und' && t.language === pref.lang)
-          || tracks.find((t) => pref.label && t.label === pref.label)
-          || pickByPriority(tracks);
-      }
-
-      if (target) {
-        applyingSubtitle = true;
-        try {
-          await core.selectSubtitleTrack(target.id);
-        } catch (err) {
-          console.warn('Subtitle gagal dipilih:', err);
-        } finally {
-          applyingSubtitle = false;
-        }
-      }
-
-      // Dipasang setelah pemilihan awal, supaya hanya pilihan penonton
-      // (menu subtitle player) yang disimpan, bukan pemilihan otomatis di atas.
-      core.on('subtitleTrackChange', ({ lang, label }) => {
-        if (applyingSubtitle) return;
-        writeSubPref(lang ? { lang, label } : { off: true });
-      });
-    }
-
-    player.addEventListener('loadstart', () => { subtitleDone = false; });
-    player.addEventListener('playing', () => { everPlayed = true; });
-    for (const name of ['loadedmetadata', 'trackschange', 'loadeddata']) {
-      player.addEventListener(name, applySubtitle);
-    }
-
-    /* ------------------------------------------------------------------ */
-
     const fmt = (n) => {
       if (!n || n < 0) return '0 B';
       const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -571,7 +453,7 @@
       const s = Math.max(0, Math.round(sec));
       if (s < 60) return `${s} dtk`;
       const m = Math.floor(s / 60);
-      if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}d`;
+      if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`;
       return `${Math.floor(m / 60)}j ${String(m % 60).padStart(2, '0')}m`;
     };
 
@@ -617,30 +499,6 @@
       try { body = text ? JSON.parse(text) : {}; } catch { /* non-JSON error */ }
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       return body;
-    }
-
-    // Tombol "Cache" per episode: mulai unggah ke S3 tanpa mengganti apa yang
-    // sedang diputar, supaya episode berikutnya siap instan.
-    const cacheLabel = (c) =>
-      c?.state === 'uploading' ? `${Math.round(c.progress || 0)}%`
-        : c?.state === 'ready' ? 'Siap'
-          : c?.state === 'error' ? 'Ulang' : 'Cache';
-
-    const cacheClass = (c) => {
-      const base = 'ml-2 h-7 shrink-0 rounded-md border px-2 text-[10px] font-medium tabular-nums transition ';
-      if (c?.state === 'ready') return base + 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300';
-      if (c?.state === 'error') return base + 'border-rose-400/30 bg-rose-400/10 text-rose-300';
-      if (c?.state === 'uploading') return base + 'border-border bg-zinc-800 text-zinc-300';
-      return base + 'border-border bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-white';
-    };
-
-    async function startCache(file) {
-      try {
-        const state = await api('/api/cache', { method: 'POST', body: JSON.stringify({ index: file.index }) });
-        applyState(state);
-      } catch (err) {
-        setStatus(err.message, 'error');
-      }
     }
 
     function renderFiles(files, selected) {
@@ -696,23 +554,9 @@
         size.textContent = fmt(file.size);
 
         btn.append(lead, body, size);
-        if (lastState?.s3?.enabled) {
-          const cache = document.createElement('button');
-          cache.type = 'button';
-          cache.dataset.cache = String(file.index);
-          cache.className = cacheClass(file.cache);
-          cache.textContent = cacheLabel(file.cache);
-          cache.title = 'Cache episode ini ke S3';
-          cache.addEventListener('click', (e) => {
-            e.stopPropagation();
-            startCache(file);
-          });
-          btn.appendChild(cache);
-        }
         const pick = () => selectFile(file);
         btn.addEventListener('click', pick);
         btn.addEventListener('keydown', (e) => {
-          if (e.target !== btn) return; // tombol Cache punya aksi sendiri
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             pick();
@@ -745,6 +589,8 @@
         renderFiles(files, state.selected);
       }
 
+      // Detail torrent: progress piece, komposisi peer, dan byte terbuang.
+      const tor = state.torrent;
       if (state.cache) {
         const used = state.cache.used || 0;
         const limit = state.cache.limit || 1;
@@ -768,15 +614,13 @@
       }
       $('peers').textContent = String(state.peers || 0);
 
-      // Detail torrent: progress piece, komposisi peer, dan byte terbuang.
-      const tor = state.torrent;
       if (tor) {
         const hash = state.info_hash || '';
         $('tor-hash').textContent = hash ? `${hash.slice(0, 10)}…` : '—';
         $('tor-hash').title = hash;
         $('tor-pieces').textContent = `${tor.complete_pieces || 0}/${tor.pieces || 0} · ${fmt(tor.piece_length || 0)}/piece`;
         $('tor-ram').textContent = fmt(tor.ram_bytes || 0);
-        $('tor-partial').textContent = `${tor.partial_pieces || 0} parsial · ${tor.busy_pieces || 0} hash`;
+        $('tor-partial').textContent = `${tor.partial_pieces || 0} piece · ${tor.busy_pieces || 0} hash`;
         $('tor-peers').textContent = `${state.peers || 0} aktif · ${tor.total_peers || 0} total`;
         $('tor-seeders').textContent = String(tor.seeders || 0);
         $('tor-handshake').textContent = `${tor.half_open || 0} half-open · ${tor.pending_peers || 0} pending`;
@@ -793,107 +637,42 @@
       $('dl-text').textContent = total ? `${fmt(dl)} / ${fmt(total)}` : fmt(dl);
       $('dl-bar').style.width = total ? `${Math.min(100, (dl / total) * 100)}%` : '0%';
 
-      // S3: pemakaian bucket (batas default 4 GiB) dan progres upload file
-      // terpilih. Player baru mulai setelah upload selesai.
-      const s3 = state.s3;
-      $('s3-block').classList.toggle('hidden', !s3?.enabled);
-      if (s3?.enabled) {
-        $('s3-bucket').textContent = s3.bucket ? `· ${s3.bucket}/${s3.prefix}` : '';
-        const s3Used = s3.used || 0;
-        const s3Limit = s3.limit || 1;
-        $('s3-text').textContent = `${fmt(s3Used)} / ${fmt(s3Limit)}`;
-        $('s3-bar').style.width = `${Math.min(100, (s3Used / s3Limit) * 100)}%`;
 
-        const up = $('s3-upload');
-        const busy = Boolean(s3.uploading);
-        up.classList.toggle('hidden', !busy && !s3.error);
-        up.classList.toggle('flex', busy || Boolean(s3.error));
-        const upText = $('s3-upload-text');
-        upText.className = s3.error ? 'text-rose-300' : 'text-zinc-300';
-        const upBar = $('s3-upload-bar');
-        $('s3-upload-bar-wrap').classList.toggle('hidden', !busy);
-        if (busy) {
-          const pct = Math.min(100, s3.progress || 0);
-          upText.textContent = `${fmt(s3.uploaded || 0)} / ${fmt(s3.size || 0)} · ${Math.round(pct)}%`;
-          upBar.style.width = `${pct}%`;
-        } else if (s3.error) upText.textContent = 'gagal · fallback torrent';
+      // Toggle transcode mengikuti state server, jadi tab lain ikut benar.
+      const transcode = Boolean(state.transcode);
+      const tcBtn = $('transcode-btn');
+      tcBtn.setAttribute('aria-pressed', String(transcode));
+      tcBtn.className = transcode
+        ? 'inline-flex h-7 items-center gap-1.5 rounded-lg border border-emerald-400/40 bg-emerald-400/10 px-2.5 text-[11px] text-emerald-300 transition'
+        : 'inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[11px] text-zinc-400 transition hover:bg-zinc-800 hover:text-white';
+      tcBtn.querySelector('span').textContent = transcode ? 'transcode: on' : 'transcode: off';
 
-        // Kecepatan upload dari selisih `uploaded`; job berganti = reset.
-        const nowT = performance.now();
-        if (busy && lastUpload && nowT - lastUpload.t >= 500) {
-          const bytesPerSec = Math.max(0, (s3.uploaded || 0) - lastUpload.n) / ((nowT - lastUpload.t) / 1000);
-          $('s3-speed').textContent = `${(bytesPerSec / 1e6).toFixed(2)} MB/s`;
-          lastUpload = { n: s3.uploaded || 0, t: nowT };
-        } else if (!busy || !lastUpload) {
-          lastUpload = busy ? { n: s3.uploaded || 0, t: nowT } : null;
-          if (!busy) $('s3-speed').textContent = '—';
-        }
-        $('s3-jobs').textContent = `${s3.jobs || 0} aktif · ${s3.job_total || 0} total`;
-        $('s3-part').textContent = fmt(s3.part_size || 0);
-        $('s3-abort').textContent = s3.abort_in > 0 ? `sisa ${fmtDur(s3.abort_in)}` : 'segera';
-
-        // Pasang src baru setelah upload selesai, supaya player tidak
-        // menggantung menunggu request /stream yang panjang.
-        s3DirectPlayback = Boolean(s3.direct);
-        $('net-up-label').textContent = s3DirectPlayback ? 'tigris → client' : 'server → client';
-        if (s3DirectPlayback) $('net-up').textContent = '—';
-
-        if (pendingIndex !== null && pendingIndex === state.selected) {
-          const f = files.find((x) => x.index === pendingIndex);
-          if (s3.ready) {
-            pendingIndex = null;
-            if (f) {
-              everPlayed = true;
-              player.src = f.url;
-              setStatus(`Siap memutar ${f.name} dari S3.`, 'ok');
-            }
-          } else if (s3.error) {
-            pendingIndex = null;
-            if (f) {
-              player.src = f.url;
-              setStatus(`S3 gagal: ${s3.error}. Memutar dari torrent.`, 'error');
-            }
-          }
+      // Sesi HLS disiapkan sampai playlist VOD lengkap (ENDLIST), baru player
+      // memuatnya: durasi langsung ada dan seek ke mana saja bisa.
+      const hlsInfo = state.hls;
+      if (!directPlay && hlsInfo?.index === state.selected) {
+        const name = files.find((f) => f.index === state.selected)?.name || 'video';
+        if (hlsInfo.ready) {
+          if (loadHLS(state.selected, hlsInfo.playlist)) setStatus(`Memutar ${name}.`, 'ok');
+        } else if (hlsInfo.error) {
+          setStatus(`Gagal menyiapkan video: ${hlsInfo.error}`, 'error');
+        } else {
+          setStatus(`Menyiapkan ${name}${hlsInfo.progress ? ` · ${hlsInfo.progress}%` : ''}`, 'info');
         }
       }
 
-      // Status cache tiap episode (tombol di baris file), diperbarui tanpa
-      // membangun ulang seluruh daftar.
-      for (const file of files) {
-        const el = filesEl.querySelector(`[data-cache="${file.index}"]`);
-        if (!el) continue;
-        const st = file.cache?.state;
-        el.textContent = cacheLabel(file.cache);
-        el.className = cacheClass(file.cache);
-        el.disabled = st === 'ready' || st === 'uploading';
-        el.title = st === 'ready' ? 'Sudah ada di S3'
-          : st === 'uploading' ? 'Sedang di-cache ke S3'
-            : st === 'error' ? 'Gagal, klik untuk coba lagi' : 'Cache episode ini ke S3';
-      }
-      // Remux siap untuk episode terpilih dan player belum sempat memutar:
-      // pindah ke versi berindex supaya seek lancar tanpa pindai ulang.
-      if (state.remux?.ready && !everPlayed && state.remux.index === state.selected
-          && !String(player.src).includes('/remux/') && !directPlay) {
-        const f = files.find((x) => x.index === state.selected);
-        if (f) {
-          everPlayed = true;
-          player.src = `/remux/${f.index}/${encodeURIComponent(f.name)}`;
-        }
-      }
-
-      // Status proses server: user/tab, upload, uptime, memori, remux.
+      // Status proses server: user/tab, uptime, memori, sesi HLS.
       const users = state.users;
       if (users) {
         $('srv-users').textContent = `${users.active || 0} user · ${users.tabs || 0} tab`;
-        $('srv-uploads').textContent = `${users.uploads || 0}${users.upload_limit ? ` · maks ${users.upload_limit}/user` : ''}`;
       }
       const srv = state.server;
       if (srv) {
         $('srv-uptime').textContent = fmtDur(srv.uptime || 0);
         $('srv-heap').textContent = `${fmt(srv.heap || 0)} · ${srv.goroutines || 0}`;
-        $('srv-remux').textContent = state.remux
-          ? `remux #${state.remux.index} ${state.remux.ready ? 'siap' : 'proses'}`
-          : 'remux mati';
+        $('srv-hls').textContent = state.hls
+          ? `hls #${state.hls.index} ${state.hls.ready ? 'siap' : `${state.hls.progress || 0}%`}`
+          : 'hls mati';
       }
 
       applyNet(state.net);
@@ -904,10 +683,6 @@
      * (byte yang keluar ke player). Panah menyala saat ada aliran. */
     let lastNet = null;
     let lastEvict = null;
-    let lastUpload = null;
-    // Mode langsung: byte video datang dari Tigris, jadi arus server → client
-    // tidak dihitung (bukan 0 karena macet).
-    let s3DirectPlayback = false;
     function applyNet(net) {
       const now = performance.now();
       const from = net?.from_peers || 0;
@@ -919,38 +694,24 @@
           const up = Math.max(0, to - lastNet.to) / dt * 8 / 1e6;
           const fmtMbps = (v) => (v >= 10 ? v.toFixed(1) : v.toFixed(2));
           $('net-down').textContent = `${fmtMbps(down)} Mbps`;
-          if (s3DirectPlayback) {
-            $('net-up').textContent = '—';
-            $('net-up-ic').classList.remove('on');
-          } else {
-            $('net-up').textContent = `${fmtMbps(up)} Mbps`;
-            $('net-up-ic').classList.toggle('on', up >= 0.05);
-          }
+          $('net-up').textContent = `${fmtMbps(up)} Mbps`;
+          $('net-up-ic').classList.toggle('on', up >= 0.05);
           $('net-down-ic').classList.toggle('on', down >= 0.05);
         }
       }
       lastNet = { t: now, from, to };
     }
 
-    // Cukup set src; atribut `autoplay` di <movi-player> yang menjalankan playback.
+    // Src dipasang applyState begitu playlist HLS untuk file ini siap.
     function playFile(file) {
-      everPlayed = false;
       directPlay = false;
-      retriedSrc = '';
       const th = epThumbFor(file);
       const npTh = $('np-thumb');
       npTh.src = th || '';
       npTh.classList.toggle('hidden', !th);
       setSq($('np-title'), file.name);
       setSq($('np-sub'), `${fmt(file.size)} · ${file.path || file.name}`);
-      // S3 aktif: unggah dulu, src dipasang applyState setelah siap. Kalau
-      // objeknya sudah ada (upload selesai duluan), langsung putar.
-      if (lastState?.s3?.enabled && !(lastState.s3.ready && lastState.selected === file.index)) {
-        pendingIndex = file.index;
-        setStatus(`Menyiapkan ${file.name} di S3…`, 'info');
-        return;
-      }
-      player.src = file.url;
+      resetPlayer();
     }
 
     async function selectFile(file) {
@@ -976,23 +737,52 @@
       const el = $('status-source');
       if (!el || el.dataset.source === state) return;
       el.dataset.source = state;
-      el.textContent = state === 'ws' ? 'live' : 'menyambung…';
+      el.textContent = state === 'ws' ? 'live' : state === 'poll' ? 'polling 2 dtk' : 'menyambung…';
       el.className = state === 'ws'
         ? 'font-normal normal-case tracking-normal text-zinc-400'
         : 'font-normal normal-case tracking-normal text-amber-400';
+    }
+
+    // Cadangan kalau WebSocket diblokir reverse proxy (Upgrade dibuang): status
+    // tetap terisi lewat /api/state tiap 2 dtk. Polling berhenti sendiri begitu
+    // ada frame WS yang masuk.
+    let wsLive = false;
+    let pollTimer = null;
+    function startStatusPolling() {
+      if (pollTimer) return;
+      pollTimer = setInterval(async () => {
+        if (wsLive) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          return;
+        }
+        try {
+          applyState(await api('/api/state'));
+          markStatusSource('poll');
+        } catch (err) {
+          console.error('polling status gagal', err);
+        }
+      }, 2000);
     }
 
     function connectStatus() {
       const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
       const socket = new WebSocket(`${scheme}://${location.host}/api/ws`);
       socket.addEventListener('message', (event) => {
+        // Tandai live dulu: frame yang isinya rusak tidak boleh membuat panel
+        // terlihat "menyambung" terus.
+        wsLive = true;
+        markStatusSource('ws');
         try {
           applyState(JSON.parse(event.data));
-          markStatusSource('ws');
-        } catch { /* frame rusak, tunggu yang berikutnya */ }
+        } catch (err) {
+          console.error('frame status gagal diterapkan', err);
+        }
       });
       socket.addEventListener('close', () => {
+        wsLive = false;
         markStatusSource('reconnect');
+        startStatusPolling();
         setTimeout(connectStatus, 1000);
       });
       socket.addEventListener('error', () => socket.close());
@@ -1139,14 +929,15 @@
       hevc: false,
     };
 
+    // Katalog Cinemeta, Absolute Cinema, Muvibox, dan streams Torrentio diambil
+    // lewat /api/addon (server). Browser hanya bicara same-origin, jadi tidak
+    // ada preflight CORS dan rate limit addon menempel ke IP server, bukan IP
+    // tiap penonton.
     async function jget(url) {
-      const res = await fetch(url);
-      if (!res.ok) {
-        throw new Error(res.status === 429
-          ? 'Terlalu sering menghubungi ' + new URL(url).host + ', tunggu sebentar'
-          : `HTTP ${res.status} dari ${new URL(url).host}`);
-      }
-      return res.json();
+      const res = await fetch(`/api/addon?url=${encodeURIComponent(url)}`);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      return body;
     }
 
     const cineSearch = (type, q) => `${CINEMETA}/catalog/${type}/top/search=${encodeURIComponent(q)}.json`;
@@ -1550,8 +1341,8 @@
         }
         link = inner;
       }
-      everPlayed = false;
       directPlay = true;
+      resetPlayer();
       const name = raw.title?.split('\n')[0] || s.prov;
       $('np-thumb').classList.add('hidden');
       setSq($('np-title'), name);
@@ -1618,9 +1409,8 @@
       searchQ.focus();
     });
 
-    // Docs: event `error` membawa Error di `detail`.
-    // "Timeout at N" berarti byte belum sempat datang dari swarm: tunggu
-    // sebentar lalu coba buka ulang src yang sama, maksimal sekali per src.
+    // Event `error` MoviPlayer membawa Error di `detail`. "Timeout" berarti
+    // byte belum sempat datang dari swarm: buka ulang src yang sama sekali saja.
     let retriedSrc = '';
     player.addEventListener('error', (event) => {
       const message = event.detail?.message;
@@ -1633,9 +1423,28 @@
       setStatus(`Player: ${message}`, 'error');
     });
 
+    // Toggle transcode: server memulai sesi HLS baru (copy ↔ encode H.264/AAC),
+    // player dimuat ulang begitu playlist sesi baru siap.
+    $('transcode-btn').addEventListener('click', async () => {
+      const enabled = !lastState?.transcode;
+      try {
+        applyState(await api('/api/transcode', { method: 'POST', body: JSON.stringify({ enabled }) }));
+        if (lastState?.selected >= 0) {
+          directPlay = false;
+          resetPlayer();
+        }
+        setStatus(enabled
+          ? 'Transcode aktif: video di-encode H.264/AAC, butuh CPU server.'
+          : 'Transcode mati: track disalin apa adanya (-c copy).', 'ok');
+      } catch (err) {
+        setStatus(err.message, 'error');
+      }
+    });
+
     const saved = lastSaved();
     if (saved.magnet) magnetInput.value = saved.magnet;
     window.lucide?.createIcons(); // ikon statis di markup
+    startStatusPolling(); // panel terisi walau WS belum/tidak tersambung
     connectStatus();
 
     // Script module jalan setelah script biasa: tunggu elemen ter-upgrade

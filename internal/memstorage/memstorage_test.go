@@ -155,55 +155,25 @@ func TestCache_StoresPieceLargerThanLimit(t *testing.T) {
 	}
 }
 
-// Reserve/Release let the remux buffer share the piece cache budget: the
-// buffer counts as used memory, so pieces are evicted or the job is refused.
-func TestReserveSharesBudget(t *testing.T) {
-	c := New(10)
-	if !c.Reserve(6) {
-		t.Fatal("Reserve(6) dengan limit 10 harus berhasil")
-	}
-	if used := c.Used(); used != 6 {
-		t.Fatalf("used = %d, want 6", used)
-	}
-	if c.Reserve(6) {
-		t.Fatal("Reserve(6) kedua harus gagal: hanya 4 byte tersisa")
-	}
-	c.Release(6)
-	if used := c.Used(); used != 0 {
-		t.Fatalf("used setelah Release = %d, want 0", used)
-	}
-	if !c.Reserve(10) {
-		t.Fatal("Reserve(10) harus berhasil setelah budget dikembalikan")
-	}
-	c.Release(10)
-}
-
-// Drop membebaskan piece yang sudah aman di tempat lain (mis. sudah
-// terunggah) tanpa menunggu budget penuh, dan tidak dihitung sebagai eviction.
-func TestCache_DropFreesPieces(t *testing.T) {
+// DropAll melepas semua piece satu torrent (dipakai saat ganti magnet) dan
+// PiecesOf hanya menghitung torrent itu, bukan sisa torrent lain.
+func TestCache_DropAllAndPiecesOf(t *testing.T) {
 	c := New(4 * pieceLen)
-	info, ti := openTorrent(t, c, 4)
-
+	info, ti := openTorrent(t, c, 3)
 	writePiece(t, ti, info, 0, 'a')
 	writePiece(t, ti, info, 1, 'b')
-	writePiece(t, ti, info, 2, 'c')
-	c.Drop(metainfo.Hash{}, 0, 1)
 
-	if used := c.Used(); used != pieceLen {
-		t.Fatalf("cache used = %d, want %d", used, pieceLen)
+	if got := c.PiecesOf(metainfo.Hash{}); got != 2 {
+		t.Fatalf("PiecesOf = %d, want 2", got)
 	}
-	for _, index := range []int{0, 1} {
-		if ti.Piece(info.Piece(index)).Completion().Complete {
-			t.Fatalf("dropped piece %d should be incomplete", index)
-		}
-		if err := readPiece(ti, info, index, 16); !errors.Is(err, io.EOF) {
-			t.Fatalf("read dropped piece %d error = %v, want io.EOF", index, err)
-		}
+	c.DropAll(metainfo.Hash{})
+	if used := c.Used(); used != 0 {
+		t.Fatalf("used setelah DropAll = %d, want 0", used)
 	}
-	if !ti.Piece(info.Piece(2)).Completion().Complete {
-		t.Fatal("piece 2 should still be complete")
+	if got := c.PiecesOf(metainfo.Hash{}); got != 0 {
+		t.Fatalf("PiecesOf setelah DropAll = %d, want 0", got)
 	}
-	if c.Evictions() != 0 {
-		t.Fatalf("evictions = %d, want 0 (Drop is not cache pressure)", c.Evictions())
+	if ti.Piece(info.Piece(0)).Completion().Complete {
+		t.Fatal("piece 0 seharusnya ikut dilepas")
 	}
 }

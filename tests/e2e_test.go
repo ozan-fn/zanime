@@ -437,10 +437,12 @@ func TestE2E_UIIsEmbedded(t *testing.T) {
 	}
 	page := string(body)
 	for _, want := range []string{
-		"<movi-player",
-		"https://moviplayer.com/dist/element.js",
+		"<movi-player id=\"player\"",
+		"movi-player@0.4.1",
+		"subtitlepicker",
 		"cdn.tailwindcss.com",
 		"/api/magnet",
+		"/api/transcode",
 	} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("index.html does not contain %q", want)
