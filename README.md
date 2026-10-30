@@ -19,7 +19,7 @@ internal/config/               loader .env (PORT, CACHE_DIR, MAX_CACHE_MB)
 internal/stream/               handler HTTP Range/seek (dipakai main + test)
 internal/stream/*_test.go      unit test HEAD/Range/seek/416
 internal/diskcache/            storage torrent di disk, budget LRU per torrent
-internal/diskcache/*_test.go   unit test pemetaan piece→file, prune, registry
+internal/diskcache/*_test.go   unit test file per-piece, prune, registry
 internal/hls/                  sesi HLS on demand (mp4.HLSPlan mkvgo, segmen CMAF saat diminta)
 internal/hls/*_test.go         unit test sesi: playlist, segmen, subtitle, nama di luar sesi
 internal/media/                metadata Matroska: judul/tag/chapter/track/cover
@@ -79,7 +79,7 @@ Urutan tetap setiap kali sebuah video dipilih:
 |---|-------|--------|--------------|--------------------|
 | 1 | Magnet | browser → server | `POST /api/magnet` menunggu metadata (maks 45 dtk), lalu daftar file video diurutkan nama | `state.files[]` |
 | 2 | Pilih file | browser → server | `POST /api/select` menyetel `selected` dan memulai sesi HLS untuk index itu | `state.selected` |
-| 3 | Ambil piece | torrent client | piece ditulis ke file sparse di `./tmp/cache/<infohash>/<nama torrent>/`; kalau cache lewat batas, folder torrent paling lama (LRU) dihapus utuh | `state.cache`, `state.torrent` |
+| 3 | Ambil piece | torrent client | piece ditulis ke file sendiri `./tmp/cache/<infohash>/p/<index>` (maks satu piece per file, tidak sebesar episode); kalau cache lewat batas, folder torrent paling lama (LRU) dihapus utuh | `state.cache`, `state.torrent` |
 | 4 | Baca file | mkvgo → `/stream/:index/:name` | mkvgo (`httpfs` + `mp4.PlanHLS`) membaca file lewat HTTP Range dari server sendiri, jadi bisa seek tanpa mengunduh seluruh file | `GET /stream...` |
 | 5 | Plan | mkvgo → `/stream` | satu kali pembacaan head: durasi, track video/audio (+bahasa), subtitle teks, index Cues. File tidak diunduh | plan `mp4.HLSPlan` |
 | 6 | Playlist | server | playlist **VOD lengkap** disusun dari durasi: slot 4 dtk sampai akhir + `#EXT-X-ENDLIST`. `master.m3u8` berisi ladder 1080/720 (tidak pernah di atas resolusi sumber) + satu rendition audio per track | `state.hls {index,ready,live,playlist,subs,error}` |
@@ -173,10 +173,10 @@ curl -H 'Range: bytes=0-1048575' -o chunk.bin http://127.0.0.1:8080/stream
 
 | Aspek | Detail | Lokasi |
 |-------|--------|--------|
-| Penyimpanan piece | satu file sparse per file torrent, di bawah `CACHE_DIR/<infohash>/`, dibatasi `MAX_CACHE_MB` / `-cache-mb` (default 4 GiB) | `internal/diskcache` |
-| Saat budget penuh | folder torrent paling lama (LRU) dihapus utuh; kalau torrent aktif masih kebesaran, piece lama di belakang playhead di-`punch hole` per chunk (bukan menunggu satu episode selesai) | `diskcache.Prune`, `diskcache.evictPieceLocked` |
-| Ukuran cache | blok disk yang benar-benar terpakai (`stat.Blocks`), bukan panjang logis file sparse; tail/Cues 3 GiB tidak membuat cache terlihat 3 GiB | `diskcache.dirSize` |
-| Pindah episode | file episode lama di torrent aktif dihapus; bit `.complete` piece yang menyentuhnya dibersihkan dan completion klien di-refresh, jadi episode itu diunduh lagi kalau dipilih | `server.dropOtherFiles` |
+| Penyimpanan piece | satu file per piece, `CACHE_DIR/<infohash>/p/<index>` (maks satu piece, tidak sparse sebesar episode), dibatasi `MAX_CACHE_MB` / `-cache-mb` (default 4 GiB) | `internal/diskcache` |
+| Saat budget penuh | folder torrent paling lama (LRU) dihapus utuh; kalau torrent aktif masih kebesaran, piece lama di belakang playhead dihapus file-nya (bukan menunggu satu episode selesai) | `diskcache.Prune`, `diskcache.evictTo` |
+| Ukuran cache | blok disk yang benar-benar terpakai (`stat.Blocks`); file per-piece kecil jadi ukuran cache = byte yang benar-benar diunduh | `diskcache.dirSize` |
+| Pindah episode | piece yang tidak menyentuh episode terpilih dihapus; bit `.complete`-nya dibersihkan dan completion klien di-refresh, jadi episode itu diunduh lagi kalau dipilih | `server.dropOtherFiles` |
 | Urutan LRU | disimpan di `CACHE_DIR/lru.json` (tulis lewat tmp + rename), jadi urutan bertahan setelah restart | `internal/diskcache` |
 | Status piece | bitmap `.complete` per torrent (satu bit per piece) ditulis saat piece terverifikasi dan dimuat lagi di `OpenTorrent`; cache tetap dianggap lengkap setelah restart, tanpa rehash/unduh ulang | `internal/diskcache` |
 | Pengecekan budget | tiap 2 detik; piece terbaru (playhead + readahead) dipertahankan; torrent aktif dibatasi maksimal 512 MiB walau `MAX_CACHE_MB` lebih besar | `server.pruneCache`, `diskcache.activeCacheLimit` |
@@ -195,7 +195,7 @@ make vet
 make test
 ```
 
-`tests/diskcache_test.go` menjalankan seeder + leecher di proses yang sama lewat localhost, torrent 8 MiB / 8 piece, dengan `diskcache` sebagai backend leecher. Byte diambil lewat HTTP Range (maju dan mundur) tanpa internet. `internal/diskcache/diskcache_test.go` menguji pemetaan piece yang menembus dua file, prune LRU yang melewati torrent aktif, registry yang bertahan setelah restart, dan bitmap `.complete` yang membuat piece terverifikasi tidak diunduh ulang setelah reopen.
+`tests/diskcache_test.go` menjalankan seeder + leecher di proses yang sama lewat localhost, torrent 8 MiB / 8 piece, dengan `diskcache` sebagai backend leecher. Byte diambil lewat HTTP Range (maju dan mundur) tanpa internet. `internal/diskcache/diskcache_test.go` menguji file per-piece (tulis/baca), prune LRU yang melewati torrent aktif, eviction piece tertua di torrent aktif, registry yang bertahan setelah restart, dan bitmap `.complete` yang membuat piece terverifikasi tidak diunduh ulang setelah reopen.
 
 `internal/hls/hls_test.go` menulis fixture Matroska kecil (H.264 + audio) dengan writer mkvgo, lalu memeriksa sesi: `master.m3u8` memuat satu rendition audio per track (termasuk playlist/init/segmen `audioN`/`seg_aN_*`), segmen `segNNNNN.m4s` terbit saat diminta, nama di luar sesi/lewat akhir file ditolak, dan subtitle yang tidak ada tidak dijual. Fixture subtitle memeriksa `LANGUAGE`/`NAME` dari master serta resource `subs0.vtt`, `sub1.vtt`, dan `sub1_00001.vtt`. `internal/media/media_test.go` menulis MKV dengan judul, tag, dua chapter tak berurutan, track video/audio/subtitle, font, dan cover; hasil baca harus mengurutkan chapter, membawa bahasa/teknis track, dan hanya memuat gambar cover. `main_test.go` menguji route `/hls` end-to-end dengan file yang sama diserve lewat HTTP Range, plus `state.media` dan `/cover/:index`.
 

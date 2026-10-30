@@ -116,3 +116,5 @@ require (
 	modernc.org/sqlite v1.21.1 // indirect
 	zombiezen.com/go/sqlite v0.13.1 // indirect
 )
+
+replace github.com/gravity-zero/mkvgo => ./third_party/mkvgo

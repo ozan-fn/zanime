@@ -1,0 +1,224 @@
+package commands_test
+
+import (
+	"bytes"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gravity-zero/mkvgo/cmd/mkvgo/commands"
+)
+
+// skipIfNoInterrupt skips a test that shuts the server down by sending
+// os.Interrupt to the process: Windows only supports os.Kill for
+// Process.Signal, not os.Interrupt, so the signal path cannot be exercised
+// there. The HTTP serving itself is covered by the platform-independent
+// mkvhttp package tests; the production shutdown path (signal.Notify receiving
+// Ctrl-C) still works on Windows, only this test's way of triggering it does not.
+func skipIfNoInterrupt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sending os.Interrupt to a process is not supported on Windows")
+	}
+}
+
+// TestCmdServe_UsageError checks a missing source path exits via Fatal.
+func TestCmdServe_UsageError(t *testing.T) {
+	mustFatal(t, func() {
+		commands.CmdServe(nil)
+	})
+}
+
+// TestCmdServe_EndToEnd starts the real CLI server on a fixed loopback
+// address, fetches the master playlist over HTTP, then sends the process a
+// SIGINT (what Ctrl-C delivers) and checks CmdServe shuts down gracefully
+// instead of hanging.
+func TestCmdServe_EndToEnd(t *testing.T) {
+	skipIfNoInterrupt(t)
+	src := sampleMKV(t)
+	const addr = "127.0.0.1:18479"
+
+	done := make(chan struct{})
+	go func() {
+		commands.CmdServe([]string{src, "-addr", addr})
+		close(done)
+	}()
+
+	var resp *http.Response
+	var err error
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err = http.Get("http://" + addr + "/master.m3u8")
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("server did not come up in time: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /master.m3u8 status = %d, want 200", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(body), "#EXTM3U") {
+		t.Errorf("unexpected master playlist body: %q", string(body))
+	}
+
+	proc, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := proc.Signal(os.Interrupt); err != nil {
+		t.Fatalf("send interrupt: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("CmdServe did not shut down after SIGINT")
+	}
+}
+
+// TestCmdServe_DirectEndToEnd checks --direct serves the raw file byte for
+// byte (no HLS packaging) at a URL named after the source file, and still
+// shuts down cleanly on SIGINT.
+func TestCmdServe_DirectEndToEnd(t *testing.T) {
+	skipIfNoInterrupt(t)
+	src := sampleMKV(t)
+	want, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const addr = "127.0.0.1:18480"
+
+	done := make(chan struct{})
+	go func() {
+		commands.CmdServe([]string{src, "-addr", addr, "--direct"})
+		close(done)
+	}()
+
+	url := "http://" + addr + "/" + filepath.Base(src)
+	var resp *http.Response
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err = http.Get(url)
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("server did not come up in time: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200", url, resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "video/x-matroska" {
+		t.Errorf("Content-Type = %q, want video/x-matroska", got)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, want) {
+		t.Errorf("direct-served body does not match the source file (%d vs %d bytes)", len(body), len(want))
+	}
+
+	proc, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := proc.Signal(os.Interrupt); err != nil {
+		t.Fatalf("send interrupt: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("CmdServe --direct did not shut down after SIGINT")
+	}
+}
+
+// TestCmdServe_DirectAndAutoMutuallyExclusive checks --direct and --auto
+// together is a usage error, not a silent pick of one.
+func TestCmdServe_DirectAndAutoMutuallyExclusive(t *testing.T) {
+	src := sampleMKV(t)
+	mustFatal(t, func() {
+		commands.CmdServe([]string{src, "--direct", "--auto"})
+	})
+}
+
+// TestCmdServe_RemoteStreams serves a URL: its media segments stream from the
+// origin (weak ETag) instead of being held whole per request, which grew
+// without bound past capacity.
+func TestCmdServe_RemoteStreams(t *testing.T) {
+	skipIfNoInterrupt(t)
+	src := sampleMKV(t)
+	origin := httptest.NewServer(http.FileServer(http.Dir(filepath.Dir(src))))
+	defer origin.Close()
+	const addr = "127.0.0.1:18483"
+
+	done := make(chan struct{})
+	go func() {
+		commands.CmdServe([]string{origin.URL + "/" + filepath.Base(src), "-addr", addr})
+		close(done)
+	}()
+	var resp *http.Response
+	var err error
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if resp, err = http.Get("http://" + addr + "/seg00001.m4s"); err == nil {
+			break
+		}
+	}
+	if err != nil {
+		t.Fatalf("server did not come up in time: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || len(body) == 0 {
+		t.Fatalf("GET seg00001.m4s: %d, %d bytes", resp.StatusCode, len(body))
+	}
+	etag := resp.Header.Get("ETag")
+	if !strings.HasPrefix(etag, "W/") {
+		t.Errorf("ETag %q: a remote segment must stream, not be held whole", etag)
+	}
+	// A weak ETag never satisfies If-Range (RFC 9110 13.1.5): the whole segment, 200; a plain Range gets its 206.
+	for _, ifRange := range []string{etag, ""} {
+		req, _ := http.NewRequest(http.MethodGet, "http://"+addr+"/seg00001.m4s", nil)
+		req.Header.Set("Range", "bytes=0-99")
+		if ifRange != "" {
+			req.Header.Set("If-Range", ifRange)
+		}
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		switch {
+		case ifRange != "" && (r.StatusCode != http.StatusOK || len(b) != len(body)):
+			t.Errorf("Range under If-Range: %d, %d bytes, want 200 and %d", r.StatusCode, len(b), len(body))
+		case ifRange == "" && (r.StatusCode != http.StatusPartialContent || !bytes.Equal(b, body[:100])):
+			t.Errorf("plain Range: %d, %d bytes, want 206 and the first 100", r.StatusCode, len(b))
+		}
+	}
+
+	proc, _ := os.FindProcess(os.Getpid())
+	if err := proc.Signal(os.Interrupt); err != nil {
+		t.Fatalf("send interrupt: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("CmdServe did not shut down after SIGINT")
+	}
+}

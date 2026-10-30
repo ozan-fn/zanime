@@ -1,0 +1,236 @@
+package mkv
+
+// reports.go - the report types the repair and triage operations return.
+// They live here (rather than in mkv/ops, which computes most of them) so
+// that BOTH engines can speak the same shapes: ops imports mp4 for the
+// packaging-aware operations, so the mp4 package cannot import ops - but a
+// MP4 triage must still return the exact Diagnosis a Matroska triage
+// returns, or a caller scanning a mixed library needs two code paths.
+// mkv/ops re-exports each of these as a type alias, so existing consumers
+// see no change.
+
+// SalvageReport summarises one tolerant walk (ops.Salvage, ops.MapDamage,
+// or Reindex with Options.Resync).
+type SalvageReport struct {
+	ClustersCopied int            `json:"clusters_copied"`
+	BytesCopied    int64          `json:"bytes_copied"`
+	BytesSkipped   int64          `json:"bytes_skipped"`
+	DamagedRanges  []DamagedRange `json:"damaged_ranges"`
+	// RepairedRanges lists the regions where cluster framing was re-derived
+	// from the bytes (corrected sizes, continuation headers around a gap)
+	// instead of dropping the whole declared extent; the media inside is
+	// verbatim. Empty on a clean source.
+	RepairedRanges []RepairedRange `json:"repaired_ranges"`
+	// CleanCutBytes counts video bytes intentionally dropped after damage
+	// gaps because they precede the next video keyframe (Options.CleanCut).
+	CleanCutBytes int64 `json:"clean_cut_bytes"`
+	// TruncatedTail is the first-class "incomplete download" verdict: the
+	// final damaged range runs to the end of the file AND begins inside the
+	// declared Segment - the missing tail is not recoverable by ANY tool,
+	// only by re-acquiring the source. Mid-file damage without this flag is
+	// repairable in full (resync). Unparseable bytes lying entirely PAST the
+	// declared Segment end never set it: those are surplus bytes (trailing
+	// junk, a crashed in-place journal), still counted in DamagedRanges and
+	// BytesSkipped, but dropping them loses nothing.
+	TruncatedTail bool `json:"truncated_tail"`
+}
+
+// CueHealthReport classifies a Matroska file's CuePoints by referenced track
+// (ops.CueHealth).
+type CueHealthReport struct {
+	TotalCues    int `json:"total_cues"`
+	VideoCues    int `json:"video_cues"`
+	NonVideoCues int `json:"non_video_cues"`
+	// UnknownTrackCues counts cues referencing a track number absent from
+	// the Tracks element (a stale or foreign index).
+	UnknownTrackCues int `json:"unknown_track_cues"`
+	// NonVideoPct is NonVideoCues+UnknownTrackCues over TotalCues, in percent.
+	// Reporting only: cues keyed on another track are inert for seeking (the
+	// keyframe index consumes the video-keyed ones alone), so a high share is
+	// index bloat, not a seek defect. The verdict judges the video cues.
+	NonVideoPct float64 `json:"non_video_pct"`
+	// PerTrack counts cues per referenced track number.
+	PerTrack map[uint64]int `json:"per_track"`
+	// FirstCueMs/LastCueMs bracket the index's time coverage.
+	FirstCueMs int64 `json:"first_cue_ms"`
+	LastCueMs  int64 `json:"last_cue_ms"`
+	// MaxVideoGapMs is the widest hole in the VIDEO cue coverage - the worst
+	// distance a seek can land from its target - measured between consecutive
+	// video cues, from 0 to the first, and from the last to the end of the
+	// picture when that tail counts (see TailGapMs). 0 when the file has no
+	// video track. MaxVideoGapAtMs is where that hole opens: the cue before it
+	// (0 for a hole at the start).
+	MaxVideoGapMs   int64 `json:"max_video_gap_ms"`
+	MaxVideoGapAtMs int64 `json:"max_video_gap_at_ms"`
+	// VideoEndMs is what the tail is measured to. VideoEndExact says which end
+	// that is: the video track's OWN end when the file states it (a statistics
+	// DURATION tag written by the same application that wrote the file, as
+	// mainstream muxers do), else the declared segment duration - which is the
+	// LONGEST track's end, on real files an audio track's, 30 to 110 s past the
+	// picture. Measured against that, the tail of a perfectly cued file read as
+	// a 30-110 s hole and condemned it; measured against the picture's end it
+	// is one GOP.
+	VideoEndMs    int64 `json:"video_end_ms"`
+	VideoEndExact bool  `json:"video_end_exact"`
+	// TailGapMs is the distance from the last video cue to VideoEndMs - always
+	// reported, so a consumer can tell "cues stop before the end" from "a hole
+	// in the middle". It counts toward MaxVideoGapMs when the end is exact, or,
+	// when it is only the declared duration, when it exceeds what another
+	// track outlasting the picture accounts for (5% of the duration, at least
+	// the sparse threshold) - a half-indexed file leaves far more than that.
+	TailGapMs int64 `json:"tail_gap_ms"`
+	// Holes lists every hole in the video cue coverage wider than the seek
+	// threshold, in file order (the head from 0 when it opens past the
+	// threshold, consecutive-cue holes, and the tail when it counts - see
+	// TailGapMs), capped at a handful; MaxVideoGapMs always carries the worst
+	// whether or not it fit here. Empty for a healthy file. ProbeCueHoles
+	// fills each hole's Content in a second, bounded pass.
+	Holes []CueHole `json:"holes,omitempty"`
+	// VideoShortfallMs is how much picture the video track's own statistics say
+	// is MISSING from the stream: the frames it declares (NUMBER_OF_FRAMES) fall
+	// short of what its duration at its frame rate holds. A hole in the cues
+	// that the shortfall accounts for is not an index defect - the frames are
+	// not there to cue, a reindex leaves the hole where it is, and only the
+	// source can supply them. 0 when the file states no such statistics or they
+	// add up.
+	VideoShortfallMs int64 `json:"video_shortfall_ms,omitempty"`
+	// HasVideoTrack tells which rule applied: a video file's index must be able
+	// to seek video; an audio-only file legitimately cues audio.
+	HasVideoTrack bool `json:"has_video_track"`
+	// Healthy is the verdict; Reason says why not, with the remedy.
+	Healthy bool   `json:"healthy"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// TrackEnd is where one track's content actually ends - as opposed to where
+// the container says the file ends, which is the LONGEST track's end and says
+// nothing about the others.
+type TrackEnd struct {
+	Track uint64    `json:"track"`
+	Type  TrackType `json:"type"`
+	// EndMs is the end of the track's last frame. Source says how it is known:
+	//
+	//	"statistics" - the track's statistics DURATION tag, trusted only when the
+	//	               tag describes this file (same writing application and date
+	//	               as the file, not past the declared duration)
+	//	"walk"       - the last block seen in a bounded tail walk (its timecode
+	//	               plus its duration, or the track's default frame duration;
+	//	               an audio track stating neither - laced audio, typically -
+	//	               is given the stride measured between its own blocks)
+	//	"walk-bound" - the track was silent through the widest window walked: it
+	//	               ended AT OR BEFORE EndMs, the window's start
+	//	""           - unknown (no block of the track was ever seen)
+	EndMs  int64  `json:"end_ms"`
+	Source string `json:"source,omitempty"`
+}
+
+// TrackEndsReport is the result of TrackEnds: every track's real end, and the
+// two facts a scan wants from them - where the picture ends, and whether an
+// audio track dies before it.
+type TrackEndsReport struct {
+	DeclaredDurationMs int64      `json:"declared_duration_ms"`
+	Ends               []TrackEnd `json:"ends"`
+	// StartMs is where the file's timeline starts: the Timestamp of the first
+	// Cluster holding a block. 0 on an ordinary file; a live recording or a
+	// stream cut from a longer one starts wherever it was picked up (12.345 s,
+	// say). Every EndMs is a position on that same timeline, so the content's
+	// length is EndMs - StartMs - the duration a file with no declared one has.
+	StartMs int64 `json:"start_ms,omitempty"`
+	// VideoEndMs is the latest known video end (0 when no video track's end is
+	// known). AudioShortfallMs is how far the earliest-ending audio track stops
+	// before it, on ShortAudioTrack - a lower bound when that track's end is
+	// only "walk-bound". 0 when every audio track reaches the picture or nothing
+	// is known.
+	VideoEndMs       int64  `json:"video_end_ms,omitempty"`
+	AudioShortfallMs int64  `json:"audio_shortfall_ms,omitempty"`
+	ShortAudioTrack  uint64 `json:"short_audio_track,omitempty"`
+	// SkippedBytes is how many bytes of damaged regions the walk passed over
+	// to reach the ends it reports: an element it could not read, with media
+	// continuing behind it. 0 when the stretch walked is sound - which says
+	// nothing of what was not walked (tracks settled by their statistics, or
+	// the file before the tail window). A copy of the file is refused there;
+	// Reindex with Resync repairs it.
+	SkippedBytes int64 `json:"skipped_bytes,omitempty"`
+}
+
+// CueHole is one hole in a file's video cue coverage: GapMs of picture no cue
+// lands in, opening at AtMs (the cue before it; 0 for a hole at the start).
+type CueHole struct {
+	AtMs  int64 `json:"at_ms"`
+	GapMs int64 `json:"gap_ms"`
+	// Content is what a bounded probe of the hole's own clusters found - block
+	// headers alone, payloads skipped by size - and stays "" until
+	// ProbeCueHoles runs or when the probe was inconclusive (a stale cue
+	// position, a truncated walk: the probe refuses to guess):
+	//
+	//	"uncued-keyframes" - video keyframes sit inside, uncued: a reindex closes the hole
+	//	"picture-missing"  - a stretch wider than the seek threshold holds no video block at
+	//	                     all: the picture is missing from the stream there, nothing can cue it
+	//	"no-keyframes"     - video frames all along, but not one keyframe: only a re-encode
+	//	                     can make the stretch seekable
+	//
+	// The frames of the GOP the opening cue starts are inside the hole too, so
+	// a hole is never judged on holding frames - a real episode's 61 s of
+	// missing picture held 84 of them - but on VideoAbsentMs, the widest
+	// stretch of it without any video block.
+	Content string `json:"content,omitempty"`
+	// VideoBlocks/Keyframes count what the probe saw strictly inside the hole,
+	// VideoAbsentMs is its widest stretch without a video block. An
+	// "uncued-keyframes" verdict may stop at the first keyframe found (the
+	// verdict is already decided), so they are lower bounds there.
+	VideoBlocks   int   `json:"video_blocks,omitempty"`
+	Keyframes     int   `json:"keyframes,omitempty"`
+	VideoAbsentMs int64 `json:"video_absent_ms,omitempty"`
+}
+
+// Finding is one diagnosed defect with its remedy.
+type Finding struct {
+	// Kind: "no-index" | "index-misskeyed" | "index-sparse" |
+	// "index-stale-tracks" | "audio-delay" | "truncated" | "damaged" |
+	// "trailing-junk" | "streamed-size" | "no-moov" | "wrong-container" | "sample-table".
+	Kind    string `json:"kind"`
+	Detail  string `json:"detail"`
+	Remedy  string `json:"remedy"`
+	Track   uint64 `json:"track,omitempty"`
+	DelayNs int64  `json:"delay_ns,omitempty"`
+}
+
+// Diagnosis is the full triage verdict for one file - the same shape for
+// Matroska (ops.Diagnose) and MP4 (mp4.Diagnose) sources, so one scan loop
+// covers a mixed library.
+type Diagnosis struct {
+	Healthy  bool      `json:"healthy"`
+	Findings []Finding `json:"findings"`
+	// CueHealth is the index classification behind the index findings.
+	// Matroska only: an MP4's sample table is its index by construction.
+	CueHealth *CueHealthReport `json:"cue_health,omitempty"`
+	// TimecodeScale is the source's declared timebase in nanoseconds per unit
+	// (DefaultTimecodeScale = 1 ms, what all but a handful of files use).
+	// Matroska only; 0 for an MP4, which times its samples per track instead.
+	//
+	// It is reported because it is the one property that makes a scan able to
+	// single out the files an unusual timebase touches - cue times, seek gaps
+	// and segment lengths all derive from it - without opening every file a
+	// second time to ask.
+	TimecodeScale int64 `json:"timecode_scale,omitempty"`
+	// TrackEnds is where each track's content really ends (present when the
+	// file has an index to start the tail walk from - see ops.TrackEnds); the
+	// "audio-short" finding is drawn from it.
+	TrackEnds *TrackEndsReport `json:"track_ends,omitempty"`
+	// AudioDelaysNs holds every audio track's start delay relative to the
+	// video, whether or not it crossed the finding threshold.
+	AudioDelaysNs map[uint64]int64 `json:"audio_delays_ns"`
+	// Damage is the tolerant-walk report, present only when the size check
+	// warranted the walk (Matroska only).
+	Damage *SalvageReport `json:"damage,omitempty"`
+	// FileSize is the file's real size; DeclaredSize is where the container
+	// says it ends (the Segment's declared end, or the end of the last
+	// declared box), 0 when it declares none (streamed-size). MissingTailBytes
+	// is how much of the declared file is absent from its end (DeclaredSize
+	// minus FileSize when positive) - the MAGNITUDE that routes an operator's
+	// decision on a truncated file: a 9 KB stub cut off a 900 MB episode is
+	// invisible in playback, 41 MB is a missing final scene.
+	FileSize         int64 `json:"file_size,omitempty"`
+	DeclaredSize     int64 `json:"declared_size,omitempty"`
+	MissingTailBytes int64 `json:"missing_tail_bytes,omitempty"`
+}

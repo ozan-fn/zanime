@@ -1,0 +1,646 @@
+package ops
+
+// subindex.go - a seek index for subtitle tracks. Matroska's own Cues index the
+// video track, so reaching one subtitle track's blocks means walking every
+// block header in the file: on a 15.8 GB 2160p source that is ~12 M headers and
+// tens of seconds, for a few KiB of cues. An MP4 pays none of this because its
+// sample table already records where every sample of every track is; this is
+// that table, for Matroska, built once and served many times.
+//
+// mkvgo builds, encodes and decodes the index; it never stores one. Where the
+// bytes live and when they are thrown away is the caller's - so the index
+// carries a fingerprint of the file it was built from, and a serve refuses a
+// mismatch rather than seeking to a stale offset and emitting whatever it
+// finds there.
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"slices"
+	"sort"
+
+	"github.com/gravity-zero/mkvgo/mkv"
+	"github.com/gravity-zero/mkvgo/mkv/reader"
+	"github.com/gravity-zero/mkvgo/mkv/subtitle"
+)
+
+// ErrIndexStale is returned when an index does not describe the file it is
+// being used against - a different size or Segment UID, or a recorded position
+// that does not hold the block it claims. The remedy is to rebuild the index.
+var ErrIndexStale = errors.New("the subtitle index does not match this file")
+
+// ErrTrackNotIndexed is returned when the requested track was not among the
+// tracks the index was built for.
+var ErrTrackNotIndexed = errors.New("the track is not in this subtitle index")
+
+const (
+	// maxLaceFrames is the most frames one block can hold: a lace stores its
+	// frame count in a single byte, as count-minus-one.
+	maxLaceFrames = 256
+
+	subIndexMagic   = "MKVGOSIX"
+	subIndexVersion = 2
+)
+
+// subEntry is one indexed BLOCK - not one frame. A laced block holds several
+// frames behind a single position (BlockPos names the block element, and every
+// frame of the lace shares it), so the entry carries how many frames to take
+// once the reader is seated there. frames is always >= 1.
+type subEntry struct {
+	pos    reader.BlockPos
+	timeMs int64
+	frames int64
+}
+
+// SubtitleIndex records the position of every block of the subtitle tracks it
+// was built for, alongside a fingerprint of the source. It is built by
+// BuildSubtitleIndex, carried by the caller in whatever store it likes (it
+// marshals to a compact byte slice), and consumed by ExtractSubtitleWebVTTFrom.
+//
+// The zero value is not usable; a decoded or freshly built index is.
+type SubtitleIndex struct {
+	fileSize   int64
+	tcScale    int64
+	segmentUID []byte
+	order      []uint64 // track IDs, in the order they were indexed
+	entries    map[uint64][]subEntry
+	// unresolved marks an index derived from the Cues (SubtitleIndexFromCues):
+	// each entry's Off is still the block's offset inside its cluster's data,
+	// its ClusterTS and ClusterEnd unknown, until Resolve reads the cluster headers.
+	unresolved bool
+}
+
+// Tracks returns the track IDs the index covers, in index order.
+func (ix *SubtitleIndex) Tracks() []uint64 {
+	if ix == nil {
+		return nil
+	}
+	out := make([]uint64, len(ix.order))
+	copy(out, ix.order)
+	return out
+}
+
+// Blocks returns how many blocks the index holds for a track (0 when the track
+// is not covered).
+func (ix *SubtitleIndex) Blocks(trackID uint64) int {
+	if ix == nil {
+		return 0
+	}
+	return len(ix.entries[trackID])
+}
+
+// Matches reports whether the index was built from a file of this size,
+// Segment UID and timecode scale - the fingerprint a Matroska file cheaply
+// offers. It is not proof on its own (see ErrIndexStale): a consumer still
+// checks each block it reads against what the index recorded.
+func (ix *SubtitleIndex) Matches(size int64, segmentUID []byte, timecodeScale int64) bool {
+	if ix == nil || ix.fileSize != size || ix.tcScale != timecodeScale {
+		return false
+	}
+	return len(ix.segmentUID) == 0 || len(segmentUID) == 0 || bytes.Equal(ix.segmentUID, segmentUID)
+}
+
+// TrackBlocks returns the blocks the index holds for a track, in file order
+// (nil when the track is not covered). It is what lets a consumer other than
+// the extractors here - an on-demand plan serving WebVTT segments - seek
+// straight to a track's blocks.
+func (ix *SubtitleIndex) TrackBlocks(trackID uint64) []reader.IndexedBlock {
+	if ix == nil || ix.unresolved {
+		return nil
+	}
+	if ix == nil {
+		return nil
+	}
+	entries := ix.entries[trackID]
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]reader.IndexedBlock, len(entries))
+	for i, e := range entries {
+		out[i] = reader.IndexedBlock{Pos: e.pos, TimeMs: e.timeMs, Frames: e.frames}
+	}
+	return out
+}
+
+// SourceSize returns the size of the file the index was built from - the first
+// half of the fingerprint a caller keying its own cache will want to compare.
+func (ix *SubtitleIndex) SourceSize() int64 {
+	if ix == nil {
+		return 0
+	}
+	return ix.fileSize
+}
+
+// BuildSubtitleIndex walks srcPath once and records the position of every block
+// of the named tracks; passing no track IDs indexes every subtitle track, which
+// costs the same walk and lets one build serve them all. The walk reads block
+// headers only - no payload of any track is read - so its cost is the file's
+// block count, not its size.
+//
+// This is the expensive half: it is the same single pass a direct extraction
+// makes. It pays for itself from the second extraction of the file onwards.
+func BuildSubtitleIndex(ctx context.Context, srcPath string, trackIDs []uint64, opts ...mkv.Options) (*SubtitleIndex, error) {
+	fs := mkv.FSFrom(opts)
+	c, err := reader.OpenMetaWithFS(ctx, srcPath, fs)
+	if err != nil {
+		return nil, err
+	}
+	st, err := fs.DoStat(srcPath)
+	if err != nil {
+		return nil, err
+	}
+
+	keep, err := resolveIndexTracks(c, trackIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	ix := &SubtitleIndex{
+		fileSize:   st.Size(),
+		tcScale:    c.Info.TimecodeScale,
+		segmentUID: append([]byte(nil), c.Info.SegmentUID...),
+		order:      keep,
+		entries:    make(map[uint64][]subEntry, len(keep)),
+	}
+	// Seed every kept track, so a subtitle track that holds no block at all is
+	// "indexed, empty" rather than "not indexed" - the same answer a decoded
+	// index gives, which reconstructs the key unconditionally.
+	for _, id := range keep {
+		ix.entries[id] = nil
+	}
+
+	f, err := fs.DoOpen(srcPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	br, err := reader.NewBlockReader(f, c.Info.TimecodeScale)
+	if err != nil {
+		return nil, err
+	}
+	br.KeepTracks(keep...)
+	br.SetHeaderOnly(true) // positions only: not one subtitle payload is read either
+	dmg := tolerateSubtitleDamage(br, opts)
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		blk, err := br.Next()
+		if err == io.EOF {
+			dmg.skipped()
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		dmg.skipped()
+		// Every frame of a laced block reports the same position, so a naive
+		// append would record N entries pointing at one block - and serving
+		// them would replay frame 0 N times. Coalesce them into one entry and
+		// count the frames instead.
+		at := br.Pos()
+		list := ix.entries[blk.TrackNumber]
+		if n := len(list); n > 0 && list[n-1].pos == at {
+			list[n-1].frames++
+			ix.entries[blk.TrackNumber] = list
+			continue
+		}
+		ix.entries[blk.TrackNumber] = append(list, subEntry{pos: at, timeMs: blk.Timecode, frames: 1})
+	}
+	return ix, nil
+}
+
+// resolveIndexTracks turns the caller's track list into the set to keep: the
+// file's subtitle tracks when the list is empty, else exactly those asked for,
+// validated against the file.
+func resolveIndexTracks(c *mkv.Container, trackIDs []uint64) ([]uint64, error) {
+	if len(trackIDs) == 0 {
+		var all []uint64
+		for _, t := range c.Tracks {
+			if t.Type == mkv.SubtitleTrack {
+				all = append(all, t.ID)
+			}
+		}
+		if len(all) == 0 {
+			return nil, fmt.Errorf("no subtitle track to index")
+		}
+		return all, nil
+	}
+	seen := make(map[uint64]bool, len(trackIDs))
+	out := make([]uint64, 0, len(trackIDs))
+	for _, id := range trackIDs {
+		if seen[id] {
+			continue
+		}
+		found := false
+		for _, t := range c.Tracks {
+			if t.ID != id {
+				continue
+			}
+			if t.Type != mkv.SubtitleTrack {
+				// Indexing a video track would record a position per frame -
+				// hundreds of megabytes on a feature film - for an index no
+				// extractor can serve.
+				return nil, fmt.Errorf("track %d is not a subtitle track", id)
+			}
+			found = true
+			break
+		}
+		if !found {
+			return nil, fmt.Errorf("subtitle track %d not found", id)
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// ExtractSubtitleWebVTTFrom is ExtractSubtitleWebVTT served from a prebuilt
+// index: instead of walking the file it seeks straight to each recorded block.
+// The index must describe srcPath - size and Segment UID are checked up front,
+// and every block read must carry the track and timecode the index recorded -
+// or ErrIndexStale is returned before any cue is written.
+func ExtractSubtitleWebVTTFrom(ctx context.Context, srcPath string, trackID uint64, ix *SubtitleIndex, w io.Writer, opts ...mkv.Options) error {
+	if ix == nil {
+		return fmt.Errorf("nil subtitle index")
+	}
+	fs := mkv.FSFrom(opts)
+	c, err := reader.OpenMetaWithFS(ctx, srcPath, fs)
+	if err != nil {
+		return err
+	}
+	st, err := fs.DoStat(srcPath)
+	if err != nil {
+		return err
+	}
+	if err := ix.checkAgainst(c, st.Size()); err != nil {
+		return err
+	}
+
+	codec, err := textSubtitleCodec(c, trackID)
+	if err != nil {
+		return err
+	}
+	track := subtitleTrackByID(c, trackID)
+	entries, ok := ix.entries[trackID]
+	if !ok {
+		return fmt.Errorf("%w: track %d", ErrTrackNotIndexed, trackID)
+	}
+
+	f, err := fs.DoOpen(srcPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var br *reader.BlockReader
+	var dmg *subtitleDamage
+	cues := make([]subtitle.Cue, 0, len(entries))
+	for i := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		e := &entries[i]
+		if br == nil {
+			// The first position seats the reader; the rest re-seat it, so the
+			// read window is allocated once for the whole track.
+			br, err = reader.NewBlockReaderFrom(f, ix.tcScale, e.pos)
+			if err != nil {
+				return err
+			}
+			br.KeepTracks(trackID)
+			// A mid-file reader never walks over the Tracks element, so it
+			// cannot pick the per-frame strides up on its own: without them a
+			// laced block's frames would all carry the block timecode, and the
+			// output would differ from the walking extractor's.
+			br.SetTrackDefaultDurations(reader.TrackDefaultDurations(c.Tracks))
+			dmg = tolerateSubtitleDamage(br, opts)
+		} else if err := br.SeekTo(e.pos); err != nil {
+			return err
+		}
+		// One entry, e.frames frames: an unlaced block takes exactly one turn
+		// here, a laced one takes its whole lace without re-seeking.
+		for k := int64(0); k < e.frames; k++ {
+			blk, err := br.Next()
+			if dmg.pending() && (k > 0 || seatZeroed(f, e.pos.Off)) { // the entry lies in a damaged region: its cues are lost
+				fromMs, ok := dmg.skipped()
+				closeOpenCue(cues, fromMs, ok)
+				break
+			}
+			if err != nil {
+				return fmt.Errorf("%w: reading the block at offset %d: %w", ErrIndexStale, e.pos.Off, err)
+			}
+			if blk.TrackNumber != trackID {
+				return fmt.Errorf("%w: offset %d holds track %d, the index recorded track %d",
+					ErrIndexStale, e.pos.Off, blk.TrackNumber, trackID)
+			}
+			// Only the block's first frame carries the recorded timecode; the
+			// rest are strided by the track's DefaultDuration, which a mid-file
+			// reader cannot know - so they are not checked against the index.
+			if k == 0 && blk.Timecode != e.timeMs {
+				return fmt.Errorf("%w: offset %d holds track %d at %d ms, the index recorded %d ms",
+					ErrIndexStale, e.pos.Off, trackID, blk.Timecode, e.timeMs)
+			}
+			payload, err := decompressSubtitleBlock(track, blk.Data)
+			if err != nil {
+				return err
+			}
+			text := decodeSubtitleCue(codec, payload)
+			if text == "" {
+				continue
+			}
+			end := int64(0)
+			if blk.Duration > 0 {
+				end = blk.Timecode + blk.Duration
+			}
+			cues = append(cues, subtitle.Cue{StartMs: blk.Timecode, EndMs: end, Text: text})
+		}
+	}
+	subtitle.SettleCueEnds(cues, c.DurationMs)
+	return subtitle.WriteWebVTT(w, cues)
+}
+
+// checkAgainst rejects an index built from a different file. The size and the
+// Segment UID are what a Matroska file cheaply offers; neither is proof on its
+// own, which is why every block is verified as it is read.
+func (ix *SubtitleIndex) checkAgainst(c *mkv.Container, size int64) error {
+	if ix.fileSize != size {
+		return fmt.Errorf("%w: built for %d bytes, this file is %d", ErrIndexStale, ix.fileSize, size)
+	}
+	if len(ix.segmentUID) > 0 && len(c.Info.SegmentUID) > 0 && !bytes.Equal(ix.segmentUID, c.Info.SegmentUID) {
+		return fmt.Errorf("%w: a different Segment UID", ErrIndexStale)
+	}
+	if ix.tcScale != c.Info.TimecodeScale {
+		return fmt.Errorf("%w: a different timecode scale", ErrIndexStale)
+	}
+	return nil
+}
+
+// textSubtitleCodec resolves the codec of a track that must exist, be a
+// subtitle track, and be convertible to WebVTT - the same checks
+// ExtractSubtitleWebVTT makes before it reads anything.
+func textSubtitleCodec(c *mkv.Container, trackID uint64) (string, error) {
+	for _, t := range c.Tracks {
+		if t.ID != trackID || t.Type != mkv.SubtitleTrack {
+			continue
+		}
+		if !isTextSubtitle(t.Codec) {
+			return "", fmt.Errorf("subtitle track %d codec %q is not text (cannot convert to WebVTT)", trackID, t.Codec)
+		}
+		return t.Codec, nil
+	}
+	return "", fmt.Errorf("subtitle track %d not found", trackID)
+}
+
+// MarshalBinary encodes the index. Positions and timecodes are monotonic per
+// track, so each field is stored as a zigzag varint of its delta from the
+// previous entry - a 10 331-block index over eight tracks comes to ~150 KiB
+// rather than the ~400 KiB the raw int64s would take.
+func (ix *SubtitleIndex) MarshalBinary() ([]byte, error) {
+	if ix.unresolved {
+		return nil, fmt.Errorf("subtitle index derived from the Cues is not resolved yet (call Resolve first)")
+	}
+	if ix == nil {
+		return nil, fmt.Errorf("nil subtitle index")
+	}
+	var b []byte
+	b = append(b, subIndexMagic...)
+	b = append(b, subIndexVersion)
+	b = binary.AppendVarint(b, ix.fileSize)
+	b = binary.AppendVarint(b, ix.tcScale)
+	b = binary.AppendUvarint(b, uint64(len(ix.segmentUID)))
+	b = append(b, ix.segmentUID...)
+	b = binary.AppendUvarint(b, uint64(len(ix.order)))
+	for _, id := range ix.order {
+		entries := ix.entries[id]
+		b = binary.AppendUvarint(b, id)
+		b = binary.AppendUvarint(b, uint64(len(entries)))
+		var prev subEntry
+		for i := range entries {
+			e := &entries[i]
+			b = binary.AppendVarint(b, e.pos.Off-prev.pos.Off)
+			b = binary.AppendVarint(b, e.pos.ClusterStart-prev.pos.ClusterStart)
+			b = binary.AppendVarint(b, e.pos.ClusterEnd-prev.pos.ClusterEnd)
+			b = binary.AppendVarint(b, e.pos.ClusterTS-prev.pos.ClusterTS)
+			b = binary.AppendVarint(b, e.timeMs-prev.timeMs)
+			b = binary.AppendUvarint(b, uint64(e.frames))
+			prev = *e
+		}
+	}
+	return b, nil
+}
+
+// UnmarshalBinary decodes an index produced by MarshalBinary. A buffer that is
+// not one, or that carries a version this build does not know, is rejected -
+// never partially decoded.
+func (ix *SubtitleIndex) UnmarshalBinary(data []byte) error {
+	r := bytes.NewReader(data)
+	magic := make([]byte, len(subIndexMagic))
+	if _, err := io.ReadFull(r, magic); err != nil || string(magic) != subIndexMagic {
+		return fmt.Errorf("not a mkvgo subtitle index")
+	}
+	ver, err := r.ReadByte()
+	if err != nil {
+		return fmt.Errorf("truncated subtitle index")
+	}
+	if ver != subIndexVersion {
+		return fmt.Errorf("subtitle index version %d is not supported (this build writes %d)", ver, subIndexVersion)
+	}
+	out := &SubtitleIndex{}
+	if out.fileSize, err = binary.ReadVarint(r); err != nil {
+		return errTruncatedIndex(err)
+	}
+	if out.tcScale, err = binary.ReadVarint(r); err != nil {
+		return errTruncatedIndex(err)
+	}
+	uidLen, err := binary.ReadUvarint(r)
+	if err != nil {
+		return errTruncatedIndex(err)
+	}
+	if uidLen > uint64(r.Len()) {
+		return fmt.Errorf("corrupt subtitle index: segment UID declares %d bytes, %d remain", uidLen, r.Len())
+	}
+	if uidLen > 0 {
+		out.segmentUID = make([]byte, uidLen)
+		if _, err := io.ReadFull(r, out.segmentUID); err != nil {
+			return errTruncatedIndex(err)
+		}
+	}
+	// Each track record costs at least two bytes on the wire (its ID and its
+	// entry count), so a declared track count past that is corrupt - and must
+	// be refused BEFORE it sizes a map.
+	nTracks, err := binary.ReadUvarint(r)
+	if err != nil {
+		return errTruncatedIndex(err)
+	}
+	if nTracks > uint64(r.Len())/2 {
+		return fmt.Errorf("corrupt subtitle index: %d tracks declared, %d bytes remain", nTracks, r.Len())
+	}
+	out.entries = make(map[uint64][]subEntry, nTracks)
+	for t := uint64(0); t < nTracks; t++ {
+		id, err := binary.ReadUvarint(r)
+		if err != nil {
+			return errTruncatedIndex(err)
+		}
+		n, err := binary.ReadUvarint(r)
+		// Each entry is six varints, so at least six bytes on the wire: a
+		// declared count that cannot fit in what is left is corrupt, and must
+		// not be allocated for. Bounding by the bytes actually remaining is
+		// what keeps a small malformed buffer from asking for a large slice.
+		if err != nil {
+			return errTruncatedIndex(err)
+		}
+		if n > uint64(r.Len())/6 {
+			return fmt.Errorf("corrupt subtitle index: track %d declares %d entries, %d bytes remain", id, n, r.Len())
+		}
+		entries := make([]subEntry, 0, n)
+		var prev subEntry
+		for i := uint64(0); i < n; i++ {
+			var e subEntry
+			for _, field := range []*int64{&e.pos.Off, &e.pos.ClusterStart, &e.pos.ClusterEnd, &e.pos.ClusterTS, &e.timeMs} {
+				d, err := binary.ReadVarint(r)
+				if err != nil {
+					return errTruncatedIndex(err)
+				}
+				*field = d
+			}
+			e.pos.Off += prev.pos.Off
+			e.pos.ClusterStart += prev.pos.ClusterStart
+			e.pos.ClusterEnd += prev.pos.ClusterEnd
+			e.pos.ClusterTS += prev.pos.ClusterTS
+			e.timeMs += prev.timeMs
+			frames, err := binary.ReadUvarint(r)
+			if err != nil {
+				return errTruncatedIndex(err)
+			}
+			// frames counts frames inside the file's block, not bytes on the
+			// wire, so the honest bound is the format's: a lace stores its
+			// count in one byte, so 256 frames is the most a block can hold.
+			// Zero would make the entry unservable.
+			if frames == 0 || frames > maxLaceFrames {
+				return fmt.Errorf("corrupt subtitle index: entry declares %d frames", frames)
+			}
+			e.frames = int64(frames)
+			entries = append(entries, e)
+			prev = e
+		}
+		if _, dup := out.entries[id]; dup {
+			return fmt.Errorf("corrupt subtitle index: track %d appears twice", id)
+		}
+		out.order = append(out.order, id)
+		out.entries[id] = entries
+	}
+	*ix = *out
+	return nil
+}
+
+func errTruncatedIndex(err error) error {
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("corrupt subtitle index: %w", err)
+	}
+	return fmt.Errorf("truncated subtitle index")
+}
+
+// SubtitleIndexFromCues derives a subtitle index from the Cues the source
+// already carries - no walk, no read past the metadata - for the given
+// subtitle tracks (all of them when none are named). Muxers cue every block of
+// a subtitle track with its position inside the cluster, which is all an
+// entry needs. The index is unresolved until Resolve reads each cued cluster's
+// header; verified marks the tracks whose cue count matches a trusted
+// NUMBER_OF_FRAMES statistic - a track without one, or with another count, may
+// be cued only in part, and the caller decides whether a walk replaces it.
+func SubtitleIndexFromCues(c *mkv.Container, size int64, trackIDs []uint64) (*SubtitleIndex, map[uint64]bool, error) {
+	keep, err := resolveIndexTracks(c, trackIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	ix := &SubtitleIndex{fileSize: size, tcScale: c.Info.TimecodeScale, segmentUID: c.Info.SegmentUID, entries: map[uint64][]subEntry{}, unresolved: true}
+	verified := map[uint64]bool{}
+	stats := trustedTrackStatistics(c)
+	for _, id := range keep {
+		var entries []subEntry
+		for k := range c.Cues {
+			cue := &c.Cues[k]
+			if cue.Track != id || cue.RelativePos <= 0 {
+				continue
+			}
+			entries = append(entries, subEntry{
+				pos:    reader.BlockPos{Off: cue.RelativePos, ClusterStart: c.SegmentStart + cue.ClusterPos, ClusterEnd: -1, ClusterTS: -1},
+				timeMs: cue.TimeMs, frames: 1,
+			})
+		}
+		if len(entries) == 0 {
+			continue
+		}
+		sort.SliceStable(entries, func(a, b int) bool {
+			if entries[a].pos.ClusterStart != entries[b].pos.ClusterStart {
+				return entries[a].pos.ClusterStart < entries[b].pos.ClusterStart
+			}
+			return entries[a].pos.Off < entries[b].pos.Off
+		})
+		ix.order = append(ix.order, id)
+		ix.entries[id] = entries
+		st, ok := stats[id]
+		verified[id] = ok && st.frames > 0 && st.frames == int64(len(entries))
+	}
+	return ix, verified, nil
+}
+
+// Unresolved reports whether the index still needs Resolve before it can seat a reader.
+func (ix *SubtitleIndex) Unresolved() bool { return ix != nil && ix.unresolved }
+
+// Resolve turns a Cues-derived index into a usable one: it reads each cued
+// cluster's header once (a few bytes per cluster, nothing of the media) to
+// learn where the cluster's data starts, its timestamp and its end, and
+// settles every entry's position from them. An interrupted call leaves the
+// index unresolved; the next one settles the entries it did not reach.
+func (ix *SubtitleIndex) Resolve(ctx context.Context, srcPath string, opts ...mkv.Options) error {
+	if ix == nil || !ix.unresolved {
+		return nil
+	}
+	fs := mkv.FSFrom(opts)
+	f, err := fs.DoOpen(srcPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	clusters := map[int64]reader.BlockPos{} // data start, end and timestamp per cluster, read once
+	var lost []reader.DamageRange           // damaged regions cued clusters lie in: their entries are dropped
+	for _, id := range ix.order {
+		entries := ix.entries[id]
+		for i := range entries {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			e := &entries[i]
+			if e.pos.ClusterTS >= 0 || inDamage(lost, e.pos.ClusterStart) {
+				continue // settled by a call that was interrupted later, or lost
+			}
+			base, ok := clusters[e.pos.ClusterStart]
+			if !ok {
+				if base, err = reader.ResolveClusterBlock(f, e.pos.ClusterStart, 0); err != nil {
+					g, damaged := damageAtCluster(f, ix.tcScale, e.pos.ClusterStart, opts)
+					if !damaged {
+						return fmt.Errorf("subtitle index from cues: %w", err)
+					}
+					lost = append(lost, g)
+					reportDamage(opts, g, e.timeMs)
+					continue
+				}
+				clusters[e.pos.ClusterStart] = base
+			}
+			e.pos = reader.BlockPos{Off: base.Off + e.pos.Off, ClusterStart: base.ClusterStart, ClusterEnd: base.ClusterEnd, ClusterTS: base.ClusterTS}
+		}
+	}
+	for _, id := range ix.order {
+		ix.entries[id] = slices.DeleteFunc(ix.entries[id], func(e subEntry) bool { return inDamage(lost, e.pos.ClusterStart) })
+	}
+	ix.unresolved = false
+	return nil
+}

@@ -22,6 +22,7 @@ type Info struct {
 	Rating      string    `json:"rating,omitempty"`
 	Genre       string    `json:"genre,omitempty"`
 	Date        string    `json:"date,omitempty"`
+	Duration    float64   `json:"duration,omitempty"` // detik, dari Info container (head-only)
 	Chapters    []Chapter `json:"chapters"`
 	Video       []Track   `json:"video"`
 	Audio       []Track   `json:"audio"`
@@ -74,6 +75,7 @@ func Read(ctx context.Context, rs io.ReadSeeker, name string) (Info, error) {
 		Rating:      tagValue(c.Tags, "RATING", "RATING_VALUE", "AGE_RATING"),
 		Genre:       tagValue(c.Tags, "GENRE"),
 		Date:        tagValue(c.Tags, "DATE_RELEASED", "DATE", "YEAR"),
+		Duration:    float64(c.DurationMs) / 1000,
 		Chapters:    make([]Chapter, 0, len(c.Chapters)),
 		Video:       make([]Track, 0, 1),
 		Audio:       make([]Track, 0, 2),

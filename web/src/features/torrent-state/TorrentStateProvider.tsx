@@ -32,7 +32,7 @@ type TorrentContextValue = {
   clearStatus: () => void
   applyState: (state: TorrentState) => void
   selectFile: (index: number) => Promise<void>
-  loadMagnet: (body: { magnet: string; fileIndex?: number; runtime?: number }, onProgress?: (state: TorrentState) => void) => Promise<TorrentState>
+  loadMagnet: (body: { magnet: string; fileIndex?: number }, onProgress?: (state: TorrentState) => void) => Promise<TorrentState>
   cancelLoad: () => Promise<void>
 }
 
@@ -89,7 +89,7 @@ export function TorrentStateProvider({ children }: { children: ReactNode }) {
    *     menghentikan job-nya di server (torrent yang sedang aktif tidak diusir)
    *   - spam klik tidak menumpuk job: request kedua diabaikan selama request
    *     pertama dari tab ini masih jalan */
-  const loadMagnet = useCallback(async (body: { magnet: string; fileIndex?: number; runtime?: number }, onProgress?: (s: TorrentState) => void) => {
+  const loadMagnet = useCallback(async (body: { magnet: string; fileIndex?: number }, onProgress?: (s: TorrentState) => void) => {
     if (loadPending.current) throw new Error('busy')
     loadPending.current = true
     magnetAbort.current = new AbortController()

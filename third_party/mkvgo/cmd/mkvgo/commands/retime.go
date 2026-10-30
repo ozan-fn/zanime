@@ -1,0 +1,133 @@
+package commands
+
+import (
+	"context"
+	"fmt"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/gravity-zero/mkvgo/matroska"
+	"github.com/gravity-zero/mkvgo/mp4"
+)
+
+const retimeUsage = "usage: mkvgo retime <file.mkv|.mp4> --shift <track>=<ms> [--shift <track>=<ms> ...] [--in-place | --replace] [--keep-backup] [--deep-verify] [--strict] [--rollback-delta <file>] (MP4: moov edit-list only, mode flags do not apply)"
+
+// CmdRetime cancels a constant A/V desync by shifting the block timecodes of
+// the given tracks in place (2 bytes per block, crash-safe journal, no
+// rewrite, no temp file). The classic use is the repack defect where audio
+// content starts late: `--shift 2=-900` moves track 2 earlier by 900 ms.
+func CmdRetime(args []string) {
+	var deepVerify, strict, inPlace, replace, keepBackup bool
+	var deltaPath string
+	shift := map[uint64]int64{}
+	var rest []string
+	fl := newFlags("retime")
+	fl.Bool(&deepVerify, "--deep-verify")
+	fl.Bool(&strict, "--strict")
+	fl.Bool(&inPlace, "--in-place")
+	fl.Bool(&replace, "--replace")
+	fl.Bool(&keepBackup, "--keep-backup")
+	fl.Func(func(v string) {
+		track, ms, err := parseShift(v)
+		if err != nil {
+			FatalErr(err)
+		}
+		shift[track] = ms * 1_000_000 // ms -> ns
+	}, "--shift")
+	fl.Missing("--shift", "--shift needs a <track>=<ms> value")
+	fl.String(&deltaPath, "--rollback-delta")
+	fl.Missing("--rollback-delta", "--rollback-delta needs a file path")
+	rest = fl.Parse(args)
+	if len(rest) != 1 {
+		Fatal(retimeUsage)
+	}
+	if len(shift) == 0 {
+		Fatal("at least one --shift <track>=<ms> is required")
+	}
+	if inPlace && replace {
+		Fatal("--in-place and --replace are mutually exclusive (omit both for the automatic choice)")
+	}
+	if keepBackup && inPlace {
+		Fatal("--keep-backup only applies to the rewrite engine (--replace or automatic)")
+	}
+	path := rest[0]
+
+	// MP4/MOV routes to the edit-list engine: same flag, same sign, but the
+	// repair is a moov-only rewrite (no per-block patching, hence none of the
+	// Matroska engine's mode flags). Routed by the file's FIRST BYTES, never
+	// its name, like the library router - a mislabeled file lands right.
+	if isMP4Content(path) {
+		if inPlace || replace || keepBackup || deepVerify || strict || deltaPath != "" {
+			Fatal("retime on an MP4 edits the moov only; --in-place/--replace/--keep-backup/--deep-verify/--strict/--rollback-delta do not apply")
+		}
+		if err := mp4.RetimeTracks(context.Background(), path, shift); err != nil {
+			FatalErr(err)
+		}
+		fmt.Printf("retimed %s (edit list):\n", path)
+		fmt.Print(shiftLines(shift))
+		return
+	}
+
+	opts := matroska.Options{Progress: NewProgressBar(), DeepVerify: deepVerify, StrictVerify: strict, KeepBackup: keepBackup}
+	printPreexisting := armPreexisting(&opts)
+	// The rewrite engine drops trailing junk past the declared Segment end;
+	// the operator must see what left the file.
+	var skipped []matroska.DamagedRange
+	opts.OnSkip = func(r matroska.DamagedRange) { skipped = append(skipped, r) }
+	printDelta := func() {}
+	if deltaPath != "" {
+		var closeDelta func()
+		printDelta, closeDelta = armRollbackDelta(&opts, deltaPath, rest...)
+		defer closeDelta()
+	}
+
+	retimeFn := matroska.RetimeTracks
+	switch {
+	case inPlace:
+		retimeFn = matroska.RetimeTracksInPlace
+	case replace:
+		retimeFn = matroska.RetimeTracksReplace
+	}
+	err := retimeFn(context.Background(), path, shift, opts)
+	ClearProgress()
+	if err != nil {
+		FatalErr(err)
+	}
+	printPreexisting()
+	fmt.Printf("retimed %s:\n", path)
+	fmt.Print(shiftLines(shift))
+	printTrailingJunkDrops(skipped)
+	printDelta()
+}
+
+// parseShift parses "<track>=<ms>" (ms may be negative: earlier).
+func parseShift(s string) (track uint64, ms int64, err error) {
+	eq := strings.IndexByte(s, '=')
+	if eq <= 0 || eq == len(s)-1 {
+		return 0, 0, fmt.Errorf("--shift wants <track>=<ms>, got %q", s)
+	}
+	track, err = strconv.ParseUint(s[:eq], 10, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("--shift: bad track number %q", s[:eq])
+	}
+	ms, err = strconv.ParseInt(s[eq+1:], 10, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("--shift: bad millisecond value %q", s[eq+1:])
+	}
+	if ms == 0 {
+		return 0, 0, fmt.Errorf("--shift: a zero shift does nothing")
+	}
+	return track, ms, nil
+}
+
+// shiftLines renders the applied shifts one track per line, in track order (a
+// map walk would print the same command's result differently from run to run).
+func shiftLines(shift map[uint64]int64) string {
+	var b strings.Builder
+	for _, track := range slices.Sorted(maps.Keys(shift)) {
+		fmt.Fprintf(&b, "  track %d shifted by %+d ms\n", track, shift[track]/1_000_000)
+	}
+	return b.String()
+}

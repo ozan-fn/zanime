@@ -1,0 +1,183 @@
+package ops
+
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"io"
+	"slices"
+	"strings"
+
+	"github.com/gravity-zero/mkvgo/mkv"
+	"github.com/gravity-zero/mkvgo/mkv/reader"
+	"github.com/gravity-zero/mkvgo/mkv/subtitle"
+	"github.com/gravity-zero/mkvgo/mkv/writer"
+)
+
+func MergeASS(ctx context.Context, srcPath, assPath, dstPath string, lang, name string, opts ...mkv.Options) (err error) {
+	ass, err := subtitle.ParseASS(assPath)
+	if err != nil {
+		return fmt.Errorf("parse ASS: %w", err)
+	}
+	if len(ass.Events) == 0 {
+		return fmt.Errorf("ASS file has no dialogue events")
+	}
+
+	fs := mkv.FSFrom(opts)
+	c, err := reader.OpenWithFS(ctx, srcPath, fs, reader.WithoutAttachmentData())
+	if err != nil {
+		return err
+	}
+
+	codec := "ass"
+	if strings.HasSuffix(strings.ToLower(assPath), ".ssa") {
+		codec = "ssa"
+	}
+
+	subTrack := appendedTrack(c.Tracks, mkv.Track{
+		Type: mkv.SubtitleTrack, Codec: codec,
+		Language: lang, Name: name, CodecPrivate: []byte(ass.Header),
+	})
+	newID := subTrack.ID
+	tracks := append(c.Tracks, subTrack)
+
+	subBlocks := make([]mkv.Block, len(ass.Events))
+	for i, ev := range ass.Events {
+		// The event's end rides as the BlockDuration, as mainstream muxers write ASS.
+		var dur int64
+		if ev.EndMs > ev.StartMs {
+			dur = ev.EndMs - ev.StartMs
+		}
+		subBlocks[i] = mkv.Block{
+			TrackNumber: newID, Timecode: ev.StartMs, Duration: dur,
+			Keyframe: true, // a text event depends on no other
+			Data:     []byte(fmt.Sprintf("%d,%s,%s", i, cmp.Or(ev.Layer, "0"), ev.Fields)),
+		}
+	}
+	// Blocks go out in time order (an ASS lists events in any order); ReadOrder keeps the file's.
+	slices.SortStableFunc(subBlocks, func(a, b mkv.Block) int { return cmp.Compare(a.Timecode, b.Timecode) })
+
+	out, err := createOutput(fs, dstPath, srcPath, assPath)
+	if err != nil {
+		return err
+	}
+	defer removeUnfinished(fs, dstPath, &err) // a failed write leaves no truncated output
+	defer closeWithErr(out, &err)
+
+	mw := writer.NewMKVWriter(out)
+	mw.SetAttachmentSource(attachmentSource(fs))
+	if err := writeStartLike(mw, c, tracks, subTrack); err != nil {
+		return err
+	}
+	// A file with a subtitle track added is not the file it came from
+	// (derivedSegmentUID), and a cue outlasting the source extends the declared
+	// duration (metaForMergedSubs).
+	meta, durationMs := metaForMergedSubs(c, subBlocks)
+	meta.Info.SegmentUID = derivedSegmentUID(&c.Info, srcPath, "merge-ass")
+	if err := mw.WriteMetadata(&meta, tracks, durationMs); err != nil {
+		return err
+	}
+	if err := streamToWriter(ctx, mw, srcPath, c.Info.TimecodeScale, fs, streamOpts{
+		remap: identityRemap(c.Tracks), extraSubs: subBlocks, progress: mkv.ProgressFrom(opts),
+	}); err != nil {
+		return err
+	}
+	return mw.Finalize()
+}
+
+func ExtractASS(ctx context.Context, srcPath string, trackID uint64, outPath string, opts ...mkv.Options) (err error) {
+	fs := mkv.FSFrom(opts)
+	c, err := reader.OpenWithFS(ctx, srcPath, fs, reader.WithoutAttachmentData())
+	if err != nil {
+		return err
+	}
+
+	var track *mkv.Track
+	for i := range c.Tracks {
+		if c.Tracks[i].ID == trackID && c.Tracks[i].Type == mkv.SubtitleTrack {
+			track = &c.Tracks[i]
+			break
+		}
+	}
+	if track == nil {
+		return fmt.Errorf("subtitle track %d not found", trackID)
+	}
+	if track.Codec != "ass" && track.Codec != "ssa" {
+		return fmt.Errorf("track %d is %s, not ASS/SSA", trackID, track.Codec)
+	}
+
+	f, err := fs.DoOpen(srcPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	br, err := reader.NewBlockReader(f, c.Info.TimecodeScale)
+	if err != nil {
+		return err
+	}
+	// Filter in the reader, not after the fact - see ExtractSubtitle: the other
+	// tracks' payloads are neither delivered nor, past the read window, read.
+	br.KeepTracks(trackID)
+	dmg := tolerateSubtitleDamage(br, opts)
+
+	out, err := createOutput(fs, outPath, srcPath)
+	if err != nil {
+		return err
+	}
+	defer removeUnfinished(fs, outPath, &err) // a failed write leaves no truncated output
+	defer closeWithErr(out, &err)
+
+	if len(track.CodecPrivate) > 0 {
+		if _, err := fmt.Fprintf(out, "%s\n", track.CodecPrivate); err != nil {
+			return fmt.Errorf("write ASS header: %w", err)
+		}
+	}
+
+	q := openCues{mediaEndMs: c.DurationMs}
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		blk, err := br.Next()
+		if err == io.EOF {
+			if fromMs, ok := dmg.skipped(); ok {
+				return q.flush(fromMs, true)
+			}
+			return q.flush(0, false)
+		}
+		if err != nil {
+			return err
+		}
+		if fromMs, ok := dmg.skipped(); ok {
+			if err := q.flush(fromMs, true); err != nil {
+				return err
+			}
+		}
+		payload, err := decompressSubtitleBlock(track, blk.Data)
+		if err != nil {
+			return err
+		}
+		text := trimNulls(payload)
+		if len(text) == 0 {
+			continue
+		}
+		parts := strings.SplitN(text, ",", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		endMs := int64(0)
+		if blk.Duration > 0 {
+			endMs = blk.Timecode + blk.Duration
+		}
+		start := subtitle.FormatASSTimestamp(blk.Timecode)
+		if err := q.add(blk.Timecode, endMs, subtitle.FlattenASSBlock([]byte(text)), func(endMs int64) error {
+			if _, err := fmt.Fprintf(out, "Dialogue: %s,%s,%s,%s\n", parts[1], start, subtitle.FormatASSTimestamp(endMs), parts[2]); err != nil {
+				return fmt.Errorf("write ASS dialogue: %w", err)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+}

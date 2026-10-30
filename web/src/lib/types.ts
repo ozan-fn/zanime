@@ -40,6 +40,7 @@ export type MediaInfo = {
   rating?: string
   genre?: string
   date?: string
+  duration?: number
   poster?: string
   chapters?: MediaChapter[]
   video?: MediaTrack[]

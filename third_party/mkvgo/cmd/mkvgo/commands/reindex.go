@@ -1,0 +1,126 @@
+package commands
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/gravity-zero/mkvgo/matroska"
+)
+
+const reindexUsage = "usage: mkvgo reindex <input.mkv> [output.mkv] [--deep-verify] [--replace] [--keep-backup] [--resync] [--clean-cut] [--strict] [--rollback-delta <file>]"
+
+func CmdReindex(args []string) {
+	var deepVerify, replace, keepBackup, resync, cleanCut, strict bool
+	var deltaPath string
+	var rest []string
+	fl := newFlags("reindex")
+	fl.Bool(&deepVerify, "--deep-verify")
+	fl.Bool(&strict, "--strict")
+	fl.Bool(&replace, "--replace")
+	fl.Bool(&keepBackup, "--keep-backup")
+	fl.Bool(&resync, "--resync")
+	fl.Bool(&cleanCut, "--clean-cut")
+	fl.String(&deltaPath, "--rollback-delta")
+	fl.Missing("--rollback-delta", "--rollback-delta needs a file path")
+	rest = fl.Parse(args)
+	if len(rest) < 1 {
+		Fatal(reindexUsage)
+	}
+	if cleanCut && !resync {
+		Fatal("--clean-cut only applies together with --resync")
+	}
+
+	var skipped []matroska.DamagedRange
+	var repaired []matroska.RepairedRange
+	opts := matroska.Options{Progress: NewProgressBar(), DeepVerify: deepVerify, KeepBackup: keepBackup, Resync: resync, CleanCut: cleanCut, StrictVerify: strict}
+	printPreexisting := armPreexisting(&opts)
+	// Always collect drops: even the strict walk drops trailing junk past
+	// the declared Segment end, and the operator must see what left the file.
+	opts.OnSkip = func(r matroska.DamagedRange) { skipped = append(skipped, r) }
+	if resync {
+		opts.OnRepair = func(r matroska.RepairedRange) { repaired = append(repaired, r) }
+	}
+	printDelta := func() {}
+	if deltaPath != "" {
+		var closeDelta func()
+		printDelta, closeDelta = armRollbackDelta(&opts, deltaPath, rest...)
+		defer closeDelta()
+	}
+
+	if replace {
+		if len(rest) != 1 {
+			Fatal("--replace takes exactly one path: the source is reindexed in place, no separate output")
+		}
+		src := rest[0]
+		err := matroska.ReindexReplace(context.Background(), src, opts)
+		ClearProgress()
+		if err != nil {
+			FatalErr(err)
+		}
+		fmt.Printf("reindexed %s (original replaced after verification)\n", src)
+		printPreexisting()
+		printResyncOutcome(resync, skipped, repaired)
+		printDelta()
+		return
+	}
+
+	if keepBackup {
+		Fatal("--keep-backup only applies together with --replace")
+	}
+	if len(rest) < 2 {
+		Fatal(reindexUsage)
+	}
+	src, dst := rest[0], rest[1]
+	guardOutput(dst, src)
+
+	err := matroska.Reindex(context.Background(), src, dst, opts)
+	ClearProgress()
+	if err != nil {
+		FatalErr(err)
+	}
+	fmt.Printf("reindexed %s → %s\n", src, dst)
+	printPreexisting()
+	printResyncOutcome(resync, skipped, repaired)
+	printDelta()
+}
+
+// printResyncOutcome reports what a --resync run repaired and dropped, so the
+// operator knows exactly which byte ranges (and roughly which presentation
+// times) were reconstructed or lost. Without --resync the strict walk only
+// ever drops trailing junk past the declared Segment end - said plainly when
+// it happened, silent otherwise.
+func printResyncOutcome(resync bool, skipped []matroska.DamagedRange, repaired []matroska.RepairedRange) {
+	if !resync {
+		printTrailingJunkDrops(skipped)
+		return
+	}
+	for i, r := range repaired {
+		fmt.Printf("  repaired range %d: offset %d-%d, %s of media kept that a plain resync would have dropped\n",
+			i+1, r.StartOffset, r.EndOffset, FormatBytes(r.BytesKept))
+	}
+	if len(skipped) == 0 {
+		if len(repaired) > 0 {
+			fmt.Println("  nothing lost (repairs were lossless)")
+		} else {
+			fmt.Println("  no corrupted region found (resync was not needed)")
+		}
+		return
+	}
+	var total int64
+	for i, r := range skipped {
+		total += r.EndOffset - r.StartOffset
+		fmt.Printf("  skipped range %d: offset %d-%d (%s), approx %s-%s\n",
+			i+1, r.StartOffset, r.EndOffset, FormatBytes(r.EndOffset-r.StartOffset),
+			FmtMs(r.ApproxStartMs), FmtMs(r.ApproxEndMs))
+	}
+	fmt.Printf("  %s of corrupted data skipped across %d range(s)\n", FormatBytes(total), len(skipped))
+}
+
+// printTrailingJunkDrops reports the trailing bytes a strict rewrite dropped
+// past the declared Segment end. Shared by reindex and retime.
+func printTrailingJunkDrops(skipped []matroska.DamagedRange) {
+	for _, r := range skipped {
+		fmt.Printf("  dropped %s of trailing junk past the declared Segment end (offset %d-%d)\n",
+			FormatBytes(r.EndOffset-r.StartOffset), r.StartOffset, r.EndOffset)
+	}
+}

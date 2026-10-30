@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { TorrentFile } from '@/lib/types'
 import { fmt } from '@/lib/fmt'
 import { useTorrent } from '@/features/torrent-state/TorrentStateProvider'
@@ -119,6 +119,22 @@ export function FilesCard() {
   const files = state?.files || []
   const selected = state?.selected
   const store = epThumbsState()
+  const listRef = useRef<HTMLDivElement | null>(null)
+
+  /* Episode terpilih bisa di luar layar (season pack panjang): geser daftar
+   * supaya barisnya terlihat, tanpa menggeser halaman. Rect viewport dipakai
+   * karena container-nya tidak `relative`, jadi offsetTop tidak bisa diandalkan. */
+  useEffect(() => {
+    if (selected == null) return
+    const list = listRef.current
+    const row = list?.querySelector<HTMLElement>(`[data-index="${selected}"]`)
+    if (!list || !row) return
+    const lr = list.getBoundingClientRect()
+    const rr = row.getBoundingClientRect()
+    if (rr.top < lr.top || rr.bottom > lr.bottom) {
+      list.scrollTop += rr.top - lr.top - (lr.height - rr.height) / 2
+    }
+  }, [selected, files.length])
 
   if (!files.length) return null
 
@@ -142,7 +158,7 @@ export function FilesCard() {
           {files.length} file
         </span>
       </div>
-      <div className="mt-3 max-h-[380px] space-y-1.5 overflow-y-auto pr-1">
+      <div ref={listRef} className="mt-3 max-h-[380px] space-y-1.5 overflow-y-auto pr-1">
         {files.map((file) => (
           <Row key={file.index} file={file} files={files} active={file.index === selected} store={store} onPick={onSelect} />
         ))}

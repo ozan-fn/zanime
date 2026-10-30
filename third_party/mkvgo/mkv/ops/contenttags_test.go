@@ -1,0 +1,504 @@
+package ops
+
+import (
+	"bytes"
+	"context"
+	"math"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/gravity-zero/mkvgo/mkv"
+	"github.com/gravity-zero/mkvgo/mkv/reader"
+	"github.com/gravity-zero/mkvgo/mkv/writer"
+)
+
+// writeTaggedMKV is buildMultiClusterMKV plus a tag list.
+func writeTaggedMKV(t *testing.T, path string, tracks []mkv.Track, blockSets [][]mkv.Block, tags []mkv.Tag, durationMs int64) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	mw := writer.NewMKVWriter(f)
+	mustNil(t, mw.WriteStart())
+	mustNil(t, mw.WriteMetadata(&mkv.Container{
+		Info: mkv.SegmentInfo{TimecodeScale: 1_000_000, MuxingApp: "test", WritingApp: "test"},
+		Tags: tags,
+	}, tracks, durationMs))
+	for _, blocks := range blockSets {
+		if len(blocks) == 0 {
+			continue
+		}
+		mustNil(t, mw.WriteClusterWithCues(blocks[0].Timecode, 1_000_000, blocks))
+	}
+	mustNil(t, mw.Finalize())
+}
+
+// hashedFixture writes a two-track file and stamps it with content hashes.
+func hashedFixture(t *testing.T, dir, name string) string {
+	t.Helper()
+	tracks := []mkv.Track{videoTrack(1), audioTrack(2)}
+	var sets [][]mkv.Block
+	for tc := int64(0); tc < 10000; tc += 100 {
+		sets = append(sets, []mkv.Block{
+			{TrackNumber: 1, Timecode: tc, Keyframe: tc%1000 == 0, Data: []byte{byte(tc), 0xAA}},
+			{TrackNumber: 2, Timecode: tc, Keyframe: true, Data: []byte{byte(tc), 0xBB}},
+		})
+	}
+	plain := buildMultiClusterMKV(t, dir, "plain_"+name, tracks, sets, 10000)
+	hashed := filepath.Join(dir, name)
+	if err := WriteContentHashes(context.Background(), plain, hashed); err != nil {
+		t.Fatal(err)
+	}
+	return hashed
+}
+
+// TestSplitJoin_ContentHashesDescribeTheOutput: a part carries a slice of the
+// source, a joined file carries several sources - neither is described by the
+// source's CONTENT_SHA256. Copying it over made mkvgo's own verification report
+// mkvgo's own output as corrupt.
+func TestSplitJoin_ContentHashesDescribeTheOutput(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	src := hashedFixture(t, dir, "src.mkv")
+	if mm, err := VerifyContentHashes(ctx, src); err != nil || len(mm) != 0 {
+		t.Fatalf("the fixture must verify: %d mismatches, %v", len(mm), err)
+	}
+
+	parts, err := Split(ctx, mkv.SplitOptions{SourcePath: src, OutputDir: filepath.Join(dir, "parts"),
+		Ranges: []mkv.TimeRange{{StartMs: 0, EndMs: 5000}, {StartMs: 5000, EndMs: 0}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, p := range parts {
+		mm, err := VerifyContentHashes(ctx, p)
+		if err != nil {
+			t.Fatalf("part %d: %v", i+1, err)
+		}
+		if len(mm) != 0 {
+			t.Errorf("part %d fails its own hashes (%d mismatches) - the source's were copied over", i+1, len(mm))
+		}
+	}
+
+	joined := filepath.Join(dir, "joined.mkv")
+	if err := Join(ctx, parts, joined); err != nil {
+		t.Fatal(err)
+	}
+	mm, err := VerifyContentHashes(ctx, joined)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mm) != 0 {
+		t.Errorf("the joined file fails its own hashes (%d mismatches)", len(mm))
+	}
+
+	// And the round trip is provably lossless: same content as the source.
+	diffs, err := CompareBlocks(ctx, src, joined)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("split+join changed the content: %+v", diffs)
+	}
+}
+
+// TestPlanContentTags keeps the sorting rule explicit: work metadata stays,
+// media-derived families are re-measured, and an emptied tag disappears.
+func TestPlanContentTags(t *testing.T) {
+	plan := planContentTags([]mkv.Tag{
+		{TargetID: 1, SimpleTags: []mkv.SimpleTag{
+			{Name: "TITLE", Value: "Ep 1"},
+			{Name: ContentHashTag, Value: "deadbeef"},
+		}},
+		{TargetID: 2, SimpleTags: []mkv.SimpleTag{
+			{Name: "BPS", Value: "128000"},
+			{Name: "NUMBER_OF_FRAMES", Value: "42"},
+		}},
+	})
+	if !plan.wantHashes || !plan.wantStats {
+		t.Errorf("families detected: hashes=%v stats=%v, want both", plan.wantHashes, plan.wantStats)
+	}
+	if len(plan.kept) != 1 || len(plan.kept[0].SimpleTags) != 1 || plan.kept[0].SimpleTags[0].Name != "TITLE" {
+		t.Errorf("kept = %+v, want the TITLE tag alone", plan.kept)
+	}
+	if plan.digestsFor() == nil || plan.statsFor() == nil {
+		t.Error("accumulators must be allocated when the families are present")
+	}
+
+	// A source with no content-derived tag must not start hashing anything.
+	none := planContentTags([]mkv.Tag{{TargetID: 1, SimpleTags: []mkv.SimpleTag{{Name: "TITLE", Value: "x"}}}})
+	if none.recompute() || none.digestsFor() != nil || none.statsFor() != nil {
+		t.Error("a source without content tags must not trigger a recompute")
+	}
+}
+
+// TestSplit_StatisticsAreRemeasured: the statistics family describes the media,
+// so a part must state its own - not the whole film's frame count.
+func TestSplit_StatisticsAreRemeasured(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	tracks := []mkv.Track{videoTrack(1), audioTrack(2)}
+	var sets [][]mkv.Block
+	for tc := int64(0); tc < 10000; tc += 100 {
+		sets = append(sets, []mkv.Block{
+			{TrackNumber: 1, Timecode: tc, Keyframe: tc%1000 == 0, Data: []byte("v")},
+			{TrackNumber: 2, Timecode: tc, Keyframe: true, Data: []byte("a")},
+		})
+	}
+	src := filepath.Join(dir, "src.mkv")
+	writeTaggedMKV(t, src, tracks, sets, []mkv.Tag{{TargetID: 1, SimpleTags: []mkv.SimpleTag{
+		{Name: "NUMBER_OF_FRAMES", Value: "100"},
+	}}}, 10000)
+
+	parts, err := Split(ctx, mkv.SplitOptions{SourcePath: src, OutputDir: filepath.Join(dir, "p"),
+		Ranges: []mkv.TimeRange{{StartMs: 0, EndMs: 5000}, {StartMs: 5000, EndMs: 0}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := reader.OpenMeta(ctx, parts[0], reader.WithTags())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frames string
+	for _, tag := range c.Tags {
+		for _, st := range tag.SimpleTags {
+			if st.Name == "NUMBER_OF_FRAMES" && tag.TargetID == 1 {
+				frames = st.Value
+			}
+		}
+	}
+	if frames == "100" {
+		t.Error("the part still declares the source's 100 frames")
+	}
+	if frames != "50" {
+		t.Errorf("NUMBER_OF_FRAMES = %q, want \"50\" (the part's own video frames)", frames)
+	}
+}
+
+// TestCompareBlocksConcat proves a split lost nothing WITHOUT joining the parts
+// back - the point of the N-way form: no temporary copy of a 2 GB film.
+func TestCompareBlocksConcat(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	tracks := []mkv.Track{videoTrack(1), audioTrack(2)}
+	var sets [][]mkv.Block
+	for base := int64(0); base < 12000; base += 1000 {
+		var cluster []mkv.Block
+		for tc := base; tc < base+1000; tc += 100 {
+			cluster = append(cluster,
+				mkv.Block{TrackNumber: 1, Timecode: tc, Keyframe: tc%2000 == 0, Data: []byte{byte(tc / 100), 0x11}},
+				mkv.Block{TrackNumber: 2, Timecode: tc, Keyframe: true, Data: []byte{byte(tc / 100), 0x22}})
+		}
+		sets = append(sets, cluster)
+	}
+	src := buildMultiClusterMKV(t, dir, "src.mkv", tracks, sets, 12000)
+
+	parts, err := Split(ctx, mkv.SplitOptions{SourcePath: src, OutputDir: filepath.Join(dir, "p"),
+		Ranges: []mkv.TimeRange{{StartMs: 0, EndMs: 4000}, {StartMs: 4000, EndMs: 8000}, {StartMs: 8000, EndMs: 0}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parts) != 3 {
+		t.Fatalf("parts = %v", parts)
+	}
+	diffs, err := CompareBlocksConcat(ctx, src, parts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("the three parts should hold exactly the source's content: %+v", diffs)
+	}
+
+	// Order matters: the same parts shuffled are NOT the source.
+	shuffled := []string{parts[1], parts[0], parts[2]}
+	if diffs, err := CompareBlocksConcat(ctx, src, shuffled); err != nil {
+		t.Fatal(err)
+	} else if len(diffs) == 0 {
+		t.Error("parts given out of order should not compare equal")
+	}
+
+	// A missing part is caught too.
+	if diffs, err := CompareBlocksConcat(ctx, src, parts[:2]); err != nil {
+		t.Fatal(err)
+	} else if len(diffs) == 0 {
+		t.Error("a missing part should show up as a content diff")
+	}
+
+	if _, err := CompareBlocksConcat(ctx, src, nil); err == nil {
+		t.Error("no parts at all must be an error, not an empty match")
+	}
+}
+
+// TestSplit_StatisticsWrittenEvenWhenSourceHadNone: the statistics come free
+// with a walk the op is doing anyway, so a part states its own bitrate and
+// frame count even if nobody ever tagged the source. That matters beyond
+// tidiness: WithBitrate has no other way to report a Matroska track's bitrate
+// on the metadata-only path.
+func TestSplit_StatisticsWrittenEvenWhenSourceHadNone(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	tracks := []mkv.Track{videoTrack(1), audioTrack(2)}
+	var sets [][]mkv.Block
+	for base := int64(0); base < 10000; base += 1000 {
+		var cluster []mkv.Block
+		for tc := base; tc < base+1000; tc += 100 {
+			cluster = append(cluster,
+				mkv.Block{TrackNumber: 1, Timecode: tc, Keyframe: tc%1000 == 0, Data: make([]byte, 500)},
+				mkv.Block{TrackNumber: 2, Timecode: tc, Keyframe: true, Data: make([]byte, 50)})
+		}
+		sets = append(sets, cluster)
+	}
+	// No tags whatsoever on the source.
+	src := buildMultiClusterMKV(t, dir, "src.mkv", tracks, sets, 10000)
+	if c, err := reader.OpenMeta(ctx, src, reader.WithTags()); err != nil {
+		t.Fatal(err)
+	} else if len(c.Tags) != 0 {
+		t.Fatalf("the fixture must start untagged, has %d", len(c.Tags))
+	}
+
+	parts, err := Split(ctx, mkv.SplitOptions{SourcePath: src, OutputDir: filepath.Join(dir, "p"),
+		Ranges: []mkv.TimeRange{{StartMs: 0, EndMs: 5000}, {StartMs: 5000, EndMs: 0}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := reader.OpenMeta(ctx, parts[0], reader.WithTags())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, tag := range c.Tags {
+		if tag.TargetID != 1 {
+			continue
+		}
+		for _, st := range tag.SimpleTags {
+			got[st.Name] = st.Value
+		}
+	}
+	// Half the film: 50 video frames of 500 bytes.
+	if got["NUMBER_OF_FRAMES"] != "50" {
+		t.Errorf("NUMBER_OF_FRAMES = %q, want \"50\"", got["NUMBER_OF_FRAMES"])
+	}
+	if got["NUMBER_OF_BYTES"] != "25000" {
+		t.Errorf("NUMBER_OF_BYTES = %q, want \"25000\"", got["NUMBER_OF_BYTES"])
+	}
+	if got["BPS"] == "" || got["DURATION"] == "" {
+		t.Errorf("BPS/DURATION missing: %v", got)
+	}
+
+	// The head-only bitrate path finds them - the reason this is not cosmetic.
+	withBitrate, err := reader.OpenMeta(ctx, parts[0], reader.WithBitrate())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withBitrate.Tracks[0].Bitrate == nil {
+		t.Error("WithBitrate found no bitrate on the part - the statistics tags are its only source")
+	}
+
+	// And the content is untouched by any of this.
+	if diffs, err := CompareBlocksConcat(ctx, src, parts); err != nil {
+		t.Fatal(err)
+	} else if len(diffs) != 0 {
+		t.Errorf("content changed: %+v", diffs)
+	}
+}
+
+// TestSplitJoin_TagsStayInTheHead pins the layout, not just the values. Parking
+// the measured tags after the clusters cost three things at once: a
+// forward-only reader (a pipe, an HTTP body) never reached them, EditInPlace
+// had to fold them into a head region never sized for them and started refusing
+// files it used to accept, and finding them at all became SeekHead-dependent.
+func TestSplitJoin_TagsStayInTheHead(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	tracks := []mkv.Track{videoTrack(1), audioTrack(2)}
+	var sets [][]mkv.Block
+	for tc := int64(0); tc < 10000; tc += 500 {
+		sets = append(sets, []mkv.Block{
+			{TrackNumber: 1, Timecode: tc, Keyframe: true, Data: make([]byte, 400)},
+			{TrackNumber: 2, Timecode: tc, Keyframe: true, Data: make([]byte, 40)},
+		})
+	}
+	src := filepath.Join(dir, "src.mkv")
+	writeTaggedMKV(t, src, tracks, sets, []mkv.Tag{
+		{TargetID: 0, SimpleTags: []mkv.SimpleTag{{Name: "TITLE", Value: "Work"}}},
+		// Spelled the way the bitrate reader matches it: case-insensitively.
+		{TargetID: 1, SimpleTags: []mkv.SimpleTag{{Name: "Bps", Value: "8000000"}}},
+	}, 10000)
+
+	parts, err := Split(ctx, mkv.SplitOptions{SourcePath: src, OutputDir: filepath.Join(dir, "p"),
+		Ranges: []mkv.TimeRange{{StartMs: 0, EndMs: 5000}, {StartMs: 5000, EndMs: 0}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := filepath.Join(dir, "joined.mkv")
+	if err := Join(ctx, parts, joined); err != nil {
+		t.Fatal(err)
+	}
+
+	// A forward-only reader stops at the first cluster: the tags must be before it.
+	streamTags := func(p string) int {
+		f, err := os.Open(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		c, _, err := reader.ReadStream(ctx, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(c.Tags)
+	}
+	for _, p := range append(parts, joined) {
+		if n := streamTags(p); n == 0 {
+			t.Errorf("%s: a streaming reader sees no tag - they were written past the clusters",
+				filepath.Base(p))
+		}
+	}
+
+	// The stale whole-film bitrate must be gone, not merely shadowed.
+	c, err := reader.OpenMeta(ctx, parts[0], reader.WithBitrate())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Tracks[0].Bitrate == nil {
+		t.Fatal("no bitrate on the part")
+	}
+	if *c.Tracks[0].Bitrate == 8000000 {
+		t.Error("the part reports the whole film's bitrate: a differently-spelled BPS escaped the strip")
+	}
+
+	// And an in-place edit still fits, on the part and on the joined file.
+	for _, p := range append(parts, joined) {
+		if err := EditInPlace(ctx, p, func(c *mkv.Container) { c.Info.Title = "edited" }); err != nil {
+			t.Errorf("EditInPlace refused %s: %v", filepath.Base(p), err)
+		}
+	}
+}
+
+// TestStats_DescribeEveryTrack covers three ways a track used to fall out of the
+// tags entirely: no block in this part, a measured duration of zero, and the
+// conventional markers that say the statistics are auto-generated.
+func TestStats_DescribeEveryTrack(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	tracks := []mkv.Track{videoTrack(1), audioTrack(2), subtitleTrack(3, "srt")}
+
+	var sets [][]mkv.Block
+	for base := int64(0); base < 6000; base += 1000 {
+		var cl []mkv.Block
+		for tc := base; tc < base+1000; tc += 100 {
+			cl = append(cl,
+				mkv.Block{TrackNumber: 1, Timecode: tc, Keyframe: true, Data: []byte("v")},
+				mkv.Block{TrackNumber: 2, Timecode: tc, Keyframe: true, Data: []byte("a")})
+		}
+		if base == 4000 { // the only subtitle cue, in the SECOND half
+			cl = append(cl, mkv.Block{TrackNumber: 3, Timecode: 4000, Keyframe: true, Data: []byte("s")})
+		}
+		sets = append(sets, cl)
+	}
+	plain := buildMultiClusterMKV(t, dir, "plain.mkv", tracks, sets, 6000)
+	src := filepath.Join(dir, "src.mkv")
+	if err := WriteContentHashes(ctx, plain, src); err != nil {
+		t.Fatal(err)
+	}
+
+	parts, err := Split(ctx, mkv.SplitOptions{SourcePath: src, OutputDir: filepath.Join(dir, "p"),
+		Ranges: []mkv.TimeRange{{StartMs: 0, EndMs: 3000}, {StartMs: 3000, EndMs: 0}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Part 1 holds no subtitle block at all; part 2 holds exactly one, so that
+	// track's measured duration there is 0.
+	for i, p := range parts {
+		c, err := reader.OpenMeta(ctx, p, reader.WithTags())
+		if err != nil {
+			t.Fatal(err)
+		}
+		byTrack := map[uint64]map[string]string{}
+		for _, tag := range c.Tags {
+			m := byTrack[tag.TargetID]
+			if m == nil {
+				m = map[string]string{}
+				byTrack[tag.TargetID] = m
+			}
+			for _, st := range tag.SimpleTags {
+				m[st.Name] = st.Value
+			}
+		}
+		sub := byTrack[3]
+		if sub[ContentHashTag] == "" {
+			t.Errorf("part %d: the subtitle track has no content hash - it dropped out of the "+
+				"certified set instead of being checked", i+1)
+		}
+		if sub["NUMBER_OF_FRAMES"] == "" || sub["NUMBER_OF_BYTES"] == "" {
+			t.Errorf("part %d: the subtitle track has no frame/byte count: %v", i+1, sub)
+		}
+		if byTrack[1]["_STATISTICS_TAGS"] == "" || byTrack[1]["_STATISTICS_WRITING_APP"] != "mkvgo" {
+			t.Errorf("part %d: the statistics are not marked as auto-generated: %v", i+1, byTrack[1])
+		}
+		// The whole point: they still verify.
+		if mm, err := VerifyContentHashes(ctx, p); err != nil {
+			t.Fatal(err)
+		} else if len(mm) != 0 {
+			t.Errorf("part %d fails its own hashes: %v", i+1, mm)
+		}
+	}
+}
+
+// TestUpperBoundTags_HoldsFieldByField is the guard on the slot ReserveTags
+// books in the head: if the real write ever exceeded it, WriteReservedTags would
+// refuse and the op would fail. The bound must therefore hold on each field on
+// its OWN - an earlier version allowed 8 digits of hours in DURATION and only
+// survived because a duration that long forces the bitrate to one digit. A bound
+// that leans on another field being small is not a bound.
+func TestUpperBoundTags_HoldsFieldByField(t *testing.T) {
+	tracks := []mkv.Track{videoTrack(1), audioTrack(2)}
+	plan := contentTagPlan{wantHashes: true, wantStats: true}
+
+	longest := map[string]int{}
+	for _, tag := range plan.upperBoundTags(tracks) {
+		for _, st := range tag.SimpleTags {
+			if len(st.Value) > longest[st.Name] {
+				longest[st.Name] = len(st.Value)
+			}
+		}
+	}
+
+	cases := map[string]*trackStats{
+		"ordinary":           {bytes: 1 << 20, frames: 1000, maxTC: 600_000, lastDur: 40, seen: true},
+		"hours beyond a day": {bytes: 1 << 20, frames: 10, maxTC: math.MaxInt64 / 2, lastDur: 0, seen: true},
+		"absurd byte count":  {bytes: math.MaxInt64 / 4, frames: math.MaxInt64, maxTC: 1000, lastDur: 0, seen: true},
+		"single frame":       {bytes: 7, frames: 1, maxTC: 4000, lastDur: 0, seen: true},
+		"nothing at all":     {},
+	}
+	for name, st := range cases {
+		stats := map[uint64]*trackStats{1: st, 2: st}
+		for _, tag := range plan.tagsForOutput(tracks, nil, stats) {
+			for _, s := range tag.SimpleTags {
+				if max, ok := longest[s.Name]; ok && len(s.Value) > max {
+					t.Errorf("%s: %s = %q is %d chars, the reserved slot sizes it at %d",
+						name, s.Name, s.Value, len(s.Value), max)
+				}
+				if s.Name == "BPS" && strings.HasPrefix(s.Value, "-") {
+					t.Errorf("%s: BPS = %q - the bitrate overflowed into a negative", name, s.Value)
+				}
+			}
+		}
+		// And the whole element still fits what was booked.
+		var up, real bytes.Buffer
+		if err := writer.WriteTags(&up, plan.upperBoundTags(tracks)); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.WriteTags(&real, plan.tagsForOutput(tracks, nil, stats)); err != nil {
+			t.Fatal(err)
+		}
+		if real.Len() > up.Len() {
+			t.Errorf("%s: the tags need %d bytes, the slot books %d", name, real.Len(), up.Len())
+		}
+	}
+}

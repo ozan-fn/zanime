@@ -1,0 +1,492 @@
+package mp4
+
+// fragment.go - fragmented MP4 (fMP4 / CMAF) output: an init segment
+// (ftyp + moov with empty sample tables + mvex/trex) followed by media segments
+// (styp + moof + mdat), the container form HLS and DASH stream. Unlike the
+// progressive writer (moov after mdat, whole-file sample tables), a fragmented
+// presentation is written strictly forward - each segment is self-describing via
+// its moof - so it can be produced and served segment by segment.
+//
+// It reuses the progressive muxer's track planning and sample-entry builders
+// (planTracks, codec.go) and the decode-timing reconstruction (sample.go); only
+// the box layout differs.
+
+import "sort"
+
+// mp4 sample_flags (ISO/IEC 14496-12 §8.8.3.1): a sync sample depends on nothing
+// (sample_depends_on = 2); a non-sync sample depends on others and sets
+// sample_is_non_sync_sample. These match what standard fragmented-MP4 muxers write.
+const (
+	sampleFlagsSync    = 0x02000000
+	sampleFlagsNonSync = 0x01010000
+)
+
+// tfhd/trun/tf_flags bits used below.
+const (
+	tfhdDefaultBaseIsMoof = 0x020000 // base_data_offset is the moof start
+	trunDataOffset        = 0x000001
+	trunSampleDuration    = 0x000100
+	trunSampleSize        = 0x000200
+	trunSampleFlags       = 0x000400
+	trunSampleCTS         = 0x000800
+)
+
+// fragSample is one sample's metadata for the fragmented writer, in decode
+// order. The data bytes live in a per-track temp file (streamed, not held).
+type fragSample struct {
+	size  uint32
+	ptsMs int64
+	// blockPtsMs is the stored timecode of the sample's source block
+	// (mkv.Block.BlockTimecode): segment windows key on it so the frames of a
+	// laced block - individually timed but sharing one stored timecode - are
+	// never split across two windows. Equal to ptsMs for unlaced sources.
+	blockPtsMs int64
+	sync       bool
+	// filled by fillFragTiming, in the track's media timescale (DTS rebased so
+	// the track's first sample is 0):
+	dtsTS int64
+	durTS int64
+	ctsTS int32
+	// reachesNext marks a sample an on-demand window times at or past the next window's first decode time, which
+	// the next segment's 'cenc' IV would repeat.
+	reachesNext bool
+	// cut marks the last sample before a damaged region a window walk passed
+	// over: its duration is the track's frame duration, not the gap to the
+	// first sample past the region.
+	cut bool
+}
+
+// buildInitSegment assembles the fMP4 initialisation segment: ftyp (with the
+// fragmented/CMAF brands) followed by a moov whose every track has an EMPTY
+// sample table and a movie-extends (mvex) box declaring the tracks will be
+// fragmented. meta carries the title/tags/cover, like the progressive moov.
+func buildInitSegment(tracks []*fragTrack, meta movieMeta, cenc *CENCOptions) []byte {
+	ftyp := boxf("ftyp", func(w *bw) {
+		w.fourcc("iso5") // fragmented-capable major brand
+		w.u32(512)       // minor_version
+		for _, b := range dedupeBrands([]string{"iso5", "iso6", "cmfc", "mp41", "dash"}) {
+			w.fourcc(b)
+		}
+	})
+
+	var (
+		maxID   uint32
+		totalMs int64
+	)
+	traks := make([][]byte, 0, len(tracks))
+	for _, ft := range tracks {
+		traks = append(traks, buildInitTrak(ft, cenc))
+		if ft.outTrack.mp4ID > maxID {
+			maxID = ft.outTrack.mp4ID
+		}
+		if ft.presentMs > totalMs {
+			totalMs = ft.presentMs
+		}
+	}
+
+	children := make([][]byte, 0, len(traks)+4)
+	children = append(children, buildMvhd(uint32(totalMs), maxID+1))
+	children = append(children, traks...)
+	children = append(children, buildMvex(tracks, uint32(totalMs)))
+	if mb := buildMovieMeta(meta.title, meta.tags, meta.cover, meta.hashes); mb != nil {
+		children = append(children, container("udta", mb))
+	}
+	children = append(children, buildPsshBoxes(cenc)...)
+	return append(ftyp, container("moov", children...)...)
+}
+
+// buildInitTrak builds a track box with an EMPTY sample table (stsd carrying the
+// sample entry, then zero-entry stts/stsc/stsz/stco). Everything else mirrors the
+// progressive trak: header, media header, handler, edit list for A/V offset.
+func buildInitTrak(ft *fragTrack, cenc *CENCOptions) []byte {
+	t := ft.outTrack
+
+	var mediaHeader []byte
+	switch {
+	case t.spec.video:
+		mediaHeader = vmhd()
+	case t.spec.text:
+		mediaHeader = nmhd()
+	default:
+		mediaHeader = smhd()
+	}
+	sampleEntry := t.sampleEntry
+	if cenc != nil {
+		sampleEntry = wrapProtectedSampleEntry(t.sampleEntry, t.spec.video, cenc)
+	}
+	emptyStbl := container("stbl",
+		fullBox("stsd", 0, 0, func(w *bw) { w.u32(1); w.bytes(sampleEntry) }),
+		fullBox("stts", 0, 0, func(w *bw) { w.u32(0) }),
+		fullBox("stsc", 0, 0, func(w *bw) { w.u32(0) }),
+		fullBox("stsz", 0, 0, func(w *bw) { w.u32(0); w.u32(0) }),
+		fullBox("stco", 0, 0, func(w *bw) { w.u32(0) }),
+	)
+	minf := container("minf", mediaHeader, buildDinf(), emptyStbl)
+
+	mdiaChildren := [][]byte{buildMdhd(uint32(ft.durMediaTS), ft.timescale, mdhdLanguage(t.mkv))}
+	if t.mkv.LanguageBCP47 != "" {
+		mdiaChildren = append(mdiaChildren, buildElng(t.mkv.LanguageBCP47))
+	}
+	hName := handlerName(t.spec.handler)
+	if t.mkv.Name != "" {
+		hName = t.mkv.Name
+	}
+	mdiaChildren = append(mdiaChildren, buildHdlr(t.spec.handler, hName), minf)
+	mdia := container("mdia", mdiaChildren...)
+
+	trakChildren := [][]byte{buildTkhd(t, uint32(ft.presentMs), 0)} // one track per init segment: no alternative to group
+	if t.mkv.IsForced {
+		trakChildren = append(trakChildren, container("udta", buildKind(dashRoleScheme, "forced-subtitle")))
+	}
+	// Edit list, like the progressive path: the presentation offset (A/V sync  -
+	// fragment decode times are rebased so each track starts at 0) and the
+	// audio gapless priming (CodecDelay) a decoder must discard.
+	codecDelay := int64(0)
+	if wantsEditList(t.mkv.Codec, t.mp3Delay) {
+		codecDelay = t.mkv.CodecDelay
+	}
+	// The composition shift joins the offset and the priming in the edit list: the
+	// trun's offsets were pushed up by it so no reader would re-shift the whole
+	// presentation, and this takes it straight back out - the first frame lands
+	// where the source put it.
+	if ft.offsetMs > 0 || codecDelay > 0 || ft.ctsShiftTS > 0 {
+		trakChildren = append(trakChildren, buildEdts(codecDelay, ft.offsetMs, ft.ctsShiftTS, uint32(ft.durMovieMs), ft.timescale))
+	}
+	trakChildren = append(trakChildren, mdia)
+	return container("trak", trakChildren...)
+}
+
+// buildMvex declares the fragmented tracks: an mehd with the total duration
+// (movie timescale) plus one trex per track carrying default sample values.
+func buildMvex(tracks []*fragTrack, totalMs uint32) []byte {
+	children := [][]byte{
+		fullBox("mehd", 0, 0, func(w *bw) { w.u32(totalMs) }),
+	}
+	for _, ft := range tracks {
+		children = append(children, fullBox("trex", 0, 0, func(w *bw) {
+			w.u32(ft.outTrack.mp4ID)
+			w.u32(1) // default_sample_description_index
+			w.u32(0) // default_sample_duration (per-sample in trun)
+			w.u32(0) // default_sample_size
+			w.u32(sampleFlagsNonSync)
+		}))
+	}
+	return container("mvex", children...)
+}
+
+// buildMoof assembles a movie-fragment box for one segment: mfhd (sequence
+// number) and one traf per track. Each trun's data_offset points at its track's
+// sample bytes: past the whole moof, the 16-byte mdat header (the 64-bit
+// largesize form mdatHeader writes) and the preceding tracks' data. The offsets
+// depend on the moof's own size, so the moof is built twice - a trun's
+// data_offset is a fixed-width u32, so the size of pass two equals pass one.
+func buildMoof(seq uint32, segs []trackSegment) []byte {
+	assemble := func(moofSize int64) []byte {
+		mfhd := fullBox("mfhd", 0, 0, func(w *bw) { w.u32(seq) })
+		children := [][]byte{mfhd}
+		var dataRun int64
+		// trafStart is the byte offset, from the moof box's own first byte, of
+		// the next traf's box (header included) - the same anchor trun's
+		// data_offset uses (tfhdDefaultBaseIsMoof), so a CENC traf's saio value
+		// (computed inside buildTraf) resolves against the same origin.
+		trafStart := int64(smallBoxHeaderLen + len(mfhd))
+		for i := range segs {
+			offset := int32(0)
+			if moofSize > 0 {
+				offset = int32(moofSize + mdatHeaderLen + dataRun)
+			}
+			traf := buildTraf(&segs[i], offset, trafStart)
+			children = append(children, traf)
+			trafStart += int64(len(traf))
+			dataRun += segs[i].dataLen
+		}
+		return container("moof", children...)
+	}
+	sized := assemble(0)
+	return assemble(int64(len(sized)))
+}
+
+// buildTraf builds a track-fragment box: tfhd (default-base-is-moof) + tfdt
+// (baseMediaDecodeTime) + trun (per-sample duration/size/flags/cts) pointing at
+// the track's sample bytes via dataOffset (relative to the moof start), plus -
+// when s.cenc is set - senc/saiz/saio describing the track's per-sample CENC
+// auxiliary information (see cenc.go). trafStart is this traf's own offset
+// from the moof's first byte (buildMoof's running total), needed to compute
+// saio's value.
+func buildTraf(s *trackSegment, dataOffset int32, trafStart int64) []byte {
+	tfhd := fullBox("tfhd", 0, tfhdDefaultBaseIsMoof, func(w *bw) {
+		w.u32(s.trackID)
+	})
+	tfdt := fullBox("tfdt", 1, 0, func(w *bw) {
+		w.u64(uint64(s.baseDecodeTS))
+	})
+	flags := uint32(trunDataOffset | trunSampleDuration | trunSampleSize | trunSampleFlags)
+	if s.hasCTS {
+		flags |= trunSampleCTS
+	}
+	trun := fullBox("trun", 1, flags, func(w *bw) {
+		w.u32(uint32(len(s.samples)))
+		w.i32(dataOffset)
+		for i := range s.samples {
+			sm := &s.samples[i]
+			w.u32(uint32(sm.durTS))
+			w.u32(sm.size)
+			if sm.sync {
+				w.u32(sampleFlagsSync)
+			} else {
+				w.u32(sampleFlagsNonSync)
+			}
+			if s.hasCTS {
+				w.i32(sm.ctsTS)
+			}
+		}
+	})
+	children := [][]byte{tfhd, tfdt, trun}
+	if s.cenc != nil {
+		aux := sencAuxOffset(trafStart, tfhd, tfdt, trun)
+		children = append(children, buildSenc(s.cenc), buildSaiz(s.cenc), buildSaio(aux))
+	}
+	return container("traf", children...)
+}
+
+// trackSegment holds one track's samples for one media segment, ready to frame
+// into a traf.
+type trackSegment struct {
+	trackID      uint32
+	baseDecodeTS int64
+	samples      []fragSample
+	hasCTS       bool
+	dataLen      int64 // total sample bytes for this track in the segment
+	// cenc holds this segment's CENC auxiliary data (senc/saiz), built from
+	// the plaintext samples before the moof is framed; nil when the segment
+	// is not CENC-protected.
+	cenc *cencTrafData
+}
+
+// buildStyp is the segment type box: a fMP4 media segment opens with one so a
+// player can start mid-stream. Brands mirror the init ftyp.
+func buildStyp() []byte {
+	return boxf("styp", func(w *bw) {
+		w.fourcc("msdh")
+		w.u32(0)
+		for _, b := range []string{"msdh", "msix", "cmfs"} {
+			w.fourcc(b)
+		}
+	})
+}
+
+// compositionPrefix caps how many leading samples (decode order) the composition
+// shift is measured over - the first GOP when it closes sooner. A stream's reorder
+// pattern is an encoder constant that its opening frames already spell out (a
+// depth-2 reorder needs three frames to show itself), so a short prefix measures
+// the shift the whole track needs. It has to be short: the on-demand plan applies
+// the very same rule (it never sees every sample), and reading a whole GOP just to
+// time the init would cost it a large chunk of the file before it serves a byte.
+const compositionPrefix = 24
+
+// compositionPrefixLen is the prefix both paths measure the shift over: the first
+// GOP (up to, excluding, the second keyframe), capped. sync flags the keyframes,
+// in decode order.
+func compositionPrefixLen(sync []bool) int {
+	n := len(sync)
+	if n > compositionPrefix {
+		n = compositionPrefix
+	}
+	for i := 1; i < n; i++ {
+		if sync[i] {
+			return i // the GOP closed: everything the reorder pattern can show is in it
+		}
+	}
+	return n
+}
+
+// compositionShiftTS is how far a track's presentation must be pushed back for
+// its composition offsets to stay non-negative: max(DTS - PTS) over that prefix,
+// 0 when nothing is reordered. ptsTS are the presentation times, in the media
+// timescale, in DECODE order; sync flags the keyframes.
+//
+// A fragmented file cannot carry the alternative. Its decode times live in the
+// tfdt, which is UNSIGNED: a reader that meets a negative composition offset
+// cannot answer it by pulling the decode clock back before zero (the progressive
+// path can - its sample table has no such floor - which is why it plays in sync
+// with none of this). It compensates the only way left to it: by pushing every
+// PTS forward by the deepest negative offset - the whole picture, audio excepted,
+// arriving one to two frames late. So the offsets must be non-negative before
+// they are written, and an edit list must then take back the shift that made them
+// so (buildEdts).
+func compositionShiftTS(ptsTS []int64, sync []bool) int64 {
+	n := compositionPrefixLen(sync)
+	if n > len(ptsTS) {
+		n = len(ptsTS)
+	}
+	if n < 2 {
+		return 0
+	}
+	dts := make([]int64, n)
+	copy(dts, ptsTS[:n])
+	sort.Slice(dts, func(i, j int) bool { return dts[i] < dts[j] })
+
+	var shift int64
+	for i := 0; i < n; i++ {
+		if d := dts[i] - ptsTS[i]; d > shift {
+			shift = d
+		}
+	}
+	return shift
+}
+
+// fillFragTiming assigns each sample its decode time, duration and composition
+// offset (in the track's media timescale), from the presentation timestamps  -
+// the same reconstruction the progressive path uses (sample.go reconstructTiming):
+// DTS is the sorted PTS in decode order, durations are the diffs, ctts = PTS - DTS
+// plus the track's composition shift, which keeps every offset non-negative (see
+// compositionShiftTS; the init's edit list takes the shift back out, so the
+// presentation still starts where the source does).
+// DTS is rebased so the track's first sample is 0; the presentation offset (the
+// smallest PTS) is returned so the caller can emit it as an edit list.
+func fillFragTiming(samples []fragSample, lastDurMs int64, mts uint32, gridTS int64) (offsetMs int64, hasCTS bool, totalTS int64, ctsShiftTS int64) {
+	return fillFragTimingTS(samples, nil, lastDurMs, mts, gridTS)
+}
+
+// fillFragTimingTS is fillFragTiming with, when ptsTS is not nil, each
+// sample's presentation time given in the mts timescale itself instead of
+// derived from its millisecond time: an MP4 source's video is timed in its
+// own ticks, so a 24000/1001 stream keeps 1001-tick frames rather than a run
+// of 41 and 42 ms ones. The final sample then takes the duration of the one
+// before it. The presentation offset stays the smallest millisecond time.
+func fillFragTimingTS(samples []fragSample, ptsTS []int64, lastDurMs int64, mts uint32, gridTS int64) (offsetMs int64, hasCTS bool, totalTS int64, ctsShiftTS int64) {
+	n := len(samples)
+	if n == 0 {
+		return 0, false, 0, 0
+	}
+	if ptsTS != nil {
+		lastDurMs = 0
+	}
+	scale := func(ms int64) int64 {
+		if mts == movieTimescale {
+			return ms
+		}
+		return ms * int64(mts) / int64(movieTimescale)
+	}
+	if gridTS == 0 { // laced audio with no DefaultDuration: recover the stride
+		gridTS = deriveGridTS(n, func(i int) int64 { return samples[i].blockPtsMs }, mts)
+	}
+	pts := func(i int) int64 {
+		if ptsTS != nil {
+			return ptsTS[i]
+		}
+		return scale(samples[i].ptsMs)
+	}
+
+	// Constant-rate audio rides the sample-exact grid (see audioGridTS): frame
+	// k decodes at k×gridTS, k re-derived from each block's stored timecode
+	// (then +1 within a lace). Millisecond rounding never reaches the trun  -
+	// no ±1 ms duration jitter, no duplicated DTS at a lace boundary, no
+	// one-frame drift per segment - while a real gap still moves k.
+	if gridTS > 0 {
+		anchor := scale(samples[0].blockPtsMs)
+		offsetMs = samples[0].ptsMs
+		k := int64(0)
+		for i := range samples {
+			if i > 0 {
+				if samples[i].blockPtsMs != samples[i-1].blockPtsMs {
+					nk := gridIndex(scale(samples[i].blockPtsMs)-anchor, gridTS)
+					if nk <= k {
+						nk = k + 1
+					}
+					k = nk
+				} else {
+					k++
+				}
+				samples[i-1].durTS = k*gridTS - samples[i-1].dtsTS
+			}
+			samples[i].dtsTS = k * gridTS
+			samples[i].ctsTS = 0
+			if samples[i].ptsMs < offsetMs {
+				offsetMs = samples[i].ptsMs
+			}
+		}
+		samples[n-1].durTS = gridTS
+		for i := range samples {
+			totalTS += samples[i].durTS
+		}
+		return offsetMs, false, totalTS, 0 // grid audio never reorders
+	}
+	// DTS = sorted PTS: the i-th stored sample (decode order) gets the i-th
+	// smallest presentation time. Rebase to 0.
+	if gridTS == gridSpread { // laced audio whose stride nothing confirms: block spans shared among their frames
+		offsetMs = samples[0].ptsMs
+		blockPts := func(i int) int64 { return samples[i].blockPtsMs }
+		span, frames := firstLace(n, blockPts, scale)
+		spreadLaced(n, blockPts, scale, -1, func(m int64) int64 { return lastBlockSpan(span, frames, m) }, func(i int, dts, dur int64) {
+			samples[i].dtsTS, samples[i].durTS, samples[i].ctsTS = dts, dur, 0
+			if samples[i].ptsMs < offsetMs {
+				offsetMs = samples[i].ptsMs
+			}
+			totalTS += dur
+		})
+		return offsetMs, false, totalTS, 0
+	}
+	dts := make([]int64, n)
+	for i := range samples {
+		dts[i] = pts(i)
+	}
+	sort.Slice(dts, func(i, j int) bool { return dts[i] < dts[j] })
+	strictlyIncreasing(dts)
+	base := dts[0]
+	for i := range samples {
+		samples[i].dtsTS = dts[i] - base
+	}
+	// The shift that keeps every composition offset non-negative, measured over
+	// the SAME bounded prefix the on-demand plan measures it over, so both derive
+	// the same init.
+	prefix := make([]int64, 0, compositionPrefix)
+	syncs := make([]bool, 0, compositionPrefix)
+	for i := 0; i < n && i < compositionPrefix; i++ {
+		prefix = append(prefix, pts(i))
+		syncs = append(syncs, samples[i].sync)
+	}
+	ctsShiftTS = compositionShiftTS(prefix, syncs)
+	for i := 0; i < n-1; i++ {
+		samples[i].durTS = dts[i+1] - dts[i]
+	}
+	switch {
+	case lastDurMs > 0:
+		samples[n-1].durTS = scale(lastDurMs)
+	case n > 1:
+		samples[n-1].durTS = samples[n-2].durTS
+	default:
+		samples[n-1].durTS = 1
+	}
+	offsetMs = samples[0].ptsMs
+	for i := range samples {
+		if samples[i].ptsMs < offsetMs {
+			offsetMs = samples[i].ptsMs
+		}
+		off := pts(i) - dts[i] + ctsShiftTS
+		if off < 0 {
+			// Only a stream that reorders deeper later than it does in its first
+			// GOPs can land here. Clamping keeps the offsets non-negative - the
+			// invariant the whole shift exists to hold - at the price of that one
+			// sample presenting at its decode time, a sub-frame error, instead of
+			// letting a reader re-shift the ENTIRE presentation.
+			off = 0
+		}
+		samples[i].ctsTS = int32(off)
+		if off != 0 {
+			hasCTS = true
+		}
+		totalTS += samples[i].durTS
+	}
+	return offsetMs, hasCTS, totalTS, ctsShiftTS
+}
+
+// strictlyIncreasing makes sorted decode times strictly increasing: a time equal to the one before - two blocks
+// stamped alike - moves one tick past it, so no two samples share a decode time, nor a 'cenc' IV.
+func strictlyIncreasing(dts []int64) {
+	for i := 1; i < len(dts); i++ {
+		if dts[i] <= dts[i-1] {
+			dts[i] = dts[i-1] + 1
+		}
+	}
+}

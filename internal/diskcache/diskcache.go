@@ -1,16 +1,19 @@
-// Package diskcache is a torrent storage backend that keeps pieces on disk.
+// Package diskcache is a torrent storage backend that keeps each downloaded
+// piece in its own small file.
 //
 // Layout: a torrent gets its own directory under the root (its info hash, or
-// "metainfo-<n>" before the hash is known), and inside it one sparse file per
-// torrent file, at the torrent's own path. A sparse file costs only the pieces
-// actually written, and the OS page cache serves hot reads, so nothing is
-// duplicated in RAM.
+// "metainfo-<n>" before the hash is known), and inside it one file per piece
+// under p/, named by the piece index. A piece file holds at most one piece
+// (usually a few MiB), so nothing here is a sparse file the size of an episode:
+// the cache's size is the bytes actually downloaded, and eviction is a plain
+// file delete that works on any filesystem - no hole punching required.
 //
 // The budget is enforced by an LRU over directories, not pieces: when the cache
 // exceeds the limit, whole torrents are deleted least recently used first. The
-// active torrent is never evicted, but its unselected files are dropped when the
-// viewer switches episodes, so a season pack does not keep every watched episode
-// on disk. The order is persisted in root/lru.json so it survives a restart.
+// active torrent is never evicted, but its unselected pieces are dropped when
+// the viewer switches episodes, so a season pack does not keep every watched
+// episode on disk. The order is persisted in root/lru.json so it survives a
+// restart.
 package diskcache
 
 import (
@@ -22,7 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
 
@@ -36,6 +39,9 @@ const registryName = "lru.json"
 // inside the torrent directory, so DropAll and LRU eviction remove it together
 // with the cached bytes.
 const completionName = ".complete"
+
+// pieceDirName is the subdirectory holding one file per piece.
+const pieceDirName = "p"
 
 // activeCacheLimit keeps one playing torrent from filling a large global
 // budget. Pieces behind the playhead are cheap to fetch again; a 4 GiB cache
@@ -56,7 +62,7 @@ type Client struct {
 
 	// refresh tells the live torrent client that the listed pieces are no
 	// longer on disk. It runs while the torrent's data lock is held, before a
-	// reader can observe the punched hole.
+	// reader can observe the missing file.
 	refresh func(dir string, pieces []int)
 }
 
@@ -101,7 +107,7 @@ func (c *Client) SetActive(hash metainfo.Hash) {
 }
 
 // SetPieceRefresh installs the callback used after an active-torrent piece is
-// punched out. The callback must only refresh completion bits; it must not call
+// removed. The callback must only refresh completion bits; it must not call
 // back into Client or it will deadlock.
 func (c *Client) SetPieceRefresh(fn func(dir string, pieces []int)) {
 	c.mu.Lock()
@@ -109,11 +115,12 @@ func (c *Client) SetPieceRefresh(fn func(dir string, pieces []int)) {
 	c.refresh = fn
 }
 
-// DropOtherFiles removes every cached file of a torrent except the one at
-// keepOffset, so a season pack keeps only the episode being watched on disk.
-// Pieces that overlapped a removed file are marked incomplete and their indexes
-// returned; the live torrent must call Piece(i).UpdateCompletion() for each one,
-// or it will keep believing the deleted bytes are still there.
+// DropOtherFiles removes every cached piece of a torrent that does not touch
+// the file at keepOffset, so a season pack keeps only the episode being watched
+// on disk. Pieces that straddle the kept file's boundary are kept too - they
+// hold its bytes. The removed piece indexes are returned; the live torrent must
+// call Piece(i).UpdateCompletion() for each one, or it will keep believing the
+// deleted bytes are still there.
 func (c *Client) DropOtherFiles(hash metainfo.Hash, keepOffset int64) (removed int64, pieces []int) {
 	c.mu.Lock()
 	t := c.torrents[hash.String()]
@@ -169,10 +176,10 @@ func (c *Client) Prune() (removed int64) {
 		c.order = slices.Delete(c.order, i, i+1)
 	}
 	// Even the active torrent is not allowed to grow without bound. Keep the
-	// few most recently used pieces (the playhead and readahead) and punch the
-	// older ones out of their sparse files. Do this after releasing c.mu:
-	// updating the live client's completion takes the client lock, and that
-	// lock may be held while the client calls back into OpenTorrent.
+	// few most recently used pieces (the playhead and readahead) and delete the
+	// older ones. Do this after releasing c.mu: refreshing the live client's
+	// completion takes the client lock, and that lock may be held while the
+	// client calls back into OpenTorrent.
 	var activeTorrent *torrentImpl
 	activeDir := c.active
 	activeTarget := c.limit
@@ -246,10 +253,9 @@ func (c *Client) saveLocked() {
 	_ = os.Rename(tmp, filepath.Join(c.root, registryName))
 }
 
-// dirSize sums the disk space actually allocated below dir. Sparse torrent
-// files report their full logical length in FileInfo.Size even when only a few
-// pieces were written, so using Size would make a 3 GiB movie look 3 GiB cached
-// after reading its tail/Cues.
+// dirSize sums the disk space actually allocated below dir. A piece file is
+// small and non-sparse once complete, but a half-written one may still have
+// holes, so allocated blocks are the honest measure.
 func dirSize(dir string) int64 {
 	var total int64
 	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
@@ -268,8 +274,8 @@ func dirSize(dir string) int64 {
 // LRU entry that is not the active torrent.
 func reverse(dirs []string) []string {
 	out := make([]string, len(dirs))
-	for i, dir := range dirs {
-		out[len(dirs)-1-i] = dir
+	for i, d := range dirs {
+		out[len(dirs)-1-i] = d
 	}
 	return out
 }
@@ -304,7 +310,7 @@ type torrentImpl struct {
 	info  *metainfo.Info
 	files []metainfo.FileInfo
 
-	dataMu sync.RWMutex // file reads/writes vs. deleting a file
+	dataMu sync.RWMutex // file reads/writes vs. removing a piece
 
 	mu       sync.Mutex
 	complete map[int64]bool  // piece complete, seperti PieceCompletion upstream (in-memory)
@@ -314,6 +320,9 @@ type torrentImpl struct {
 func (t *torrentImpl) setComplete(off int64, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.complete == nil {
+		t.complete = map[int64]bool{}
+	}
 	t.complete[off] = ok
 	t.persistLocked(off, ok)
 }
@@ -329,9 +338,29 @@ func (t *torrentImpl) touch(off int64) {
 	t.mu.Unlock()
 }
 
-// evictTo punches old complete pieces out of the torrent's sparse files until
-// the whole cache fits the budget. dataMu serializes the punch against reads
-// and writes; the caller refreshes the client's completion bits afterwards.
+// piecePath is where one piece's bytes live under the torrent directory.
+func (t *torrentImpl) piecePath(index int) string {
+	return filepath.Join(t.dir, pieceDirName, strconv.Itoa(index))
+}
+
+// pieceOffset converts a piece index to its byte offset in the torrent.
+func (t *torrentImpl) pieceOffset(index int) int64 {
+	return int64(index) * t.info.PieceLength
+}
+
+// fileAt returns the torrent file whose offset is off.
+func (t *torrentImpl) fileAt(off int64) (metainfo.FileInfo, bool) {
+	for _, fi := range t.files {
+		if fi.TorrentOffset == off {
+			return fi, true
+		}
+	}
+	return metainfo.FileInfo{}, false
+}
+
+// evictTo deletes old complete pieces until the whole cache fits the budget.
+// dataMu serializes the delete against reads and writes; the caller refreshes
+// the client's completion bits afterwards.
 func (t *torrentImpl) evictTo(limit int64) (pieces []int, freed int64) {
 	if t.info == nil || t.info.PieceLength <= 0 {
 		return nil, 0
@@ -342,20 +371,21 @@ func (t *torrentImpl) evictTo(limit int64) (pieces []int, freed int64) {
 	}
 	t.dataMu.Lock()
 	defer t.dataMu.Unlock()
+	size := dirSize(t.dir)
 	for _, pi := range candidates {
-		if dirSize(t.dir) <= limit {
+		if size <= limit {
 			break
 		}
-		off := int64(pi) * t.info.PieceLength
-		if !t.isComplete(off) {
+		if !t.isComplete(t.pieceOffset(pi)) {
 			continue
 		}
-		n, ok := t.evictPieceLocked(t.info.Piece(pi))
+		n, ok := t.removePieceLocked(pi)
 		if !ok {
 			continue
 		}
 		pieces = append(pieces, pi)
 		freed += n
+		size -= n
 	}
 	return pieces, freed
 }
@@ -374,7 +404,7 @@ func (t *torrentImpl) evictionOrder() []int {
 	}
 	var all []cand
 	for i := 0; i < t.info.NumPieces(); i++ {
-		off := int64(i) * t.info.PieceLength
+		off := t.pieceOffset(i)
 		if !t.complete[off] {
 			continue
 		}
@@ -399,27 +429,59 @@ func (t *torrentImpl) evictionOrder() []int {
 	return out
 }
 
-// evictPieceLocked punches one piece out of every torrent file it spans. It
-// marks the piece incomplete only after at least one hole was punched; the
-// data lock keeps a reader from seeing a half-evicted piece.
-func (t *torrentImpl) evictPieceLocked(p metainfo.Piece) (int64, bool) {
-	before := dirSize(t.dir)
-	hit := false
-	for _, extent := range (&piece{torrent: t, p: p}).files(0, p.Length()) {
-		freed, err := punchHole(t.filePath(extent.index), extent.start, extent.len)
-		if err == nil && freed {
-			hit = true
+// removePieceLocked deletes one piece's file and clears its completion bit. It
+// reports the bytes freed (false when there was no file and no bit to clear).
+// Caller holds dataMu for writing.
+func (t *torrentImpl) removePieceLocked(pi int) (int64, bool) {
+	off := t.pieceOffset(pi)
+	info, err := os.Stat(t.piecePath(pi))
+	if err != nil {
+		if !t.isComplete(off) {
+			return 0, false
 		}
-	}
-	if !hit {
-		return 0, false
-	}
-	t.setComplete(p.Offset(), false)
-	after := dirSize(t.dir)
-	if after >= before {
+		t.setComplete(off, false)
 		return 0, true
 	}
-	return before - after, true
+	size := diskUsage(info)
+	if err := os.Remove(t.piecePath(pi)); err != nil {
+		return 0, false
+	}
+	t.setComplete(off, false)
+	return size, true
+}
+
+// dropOtherFiles deletes every cached piece that does not hold bytes of the
+// file at keepOffset. Pieces straddling the kept file's boundary are kept.
+func (t *torrentImpl) dropOtherFiles(keepOffset int64) (removed int64, pieces []int) {
+	if t.info == nil || t.info.PieceLength <= 0 {
+		return 0, nil
+	}
+	keep, ok := t.fileAt(keepOffset)
+	if !ok {
+		return 0, nil
+	}
+	keepStart := keep.TorrentOffset
+	keepEnd := keep.TorrentOffset + keep.Length
+
+	t.dataMu.Lock()
+	defer t.dataMu.Unlock()
+	total := t.info.TotalLength()
+	plen := t.info.PieceLength
+	for pi := 0; pi < t.info.NumPieces(); pi++ {
+		start := t.pieceOffset(pi)
+		end := start + plen
+		if end > total {
+			end = total
+		}
+		if start < keepEnd && end > keepStart {
+			continue // this piece holds bytes of the kept file
+		}
+		if n, ok := t.removePieceLocked(pi); ok {
+			removed += n
+			pieces = append(pieces, pi)
+		}
+	}
+	return removed, pieces
 }
 
 // completionPath is the sidecar bitset for this torrent.
@@ -427,9 +489,10 @@ func (t *torrentImpl) completionPath() string {
 	return filepath.Join(t.dir, completionName)
 }
 
-// loadCompletion marks pieces recorded as verified by an earlier run. A missing
-// or short sidecar simply leaves the rest incomplete; the bytes are then
-// fetched again instead of being trusted.
+// loadCompletion marks pieces recorded as verified by an earlier run, but only
+// when their piece file is actually still on disk. A missing or short sidecar
+// simply leaves the rest incomplete; the bytes are then fetched again instead
+// of being trusted.
 func (t *torrentImpl) loadCompletion() {
 	if t.info == nil || t.info.PieceLength <= 0 {
 		return
@@ -443,8 +506,11 @@ func (t *torrentImpl) loadCompletion() {
 		if i/8 >= len(data) {
 			break
 		}
-		if data[i/8]&(1<<(uint(i)%8)) != 0 {
-			t.complete[int64(i)*t.info.PieceLength] = true
+		if data[i/8]&(1<<(uint(i)%8)) == 0 {
+			continue
+		}
+		if _, err := os.Stat(t.piecePath(i)); err == nil {
+			t.complete[t.pieceOffset(i)] = true
 		}
 	}
 }
@@ -492,60 +558,7 @@ func (t *torrentImpl) isComplete(off int64) bool {
 	return t.complete[off]
 }
 
-// filePath is where one torrent file lives under the cache directory.
-func (t *torrentImpl) filePath(i int) string {
-	name := t.info.Name
-	if len(t.files) > 0 {
-		name = strings.Join(append([]string{name}, t.files[i].BestPath()...), "/")
-	}
-	return filepath.Join(t.dir, filepath.FromSlash(safeName(name)))
-}
-
-// dropOtherFiles deletes every file except the one at keepOffset. Pieces
-// touching a deleted file lose their completion bit so the torrent client
-// fetches them again if that episode is selected later.
-func (t *torrentImpl) dropOtherFiles(keepOffset int64) (removed int64, pieces []int) {
-	if t.info == nil || t.info.PieceLength <= 0 {
-		return 0, nil
-	}
-	type victim struct {
-		path       string
-		start, end int64
-	}
-	var victims []victim
-	t.dataMu.Lock()
-	defer t.dataMu.Unlock()
-	for i, fi := range t.files {
-		if fi.Length <= 0 || fi.TorrentOffset == keepOffset {
-			continue
-		}
-		victims = append(victims, victim{path: t.filePath(i), start: fi.TorrentOffset, end: fi.TorrentOffset + fi.Length})
-	}
-	if len(victims) == 0 {
-		return 0, nil
-	}
-
-	numPieces := t.info.NumPieces()
-	seen := make(map[int]bool, len(victims))
-	for _, v := range victims {
-		first := int(v.start / t.info.PieceLength)
-		last := int((v.end - 1) / t.info.PieceLength)
-		for pi := first; pi <= last && pi < numPieces; pi++ {
-			if pi >= 0 && !seen[pi] {
-				seen[pi] = true
-				pieces = append(pieces, pi)
-				t.setComplete(int64(pi)*t.info.PieceLength, false)
-			}
-		}
-		if info, err := os.Stat(v.path); err == nil {
-			removed += diskUsage(info)
-			_ = os.Remove(v.path)
-		}
-	}
-	return removed, pieces
-}
-
-// piece is one torrent piece, written straight into the files it spans.
+// piece is one torrent piece, stored whole in its own file.
 type piece struct {
 	torrent *torrentImpl
 	p       pieceSpan
@@ -559,127 +572,47 @@ type pieceSpan interface {
 	Length() int64
 }
 
-// files maps a chunk of the piece (piece-relative off, n bytes) onto the
-// torrent's files. A piece may straddle two files, and a chunk may straddle
-// both, so every segment carries its own start and length inside its file.
-type pieceFile struct {
-	index int
-	start int64
-	len   int64
-}
-
-func (p *piece) files(off, n int64) []pieceFile {
-	absBegin := p.p.Offset() + off
-	absEnd := absBegin + n
-	var out []pieceFile
-	if len(p.torrent.files) == 0 {
-		// Satu file: potongan piece berada langsung di dalam file.
-		return []pieceFile{{start: absBegin, len: n}}
+// index is the piece's index in the torrent, the name of its file.
+func (p *piece) index() int {
+	if p.torrent.info == nil || p.torrent.info.PieceLength <= 0 {
+		return 0
 	}
-	for i, fi := range p.torrent.files {
-		lo := max(fi.TorrentOffset, absBegin)
-		hi := min(fi.TorrentOffset+fi.Length, absEnd)
-		if fi.Length == 0 || lo >= hi {
-			continue
-		}
-		out = append(out, pieceFile{index: i, start: lo - fi.TorrentOffset, len: hi - lo})
-	}
-	return out
-}
-
-// path is the file's location under the cache directory. A single-file torrent
-// has no Files list, so the piece index names the torrent itself.
-func (p *piece) path(i int) string {
-	return p.torrent.filePath(i)
-}
-
-// safeName keeps a torrent path inside the cache directory, like the torrent
-// client's own file storage does.
-func safeName(name string) string {
-	parts := strings.Split(filepath.ToSlash(name), "/")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		switch part {
-		case "", ".", "..":
-			out = append(out, "_")
-		default:
-			out = append(out, part)
-		}
-	}
-	return strings.Join(out, "/")
+	return int(p.p.Offset() / p.torrent.info.PieceLength)
 }
 
 func (p *piece) ReadAt(b []byte, off int64) (int, error) {
 	p.torrent.dataMu.RLock()
 	defer p.torrent.dataMu.RUnlock()
-	read := 0
-	for read < len(b) {
-		f := p.fileAt(off + int64(read))
-		if f.len == 0 {
-			break // di luar piece
-		}
-		want := min(int64(len(b)-read), f.len)
-		file, err := os.Open(p.path(f.index))
-		if err != nil {
-			return read, err
-		}
-		n, err := file.ReadAt(b[read:read+int(want)], f.start)
-		_ = file.Close()
-		read += n
-		if err != nil && !errors.Is(err, io.EOF) {
-			return read, err
-		}
-		if int64(n) < want {
-			break // file lebih pendek dari yang dicatat torrent
-		}
+	f, err := os.Open(p.torrent.piecePath(p.index()))
+	if err != nil {
+		return 0, err
 	}
-	if read < len(b) {
-		return read, io.EOF
+	n, err := f.ReadAt(b, off)
+	_ = f.Close()
+	if n > 0 {
+		p.torrent.touch(p.p.Offset())
 	}
-	p.torrent.touch(p.p.Offset())
-	return read, nil
-}
-
-// fileAt picks the file holding the piece-relative offset and shrinks it to the
-// rest of the piece.
-func (p *piece) fileAt(off int64) pieceFile {
-	extents := p.files(off, p.p.Length()-off)
-	if len(extents) == 0 {
-		return pieceFile{}
-	}
-	return extents[0]
+	return n, err
 }
 
 func (p *piece) WriteAt(b []byte, off int64) (int, error) {
 	p.torrent.dataMu.RLock()
 	defer p.torrent.dataMu.RUnlock()
-	written := 0
-	for written < len(b) {
-		f := p.fileAt(off + int64(written))
-		if f.len == 0 {
-			break
-		}
-		want := min(int64(len(b)-written), f.len)
-		file := p.path(f.index)
-		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
-			return written, err
-		}
-		fh, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE, 0o644)
-		if err != nil {
-			return written, err
-		}
-		n, err := fh.WriteAt(b[written:written+int(want)], f.start)
-		_ = fh.Close()
-		written += n
-		if err != nil {
-			return written, err
-		}
+	path := p.torrent.piecePath(p.index())
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return 0, err
 	}
-	if written < len(b) {
-		return written, io.ErrShortWrite
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	n, err := f.WriteAt(b, off)
+	_ = f.Close()
+	if err != nil {
+		return n, err
 	}
 	p.torrent.touch(p.p.Offset())
-	return written, nil
+	return n, nil
 }
 
 // MarkComplete and MarkNotComplete are called by the torrent client setelah

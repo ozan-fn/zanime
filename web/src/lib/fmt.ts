@@ -15,11 +15,3 @@ export function fmtDur(sec?: number | null): string {
   if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`
   return `${Math.floor(m / 60)}j ${String(m % 60).padStart(2, '0')}m`
 }
-
-// Durasi dari metadata addon (menit untuk movie, detik untuk episode).
-// Durasi perkiraan; mkvgo tetap membaca durasi sebenarnya dari header file.
-export function metaSeconds(raw?: string): number {
-  const n = parseFloat(raw || '')
-  if (!Number.isFinite(n) || n <= 0) return 0
-  return Math.round(n > 300 ? n : n * 60)
-}

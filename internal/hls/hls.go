@@ -26,7 +26,7 @@ const (
 	// segmentSeconds is the CMAF segment length handed to the planner.
 	segmentSeconds = 4
 	// planTimeout bounds the head reads a plan needs over /stream.
-	planTimeout = 30 * time.Second
+	planTimeout = 60 * time.Second
 )
 
 // ErrNoSuchFile is returned for names outside the session.
@@ -222,6 +222,21 @@ func (m *Manager) currentIndex(index int) *Job {
 		return nil
 	}
 	return job
+}
+
+// Planning reports whether index has a session still building its plan. Its
+// reads are mkvgo's probes: tiny, random-offset ranges (a Cues/head/tail peek).
+// The torrent must not read ahead there, or every probe drags in whole extra
+// pieces - a cold swarm then serves hundreds of MiB for a few MiB the plan
+// actually reads, and the plan times out before it can publish the duration.
+func (m *Manager) Planning(index int) bool {
+	job := m.currentIndex(index)
+	if job == nil {
+		return false
+	}
+	job.mu.Lock()
+	defer job.mu.Unlock()
+	return job.plan == nil && job.err == ""
 }
 
 // wait blocks until the plan is ready; nil when the session is gone or failed.

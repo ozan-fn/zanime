@@ -2,7 +2,6 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { ArrowLeft, Search, X } from 'lucide-react'
 import { jget } from '@/lib/api'
-import { metaSeconds } from '@/lib/fmt'
 import { Sq } from '@/features/text/Sq'
 import { buildEpThumbs } from '@/features/files/FilesCard'
 import { resetEpThumbs, setPickedThumb, setStoreThumbs, pickedThumbOf } from '@/features/files/thumbs'
@@ -27,7 +26,6 @@ type Meta = Record<string, any>
 const emptyView = (tab: StremioTab): View => ({
   tab, results: [], cur: null, videos: [], season: null,
   streams: [], qs: new Set(), ls: new Set(), provs: new Set(), hevc: false,
-  playRuntime: 0,
 })
 
 type View = {
@@ -41,7 +39,6 @@ type View = {
   ls: Set<string>
   provs: Set<string>
   hevc: boolean
-  playRuntime: number
 }
 
 const TABS: Array<{ label: string; tab?: StremioTab; muv?: string; ac?: number }> = [
@@ -239,7 +236,7 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
         if (m.type === 'anime') {
           setStatus('Kitsu tidak menyediakan daftar episode: pilih rilis batch/season, lalu pilih file episode dari sidebar.', 'ok')
         }
-        patch({ cur: m, videos: [], streams: [], playRuntime: metaSeconds(m.runtime) })
+        patch({ cur: m, videos: [], streams: [] })
         setBusy('')
         void loadStreams(m.id, m.type)
         return
@@ -250,7 +247,7 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
         : `${CINEMETA}/meta/series/${m.id}.json`
       const meta = await jget(metaUrl)
       const videos = (meta.meta?.videos || []).filter((v: Meta) => v.season != null)
-      patch({ cur: m, videos, season: videos[0]?.season ?? 1, streams: [], playRuntime: 0 })
+      patch({ cur: m, videos, season: videos[0]?.season ?? 1, streams: [] })
       setBusy('')
     } catch (err) {
       setBusy('')
@@ -298,9 +295,8 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
       .map((x) => '&tr=' + encodeURIComponent(x.slice(8))).join('')
     const dn = raw.title?.split('\n')[0].slice(0, 180) || raw.name || ''
     const magnet = `magnet:?xt=urn:btih:${raw.infoHash}&dn=${encodeURIComponent(dn)}${trs}`
-    const body: { magnet: string; fileIndex?: number; runtime?: number } = { magnet }
+    const body: { magnet: string; fileIndex?: number } = { magnet }
     if (Number.isInteger(raw.fileIdx)) body.fileIndex = raw.fileIdx
-    if (view.playRuntime) body.runtime = view.playRuntime // durasi dari metadata API
     try {
       const state = await loadMagnet(body)
       onClose()
@@ -464,7 +460,6 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
                               v={v}
                               onPick={() => {
                                 setPickedThumb(v.thumbnail || '')
-                                patch({ playRuntime: metaSeconds(v.runtime) })
                                 void loadStreams(v.id || `${view.cur?.id}:${v.season}:${v.episode}`, 'series')
                               }}
                             />

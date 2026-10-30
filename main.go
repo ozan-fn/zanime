@@ -156,11 +156,7 @@ type server struct {
 	port    int // HTTP port mkvgo reads /stream from; 0 = not listening yet
 	started time.Time
 
-	hintIndex int     // index file yang punya durasi dari API metadata
-	hintSecs  float64 // durasi dari API metadata (0 = tidak ada); hanya untuk UI
-
-	addMu sync.Mutex // serializes magnet loads
-
+	addMu   sync.Mutex // serializes magnet loads
 	wsMu    sync.Mutex
 	wsUsers map[string]int // user cookie -> jumlah tab terbuka
 
@@ -522,6 +518,7 @@ func (s *server) state() gin.H {
 			"rating":      mi.Rating,
 			"genre":       mi.Genre,
 			"date":        mi.Date,
+			"duration":    mi.Duration,
 			"chapters":    mi.Chapters,
 			"video":       mi.Video,
 			"audio":       mi.Audio,
@@ -731,7 +728,6 @@ func (s *server) apiMagnet(c *gin.Context) {
 	var req struct {
 		Magnet    string `json:"magnet"`
 		FileIndex *int   `json:"fileIndex"`
-		Runtime   int64  `json:"runtime"` // detik, dari API metadata (opsional)
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "body harus {\"magnet\": \"...\"}"})
@@ -750,12 +746,6 @@ func (s *server) apiMagnet(c *gin.Context) {
 		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
-	s.mu.Lock()
-	s.hintSecs, s.hintIndex = 0, -1
-	if req.Runtime > 0 {
-		s.hintSecs = float64(req.Runtime)
-	}
-	s.mu.Unlock()
 	if req.FileIndex != nil {
 		s.selectTorrentFile(*req.FileIndex)
 	}
@@ -990,7 +980,14 @@ func (s *server) stream(c *gin.Context) {
 
 	reader := f.NewReader()
 	defer func() { _ = reader.Close() }()
-	reader.SetReadahead(8 << 20)
+	// Saat mkvgo menyusun plan, bacaannya adalah probe kecil di offset acak
+	// (peek head/tail/Cues). Readahead penuh di sini menarik beberapa MiB per
+	// probe: swarm dingin jadi mengunduh ratusan MiB untuk beberapa MiB yang
+	// benar-benar dibaca, dan plan timeout sebelum durasi sempat terbit.
+	// Playback sekuensial (plan sudah siap) tetap dapat readahead penuh.
+	if !s.hls.Planning(index) {
+		reader.SetReadahead(8 << 20)
+	}
 	s.countWriter(c)
 	stream.Serve(c, path.Base(f.Path()), reader)
 }

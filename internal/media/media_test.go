@@ -86,6 +86,9 @@ func TestReadMetadata(t *testing.T) {
 	if info.Title != "Judul Asli" || info.Description != "Sinopsis singkat." || info.Rating != "8.5" || info.Genre != "Anime" || info.Date != "2024" {
 		t.Fatalf("metadata = %+v", info)
 	}
+	if info.Duration != 6 {
+		t.Fatalf("duration = %v, want 6 dtk", info.Duration)
+	}
 	if len(info.Chapters) != 2 || info.Chapters[0].Title != "Pembuka" || info.Chapters[0].Start != 0 ||
 		info.Chapters[1].Title != "Kedua" || info.Chapters[1].End != 6 {
 		t.Fatalf("chapter = %+v", info.Chapters)

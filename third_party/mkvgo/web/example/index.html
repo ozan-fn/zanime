@@ -1,0 +1,105 @@
+<!doctype html>
+<!-- Runnable mkvgo-wasm demo (no build step, no dependencies).
+
+     From the repo root:
+       make wasm
+       python3 -m http.server 8080
+     then open http://localhost:8080/web/example/
+
+     Drop an MKV: it is probed head-only (works on huge files), played in the
+     <video> below through Media Source Extensions - segments are built on
+     demand from ranged reads of the File (openHLS), so even a huge file plays
+     with bounded memory - and, for a file that fits in memory, remuxed to a
+     downloadable MP4. No transcoding, no server. -->
+<html lang="en">
+<meta charset="utf-8">
+<title>mkvgo wasm demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; }
+  #drop { border: 2px dashed #888; border-radius: 8px; padding: 3rem; text-align: center; color: #555; }
+  #drop.over { border-color: #06c; color: #06c; }
+  pre { background: #f6f6f6; padding: 1rem; border-radius: 6px; overflow: auto; max-height: 24rem; }
+  video { width: 100%; margin-top: 1rem; background: #000; }
+  .row { margin: 1rem 0; }
+</style>
+
+<h1>mkvgo · WebAssembly</h1>
+<p id="status">loading wasm…</p>
+<div id="drop">drop an MKV / WebM / MP4 here (or click)</div>
+<input type="file" id="pick" hidden>
+<div class="row">
+  <button id="dl" disabled>download remuxed .mp4</button>
+</div>
+<video id="player" controls muted></video>
+<pre id="out"></pre>
+
+<script src="../../dist/wasm/wasm_exec.js"></script>
+<script type="module">
+  const $ = (id) => document.getElementById(id)
+  const log = (v) => { $('out').textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2) }
+
+  // Inline equivalent of loadMkvGo() from web/mkvgo.ts.
+  const go = new Go()
+  const { instance } = await WebAssembly.instantiateStreaming(fetch('../../dist/wasm/mkvgo.wasm'), go.importObject)
+  go.run(instance)
+  while (!globalThis.MkvGo) await new Promise((r) => setTimeout(r, 5))
+  $('status').textContent = `mkvgo ${MkvGo.version()} ready - files never leave this page`
+
+  async function handle(file) {
+    // 1. Probe the File head-only: no size limit, only a few ranged reads.
+    const probe = await MkvGo.probe(file, { keyframes: false })
+    log(probe)
+
+    if (probe.format !== 'mkv') return
+
+    // 2. Open the on-demand HLS plan over the File itself: segments are built
+    //    from ranged reads as playback needs them - no size limit, bounded
+    //    memory, no transcoding, no server.
+    const plan = await MkvGo.openHLS(file, { segmentSeconds: 6, skipUnsupported: true })
+    const master = new TextDecoder().decode((await plan.resource('master.m3u8')).data)
+    // Demuxed CMAF: the CODECS list is video first, then the audio renditions.
+    const codecs = (/CODECS="([^"]+)"/.exec(master)?.[1] ?? '').split(',')
+    const vCodec = codecs[0], aCodec = codecs[1]
+    if (vCodec && MediaSource.isTypeSupported(`video/mp4; codecs="${vCodec}"`)) {
+      const ms = new MediaSource()
+      $('player').src = URL.createObjectURL(ms)
+      ms.addEventListener('sourceopen', async () => {
+        const feed = async (mime, init, segName) => {
+          const sb = ms.addSourceBuffer(mime)
+          const append = (b) => new Promise((r) => { sb.addEventListener('updateend', r, { once: true }); sb.appendBuffer(b) })
+          await append((await plan.resource(init)).data)
+          for (let n = 0; n < plan.numSegments; n++)
+            await append((await plan.resource(segName(n + 1))).data)
+        }
+        const jobs = [feed(`video/mp4; codecs="${vCodec}"`, 'init.mp4', (n) => `seg${String(n).padStart(5, '0')}.m4s`)]
+        if (aCodec && plan.resources.includes('init_a1.mp4') && MediaSource.isTypeSupported(`audio/mp4; codecs="${aCodec}"`))
+          jobs.push(feed(`audio/mp4; codecs="${aCodec}"`, 'init_a1.mp4', (n) => `seg_a1_${String(n).padStart(5, '0')}.m4s`))
+        await Promise.all(jobs)
+        ms.endOfStream()
+      }, { once: true })
+      $('status').textContent = 'playing via MSE - demuxed segments built on demand from the file'
+    } else {
+      $('status').textContent = `playback skipped (codecs "${vCodec ?? '?'}" unsupported by this browser)`
+    }
+
+    // 3. Remux to a downloadable progressive MP4 (whole file in memory).
+    if (file.size > 1.5e9) return
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    const mp4 = await MkvGo.remuxToMP4(bytes, { fastStart: true, skipUnsupported: true })
+    $('dl').disabled = false
+    $('dl').onclick = () => {
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(new Blob([mp4.data], { type: 'video/mp4' }))
+      a.download = file.name.replace(/\.[^.]+$/, '') + '.mp4'
+      a.click()
+    }
+  }
+
+  const drop = $('drop')
+  drop.onclick = () => $('pick').click()
+  $('pick').onchange = (e) => e.target.files[0] && handle(e.target.files[0])
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over') }
+  drop.ondragleave = () => drop.classList.remove('over')
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); e.dataTransfer.files[0] && handle(e.dataTransfer.files[0]) }
+</script>
+</html>
