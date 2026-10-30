@@ -269,27 +269,10 @@ func (s *server) startHLS(index int) {
 	target := fmt.Sprintf("http://127.0.0.1:%d/stream/%d/%s",
 		s.port, index, url.PathEscape(path.Base(f.Path())))
 	s.hls.Start(context.Background(), index, target)
-	s.dropOtherFiles(f)
+	// Ganti episode tidak menyentuh cache: piece tetangga dibiarkan di disk,
+	// supaya kembali ke episode sebelumnya tidak mengunduh ulang. Ukuran tetap
+	// dijaga Prune (LRU per torrent lalu per piece di torrent aktif).
 	go s.scanMedia(index)
-}
-
-// dropOtherFiles keeps only the selected episode in a season pack's cache.
-// Without this the active torrent is never pruned, so every watched episode
-// stays on disk even when MAX_CACHE_MB is much smaller than the pack.
-func (s *server) dropOtherFiles(f *torrent.File) {
-	s.mu.RLock()
-	t := s.t
-	s.mu.RUnlock()
-	if t == nil || f == nil {
-		return
-	}
-	removed, pieces := s.cache.DropOtherFiles(t.InfoHash(), f.Offset())
-	for _, pi := range pieces {
-		t.Piece(pi).UpdateCompletion()
-	}
-	if removed > 0 {
-		log.Printf("cache episode lama dibuang: %d MiB", removed>>20)
-	}
 }
 
 // loadMagnet replaces the active torrent and waits for its metadata. It is
@@ -356,21 +339,24 @@ func (s *server) loadMagnet(magnet string) error {
 
 	s.cache.SetActive(t.InfoHash())
 	if old != nil && old != t {
+		// Drop the old torrent's client state, but leave its cached bytes on
+		// disk: pruneCache evicts them gradually only once the budget is full.
 		go old.Drop()
-		s.cache.DropAll(old.InfoHash()) // cache torrent lama jangan makan budget disk
-		s.hls.Stop()                    // segmen lama milik torrent lama
+		s.hls.Stop() // segmen lama milik torrent lama
 	}
 	log.Printf("torrent siap: %s (%d file video)", t.Name(), len(files))
 	s.startHLS(0)
 	return nil
 }
 
-// pruneCache enforces the disk budget: old torrent directories go first, then
-// old pieces inside the active torrent are punched out. The active torrent's
-// newest pieces stay so playback does not stall at the playhead.
+// pruneCache enforces the disk budget, and only when it is exceeded: the oldest
+// cached pieces are deleted a few MiB at a time, least recently used torrent
+// first, until the cache fits. A torrent directory goes away only when its last
+// piece does. The active torrent's newest pieces stay so playback does not stall
+// at the playhead.
 func (s *server) pruneCache() {
 	if removed := s.cache.Prune(); removed > 0 {
-		log.Printf("cache disk penuh: %d MiB dibuang (torrent/piece lama)", removed>>20)
+		log.Printf("cache disk penuh: %d MiB dibuang (piece tertua)", removed>>20)
 	}
 }
 

@@ -56,7 +56,7 @@ func openTorrent(t *testing.T, root string, limit int64, hash string) (*Client, 
 func TestPieceWriteReadRoundTrip(t *testing.T) {
 	_, dir := openTorrent(t, t.TempDir(), 1<<20, "a")
 
-	p := &piece{torrent: &torrentImpl{dir: dir, info: fakeInfo(), files: fakeInfo().UpvertedFiles()},
+	p := &piece{torrent: &torrentImpl{dir: dir, info: fakeInfo()},
 		p: fakePiece{offset: 4, length: 4}}
 	if _, err := p.WriteAt([]byte("ijkl"), 0); err != nil {
 		t.Fatalf("WriteAt: %v", err)
@@ -78,28 +78,6 @@ func TestPieceWriteReadRoundTrip(t *testing.T) {
 	}
 	if string(back) != "ijkl" {
 		t.Fatalf("read = %q", back)
-	}
-}
-
-func TestDropAllRemovesTorrentDir(t *testing.T) {
-	root := t.TempDir()
-	c, err := New(root, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hash := hashOf("a")
-	if _, err := c.OpenTorrent(context.Background(), fakeInfo(), hash); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, hash.String(), "show"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, hash.String(), "show", "ep01.mkv"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	c.DropAll(hash)
-	if _, err := os.Stat(filepath.Join(root, hash.String())); !os.IsNotExist(err) {
-		t.Fatalf("folder torrent masih ada: %v", err)
 	}
 }
 
@@ -219,50 +197,6 @@ func TestCompletionSurvivesReopen(t *testing.T) {
 	}
 	if got := impl3.Piece(info.Piece(0)).Completion(); got.Complete {
 		t.Fatalf("piece 0 setelah MarkNotComplete = %+v", got)
-	}
-}
-
-// Season pack: pindah episode membuang piece yang tak menyentuh episode
-// terpilih; piece yang berbatasan dengannya tetap (memuat byte-nya).
-func TestDropOtherFilesKeepsSelected(t *testing.T) {
-	root := t.TempDir()
-	c, err := New(root, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hash := hashOf("pack")
-	if _, err := c.OpenTorrent(context.Background(), fakeInfo(), hash); err != nil {
-		t.Fatal(err)
-	}
-	tr := c.torrents[hash.String()]
-	for _, span := range []fakePiece{{0, 4}, {4, 4}, {8, 4}} {
-		p := &piece{torrent: tr, p: span}
-		if _, err := p.WriteAt(make([]byte, span.length), 0); err != nil {
-			t.Fatalf("WriteAt %+v: %v", span, err)
-		}
-		if err := p.MarkComplete(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	piece0 := filepath.Join(root, hash.String(), pieceDirName, "0")
-	piece2 := filepath.Join(root, hash.String(), pieceDirName, "2")
-
-	// ep01 = [0,6): piece 0 dan 1 menyentuhnya, piece 2 (ep02) dibuang.
-	removed, pieces := c.DropOtherFiles(hash, 0)
-	if removed < 4 {
-		t.Fatalf("removed = %d, want at least piece size 4", removed)
-	}
-	if _, err := os.Stat(piece0); err != nil {
-		t.Fatalf("piece episode terpilih ikut terhapus: %v", err)
-	}
-	if _, err := os.Stat(piece2); !os.IsNotExist(err) {
-		t.Fatalf("piece episode lama masih ada: %v", err)
-	}
-	if len(pieces) != 1 || pieces[0] != 2 {
-		t.Fatalf("pieces = %v, want [2]", pieces)
-	}
-	if !tr.isComplete(0) || !tr.isComplete(4) || tr.isComplete(8) {
-		t.Fatalf("completion setelah drop = %v", tr.complete)
 	}
 }
 
