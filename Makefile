@@ -7,9 +7,11 @@ LDFLAGS := -s -w
 
 .PHONY: build run vet test clean
 
-# Build di-strip lalu langsung dikompres upx kalau tersedia; kalau upx tidak
-# ada, build tetap selesai dan hanya memberi pesan.
+# Build frontend (Vite → web/dist) dulu, baru binary Go yang meng-embed
+# web/dist. Di-strip lalu dikompres upx kalau tersedia; kalau upx tidak ada,
+# build tetap selesai dan hanya memberi pesan.
 build:
+	pnpm --dir web build
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BINARY) .
 	@if command -v upx >/dev/null 2>&1; then \
 		upx --best --lzma ./$(BINARY); \
