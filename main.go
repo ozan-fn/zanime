@@ -100,7 +100,7 @@ func main() {
 
 	srv := newServer(cl, cache, webRoot, ln.Addr().(*net.TCPAddr).Port)
 	go func() {
-		for range time.Tick(2 * time.Second) {
+		for range time.Tick(1 * time.Second) {
 			srv.pruneCache()
 		}
 	}()
@@ -349,11 +349,13 @@ func (s *server) loadMagnet(magnet string) error {
 	return nil
 }
 
-// pruneCache enforces the disk budget, and only when it is exceeded: the oldest
-// cached pieces are deleted a few MiB at a time, least recently used torrent
-// first, until the cache fits. A torrent directory goes away only when its last
-// piece does. The active torrent's newest pieces stay so playback does not stall
-// at the playhead.
+// pruneCache runs every second and enforces the disk budget, and only when it is
+// exceeded: the oldest cached pieces are deleted, least recently used torrent
+// first, just enough to bring the cache back under the limit. Because it runs
+// once a second, what it frees tracks what the download added since the last
+// run - add two pieces, drop two - rather than wiping a torrent at once. A
+// torrent directory goes away only when its last piece does, and the active
+// torrent's newest pieces stay so playback does not stall at the playhead.
 func (s *server) pruneCache() {
 	if removed := s.cache.Prune(); removed > 0 {
 		log.Printf("cache disk penuh: %d MiB dibuang (piece tertua)", removed>>20)

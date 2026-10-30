@@ -9,13 +9,14 @@
 // file delete that works on any filesystem - no hole punching required.
 //
 // The budget is enforced piece by piece, least recently used torrent first: when
-// the cache exceeds the limit, the oldest piece files are deleted a few MiB at a
-// time until it fits again, and a torrent's directory is removed only once its
-// last piece is gone. Nothing is deleted while the cache is under the limit, and
-// nothing is dropped merely because the viewer switched episodes or magnet: the
-// pieces stay so returning to them does not re-download. The active torrent is
-// the last to give up pieces, and once it alone grows past activeCacheLimit its
-// oldest are dropped too. The LRU order is persisted in root/lru.json so it
+// the cache exceeds the limit, the oldest piece files are deleted until it fits
+// again - only as much as the overflow, so the deletion tracks the download's
+// own rate instead of wiping a torrent at once. A torrent's directory is removed
+// only once its last piece is gone. Nothing is deleted while the cache is under
+// the limit, and nothing is dropped merely because the viewer switched episodes
+// or magnet: the pieces stay so returning to them does not re-download. The
+// active torrent is the last to give up pieces. The LRU order is persisted in
+// root/lru.json so it
 // survives a restart.
 package diskcache
 
@@ -45,11 +46,6 @@ const completionName = ".complete"
 
 // pieceDirName is the subdirectory holding one file per piece.
 const pieceDirName = "p"
-
-// activeCacheLimit keeps one playing torrent from filling a large global
-// budget. Pieces behind the playhead are cheap to fetch again; a 4 GiB cache
-// limit should not become 4 GiB of one episode.
-const activeCacheLimit = 512 << 20
 
 // Client is a disk-backed storage.ClientImpl.
 type Client struct {
@@ -159,18 +155,17 @@ func (c *Client) Prune() (removed int64) {
 			break // tak ada yang bisa dihapus (izin/IO): berhenti
 		}
 	}
-	// Even the active torrent is not allowed to grow without bound. Keep the
-	// few most recently used pieces (the playhead and readahead) and delete the
-	// older ones. Do this after releasing c.mu: refreshing the live client's
-	// completion takes the client lock, and that lock may be held while the
-	// client calls back into OpenTorrent.
+	// The active torrent is trimmed only by the same rule, after the others:
+	// the pieces that pushed the cache over the limit, oldest (least recently
+	// used) first, and no more. Its newest two pieces - the playhead and its
+	// readahead - are never candidates, so playback does not stall. Released
+	// after c.mu because refreshing the live client's completion takes the
+	// client lock, and that lock may be held while the client calls back into
+	// OpenTorrent.
 	var activeTorrent *torrentImpl
 	activeDir := c.active
 	activeTarget := c.limit
-	if activeTarget > activeCacheLimit {
-		activeTarget = activeCacheLimit
-	}
-	if c.Used() > activeTarget {
+	if total > activeTarget {
 		activeTorrent = c.torrents[c.active]
 	}
 	refresh := c.refresh
