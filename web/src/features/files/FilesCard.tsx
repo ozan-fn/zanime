@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { TorrentFile } from '@/lib/types'
 import { fmt } from '@/lib/fmt'
+import { useNavigate } from 'react-router-dom'
 import { useTorrent } from '@/features/torrent-state/TorrentStateProvider'
 import { Sq } from '@/features/text/Sq'
 import { epThumbsState, setPickedThumb, type ThumbStore } from './thumbs'
@@ -113,8 +114,10 @@ function Row({ file, files, active, store, onPick }: RowProps) {
   )
 }
 
-export function FilesCard() {
+
+export function FilesCard({ page = false, navigable = false }: { page?: boolean; navigable?: boolean }) {
   const { state, selectFile, setStatus } = useTorrent()
+  const navigate = useNavigate()
   const files = state?.files || []
   const selected = state?.selected
   const store = epThumbsState()
@@ -125,6 +128,7 @@ export function FilesCard() {
     try {
       setPickedThumb('')
       await selectFile(file.index)
+      if (navigable) navigate('/') // pilih → langsung halaman Putar
     } catch (err) {
       setStatus((err as Error).message, 'error')
     }
@@ -141,7 +145,8 @@ export function FilesCard() {
           {files.length} file
         </span>
       </div>
-      <div className="mt-3 max-h-[380px] space-y-1.5 overflow-y-auto pr-1">
+      {/* Di halaman /video, daftar tidak dibatasi tinggi kartu. */}
+      <div className={['mt-3 space-y-1.5 overflow-y-auto pr-1', page ? 'max-h-[70vh]' : 'max-h-[380px]'].join(' ')}>
         {files.map((file) => (
           <Row key={file.index} file={file} files={files} active={file.index === selected} store={store} onPick={onSelect} />
         ))}
@@ -149,4 +154,3 @@ export function FilesCard() {
     </div>
   )
 }
-
