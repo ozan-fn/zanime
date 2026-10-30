@@ -14,6 +14,39 @@ export type SubtitleTrack = {
   format?: string
 }
 
+export type MediaChapter = {
+  title: string
+  start: number
+  end?: number
+}
+
+export type MediaTrack = {
+  codec?: string
+  lang?: string
+  name?: string
+  width?: number
+  height?: number
+  fps?: number
+  channels?: number
+  sample_rate?: number
+  bit_depth?: number
+  default?: boolean
+  forced?: boolean
+}
+
+export type MediaInfo = {
+  title?: string
+  description?: string
+  rating?: string
+  genre?: string
+  date?: string
+  poster?: string
+  chapters?: MediaChapter[]
+  video?: MediaTrack[]
+  audio?: MediaTrack[]
+  subs?: MediaTrack[]
+}
+
 export type TorrentState = {
   ready?: boolean
   loading?: boolean
@@ -44,6 +77,7 @@ export type TorrentState = {
     ram_bytes?: number
   }
   net?: { from_peers?: number; to_client?: number }
+  media?: MediaInfo
   hls?: {
     index?: number
     ready?: boolean

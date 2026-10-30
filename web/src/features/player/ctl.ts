@@ -4,7 +4,6 @@
 export const ctl = {
   el: null as any,
   wanted: '', // src yang terakhir dipasang; dedupe antar push status
-  subsSession: '',
   resumeStartAt: 0, // posisi lanjutan (detik) untuk pemutaran ulang
   retries: 0,
   lastRetry: 0,
@@ -22,7 +21,6 @@ export function setPlayerSrc(el: any, url: string) {
 // sesi HLS baru siap (dipakai saat ganti file / mulai torrent baru).
 export function resetPlayback() {
   ctl.wanted = ''
-  ctl.subsSession = ''
   ctl.resumeStartAt = 0
   const el = ctl.el
   if (el) {

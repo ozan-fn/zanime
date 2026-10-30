@@ -25,8 +25,6 @@ import (
 const (
 	// segmentSeconds is the CMAF segment length handed to the planner.
 	segmentSeconds = 4
-	// cacheLimit bounds the RAM used by already-produced resources.
-	cacheLimit = 24 << 20
 	// planTimeout bounds the head reads a plan needs over /stream.
 	planTimeout = 30 * time.Second
 )

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func fixture(t *testing.T, langs ...string) string {
 	if err != nil {
 		t.Fatalf("buat fixture: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	c := &matroska.Container{Info: mkv.SegmentInfo{TimecodeScale: 1_000_000, MuxingApp: "test", WritingApp: "test"}}
 	w, h := uint32(320), uint32(240)
@@ -180,7 +181,7 @@ func subtitleFixture(t *testing.T, lang, name string) string {
 	if err != nil {
 		t.Fatalf("buat fixture: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	c := &matroska.Container{Info: mkv.SegmentInfo{TimecodeScale: 1_000_000, MuxingApp: "test", WritingApp: "test"}}
 	w, h := uint32(320), uint32(240)
@@ -231,5 +232,13 @@ func TestSubtitleLangAndResources(t *testing.T) {
 		if err != nil || len(data) == 0 {
 			t.Fatalf("%s: %v (%d byte)", name, err, len(data))
 		}
+	}
+	// Jalur native hls.js: master menunjuk sub1.m3u8, lalu segmen VTT kecil.
+	playlist, ok := m.Playlist(ctx, 0, "sub1.m3u8")
+	if !ok || !strings.Contains(string(playlist), "sub1_00001.vtt") {
+		t.Fatalf("sub1.m3u8 = %q (%v)", playlist, ok)
+	}
+	if data, _, err := m.Segment(ctx, 0, "sub1_00001.vtt"); err != nil || len(data) == 0 {
+		t.Fatalf("segmen subtitle: %v (%d byte)", err, len(data))
 	}
 }

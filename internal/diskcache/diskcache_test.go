@@ -137,8 +137,8 @@ func TestPruneKeepsActiveAndDropsOldest(t *testing.T) {
 	c.SetActive(oldest)
 
 	removed := c.Prune()
-	if removed != 60 {
-		t.Fatalf("removed = %d, want 60", removed)
+	if removed < 60 {
+		t.Fatalf("removed = %d, want at least file size 60", removed)
 	}
 	if _, err := os.Stat(filepath.Join(root, newest.String())); !os.IsNotExist(err) {
 		t.Fatal("torrent terbaru harus yang dihapus (LRU), bukan yang aktif")
@@ -227,5 +227,115 @@ func TestCompletionSurvivesReopen(t *testing.T) {
 	}
 	if got := impl3.Piece(info.Piece(0)).Completion(); got.Complete {
 		t.Fatalf("piece 0 setelah MarkNotComplete = %+v", got)
+	}
+}
+
+// Season pack: file lama dibuang saat pindah episode, dan piece yang menyentuh
+// file itu ditandai belum lengkap supaya bisa diunduh lagi kalau dipilih lagi.
+func TestDropOtherFilesKeepsSelected(t *testing.T) {
+	root := t.TempDir()
+	c, err := New(root, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := hashOf("pack")
+	if _, err := c.OpenTorrent(context.Background(), fakeInfo(), hash); err != nil {
+		t.Fatal(err)
+	}
+	tr := c.torrents[hash.String()]
+	for _, span := range []fakePiece{{0, 4}, {4, 4}, {8, 4}} {
+		p := &piece{torrent: tr, p: span}
+		if _, err := p.WriteAt(make([]byte, span.length), 0); err != nil {
+			t.Fatalf("WriteAt %+v: %v", span, err)
+		}
+		if err := p.MarkComplete(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ep01 := filepath.Join(root, hash.String(), "show", "ep01.mkv")
+	ep02 := filepath.Join(root, hash.String(), "show", "ep02.mkv")
+
+	removed, pieces := c.DropOtherFiles(hash, 0)
+	if removed < 6 {
+		t.Fatalf("removed = %d, want at least file size 6", removed)
+	}
+	if _, err := os.Stat(ep01); err != nil {
+		t.Fatalf("episode terpilih ikut terhapus: %v", err)
+	}
+	if _, err := os.Stat(ep02); !os.IsNotExist(err) {
+		t.Fatalf("episode lama masih ada: %v", err)
+	}
+	if len(pieces) != 2 || pieces[0] != 1 || pieces[1] != 2 {
+		t.Fatalf("pieces = %v, want [1 2]", pieces)
+	}
+	if !tr.isComplete(0) || tr.isComplete(4) || tr.isComplete(8) {
+		t.Fatalf("completion setelah drop = %v", tr.complete)
+	}
+}
+
+// File sparse tidak boleh dihitung sebesar ukuran logisnya: tail/Cues di akhir
+// file 3 GiB hanya menulis beberapa KiB, jangan sampai cache terlihat 3 GiB.
+func TestDirSizeCountsAllocatedBlocks(t *testing.T) {
+	root := t.TempDir()
+	f, err := os.Create(filepath.Join(root, "movie.mkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(3 << 30); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte("tail"), 3<<30-4); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if got := dirSize(root); got >= 1<<20 {
+		t.Fatalf("dirSize = %d, want < 1 MiB untuk sparse file", got)
+	}
+}
+
+// Torrent aktif juga dibatasi per piece: file yang sedang diputar tidak boleh
+// membengkak sampai ber-gigabyte; piece lama di belakang playhead dipotong.
+func TestPruneEvictsOldActivePieces(t *testing.T) {
+	root := t.TempDir()
+	info := &metainfo.Info{
+		Name:        "show",
+		PieceLength: 8192,
+		Pieces:      make([]byte, 20*3),
+		Files:       []metainfo.FileInfo{{Path: []string{"ep01.mkv"}, Length: 3 * 8192}},
+	}
+	c, err := New(root, 24<<10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := hashOf("active-pieces")
+	impl, err := c.OpenTorrent(context.Background(), info, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		p := impl.Piece(info.Piece(i))
+		if _, err := p.WriteAt(make([]byte, 8192), 0); err != nil {
+			t.Fatalf("WriteAt %d: %v", i, err)
+		}
+		if err := p.MarkComplete(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tr := c.torrents[hash.String()]
+	tr.mu.Lock()
+	tr.lastUse[0], tr.lastUse[8192], tr.lastUse[16384] = 1, 2, 3
+	tr.mu.Unlock()
+	c.SetActive(hash)
+	var evicted []int
+	c.SetPieceRefresh(func(_ string, pieces []int) { evicted = append(evicted, pieces...) })
+
+	if removed := c.Prune(); removed < 4096 {
+		t.Fatalf("removed = %d, want allocated blocks freed", removed)
+	}
+	if len(evicted) != 1 || evicted[0] != 0 {
+		t.Fatalf("evicted = %v, want [0]", evicted)
+	}
+	if tr.isComplete(0) || !tr.isComplete(8192) || !tr.isComplete(16384) {
+		t.Fatalf("completion = %v, want piece 0 dropped and 1/2 kept", tr.complete)
 	}
 }

@@ -3,6 +3,7 @@ import { Clapperboard, Info } from 'lucide-react'
 import { useTorrent } from '@/features/torrent-state/TorrentStateProvider'
 import { MagnetForm } from '@/features/magnet/MagnetForm'
 import { FilesCard } from '@/features/files/FilesCard'
+import { MediaCard } from '@/features/media/MediaCard'
 import { StatsCard } from '@/features/stats/StatsCard'
 import { Player } from '@/features/player/Player'
 import { Header } from '@/features/home/Header'
@@ -35,6 +36,7 @@ export function HomePage() {
         <section className="flex min-w-0 flex-col gap-4">
           <MagnetForm />
           {hasFiles && <FilesCard />}
+          <MediaCard />
           <StatsCard />
         </section>
 

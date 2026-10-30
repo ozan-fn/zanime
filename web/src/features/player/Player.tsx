@@ -27,12 +27,37 @@ export function Player() {
   useEffect(() => {
     const el = ref.current
     if (!el || !state) return
+    ctl.el = el
 
     // Ganti file → buang playback incumben (src lama menyebabkan error
     // namespace / media tidak diganti).
     if ((selected ?? null) !== ctl.lastSelected) {
       ctl.lastSelected = selected ?? null
       resetPlayback()
+    }
+
+    // Metadata Matroska: judul, poster cover, dan chapter dipakai fitur
+    // bawaan MoviPlayer (judul di overlay, marker chapter di progress bar).
+    const m = directSrc ? undefined : state.media
+    const title = m?.title || (directSrc ? '' : current?.name) || ''
+    if ((el.getAttribute('title') || '') !== title) {
+      if (title) el.setAttribute('title', title)
+      else el.removeAttribute('title')
+    }
+    const chapters = (m?.chapters || []).map((ch) => ({
+      title: ch.title,
+      start: ch.start,
+      ...(ch.end ? { end: ch.end } : {}),
+    }))
+    const chaptersJSON = chapters.length ? JSON.stringify(chapters) : ''
+    if ((el.getAttribute('chapters') || '') !== chaptersJSON) {
+      if (chaptersJSON) el.setAttribute('chapters', chaptersJSON)
+      else el.removeAttribute('chapters')
+    }
+    const poster = m?.poster || ''
+    if ((el.getAttribute('poster') || '') !== poster) {
+      if (poster) el.setAttribute('poster', poster)
+      else el.removeAttribute('poster')
     }
 
     if (directSrc) {
@@ -53,7 +78,10 @@ export function Player() {
           ? `Melanjutkan ${name} dari ${fmtDur(ctl.resumeStartAt)}…`
           : `Memutar ${name}.`, 'ok')
       }
-      void applySubtitles(el, state.selected ?? -1, h.subs, setStatus)
+      // Subtitle sudah menjadi rendition HLS di master playlist
+      // (#EXT-X-MEDIA:TYPE=SUBTITLES). Biarkan hls.js yang mengambil playlist
+      // per-segmen; jangan meminta satu file subsN.vtt utuh, karena ekstraksi
+      // seluruh track bisa memakan menit dan diputus Cloudflare (HTTP 521).
     } else if (h.error) {
       setStatus(`Gagal menyiapkan video: ${h.error}`, 'error')
     } else {
@@ -117,6 +145,7 @@ export function Player() {
         buffersize={64}
         bindav="false"
         subtitlepicker
+        showtitle
         persist="loop muted volume speed ambient stablevolume hdr aspect audiolang subtitlelang"
         persistkey="zanime"
         onPlay={handlePlay}
@@ -159,54 +188,4 @@ export function Player() {
       </div>
     </div>
   )
-}
-
-/* Subtitle di dalam file: server mengekstrak track teks jadi WebVTT saat
- * diminta, lalu player memuatnya sebagai track subtitle biasa (termasuk
- * menu subtitle di player). */
-async function applySubtitles(el: MoviElement, index: number, subs: any[] | undefined, setStatus: (t: string, k?: 'info' | 'ok' | 'error') => void) {
-  if (!subs?.length) return
-  const api = (el as any).player as {
-    addSubtitleTrack?: (entry: { url: string; lang: string; label: string; format?: string }) => void
-    getSubtitleLangs?: () => Array<{ lang: string }>
-    selectSubtitleLang?: (lang: string | null) => Promise<boolean>
-  } | null
-  if (!api?.addSubtitleTrack) return // player belum siap; dicoba lagi pada frame berikutnya
-  // MoviPlayer memanggil lang.toUpperCase() di menu subtitle; jangan pernah
-  // mendaftarkan track tanpa lang walau server mengirim data lama.
-  const tracks = subs.map((sub, i) => ({
-    ...sub,
-    lang: sub.lang || `und${i}`,
-    label: sub.name || sub.lang || `Subtitle ${i + 1}`,
-  }))
-  const have = (api.getSubtitleLangs?.() || []).map((track) => track.lang)
-  const missing = tracks.filter((sub) => !have.includes(sub.lang))
-  if (!missing.length) return
-
-  const key = `${index}:${tracks.map((sub) => sub.url || sub.file || sub.lang).join(',')}`
-  if (ctl.subsSession === key) return // sudah didaftarkan untuk sesi ini
-  ctl.subsSession = key
-
-  // Server mengekstrak subtitle dari seluruh file (bisa lama untuk file
-  // besar). Tunggu isinya siap dulu, baru daftarkan + pilih; kalau tidak,
-  // track tampak terpilih tapi tidak ada teks sampai ekstraksi selesai.
-  const first = tracks[0]
-  setStatus(`Menyiapkan subtitle ${first.label}…`, 'info')
-  try {
-    const res = await fetch(first.url, { cache: 'no-store' })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    await res.text() // isi masuk cache server: permintaan player berikutnya instan
-  } catch (err) {
-    if (ctl.subsSession === key) ctl.subsSession = ''
-    setStatus(`Subtitle gagal dimuat: ${(err as Error).message}`, 'error')
-    return
-  }
-  if (ctl.subsSession !== key) return // sesi sudah berganti saat menunggu
-
-  for (const sub of tracks) {
-    api.addSubtitleTrack({ url: sub.url, lang: sub.lang, label: sub.label, format: sub.format || 'vtt' })
-  }
-  ;(el as any).updateSubtitleTrackMenu?.()
-  await api.selectSubtitleLang?.(first.lang)
-  setStatus(`Subtitle ${first.label} aktif.`, 'ok')
 }

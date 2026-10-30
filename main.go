@@ -30,6 +30,7 @@ import (
 	"zanime/internal/config"
 	"zanime/internal/diskcache"
 	"zanime/internal/hls"
+	"zanime/internal/media"
 	"zanime/internal/stream"
 )
 
@@ -99,7 +100,7 @@ func main() {
 
 	srv := newServer(cl, cache, webRoot, ln.Addr().(*net.TCPAddr).Port)
 	go func() {
-		for range time.Tick(10 * time.Second) {
+		for range time.Tick(2 * time.Second) {
 			srv.pruneCache()
 		}
 	}()
@@ -138,6 +139,8 @@ func main() {
 	r.HEAD("/stream/:index/:name", srv.stream)
 	r.GET("/hls/:index/*name", srv.hlsFile)
 	r.HEAD("/hls/:index/*name", srv.hlsFile)
+	r.GET("/cover/:index", srv.coverArt)
+	r.HEAD("/cover/:index", srv.coverArt)
 
 	log.Printf("listening on %s (disk cache %s, limit %d MiB)", ln.Addr(), *cacheDir, *cacheMB)
 	if err := r.RunListener(ln); err != nil {
@@ -172,13 +175,87 @@ type server struct {
 	loading    bool
 	loadCancel chan struct{} // ditutup oleh POST /api/cancel
 
+	mediaMu          sync.RWMutex
+	mediaInfo        media.Info
+	mediaIndex       int
+	mediaTorrent     *torrent.Torrent
+	mediaReady       bool
+	mediaScanning    bool
+	mediaScanIndex   int
+	mediaScanTorrent *torrent.Torrent
+
 	served atomic.Int64 // byte yang sudah dikirim ke klien (stream/hls/fetch)
 }
 
 func newServer(cl *torrent.Client, cache *diskcache.Client, web fs.FS, port int) *server {
 	srv := &server{cl: cl, cache: cache, hls: hls.NewManager(), web: web, port: port, selected: -1,
 		started: time.Now(), wsUsers: make(map[string]int)}
+	cache.SetPieceRefresh(srv.refreshPieces)
 	return srv
+}
+
+// refreshPieces tells the live client that punched-out pieces are missing.
+// diskcache calls it immediately after the hole punch, before the next prune
+// interval, so the client re-downloads a piece instead of trusting the hole.
+func (s *server) refreshPieces(dir string, pieces []int) {
+	s.mu.RLock()
+	t := s.t
+	s.mu.RUnlock()
+	if t == nil || t.InfoHash().String() != dir {
+		return
+	}
+	for _, pi := range pieces {
+		t.Piece(pi).UpdateCompletion()
+	}
+}
+
+// scanMedia reads title/tags/chapters/track languages/cover from the selected
+// file. It runs beside HLS planning (both read the same cached pieces) and only
+// publishes when that file is still selected, so a slow scan can never label the
+// next episode with the previous one's metadata.
+func (s *server) scanMedia(index int) {
+	s.mu.RLock()
+	t, f := s.t, (*torrent.File)(nil)
+	if index >= 0 && index < len(s.files) {
+		f = s.files[index]
+	}
+	s.mu.RUnlock()
+	if t == nil || f == nil {
+		return
+	}
+
+	s.mediaMu.Lock()
+	if (s.mediaReady && s.mediaTorrent == t && s.mediaIndex == index) ||
+		(s.mediaScanning && s.mediaScanTorrent == t && s.mediaScanIndex == index) {
+		s.mediaMu.Unlock()
+		return
+	}
+	s.mediaScanning, s.mediaScanIndex, s.mediaScanTorrent = true, index, t
+	s.mediaMu.Unlock()
+
+	info := media.Info{}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	reader := f.NewReader()
+	reader.SetContext(ctx)
+	defer func() { _ = reader.Close() }()
+	reader.SetReadahead(2 << 20)
+	got, err := media.Read(ctx, reader, path.Base(f.Path()))
+	if err == nil {
+		info = got
+	} else {
+		log.Printf("media index %d: %v", index, err)
+	}
+
+	s.mediaMu.Lock()
+	s.mediaScanning = false
+	s.mu.RLock()
+	current := s.t == t && s.selected == index
+	s.mu.RUnlock()
+	if current {
+		s.mediaInfo, s.mediaIndex, s.mediaTorrent, s.mediaReady = info, index, t, true
+	}
+	s.mediaMu.Unlock()
 }
 
 // startHLS prepares the selected file: mkvgo plans the HLS presentation over our
@@ -196,6 +273,27 @@ func (s *server) startHLS(index int) {
 	target := fmt.Sprintf("http://127.0.0.1:%d/stream/%d/%s",
 		s.port, index, url.PathEscape(path.Base(f.Path())))
 	s.hls.Start(context.Background(), index, target)
+	s.dropOtherFiles(f)
+	go s.scanMedia(index)
+}
+
+// dropOtherFiles keeps only the selected episode in a season pack's cache.
+// Without this the active torrent is never pruned, so every watched episode
+// stays on disk even when MAX_CACHE_MB is much smaller than the pack.
+func (s *server) dropOtherFiles(f *torrent.File) {
+	s.mu.RLock()
+	t := s.t
+	s.mu.RUnlock()
+	if t == nil || f == nil {
+		return
+	}
+	removed, pieces := s.cache.DropOtherFiles(t.InfoHash(), f.Offset())
+	for _, pi := range pieces {
+		t.Piece(pi).UpdateCompletion()
+	}
+	if removed > 0 {
+		log.Printf("cache episode lama dibuang: %d MiB", removed>>20)
+	}
 }
 
 // loadMagnet replaces the active torrent and waits for its metadata. It is
@@ -255,6 +353,11 @@ func (s *server) loadMagnet(magnet string) error {
 	s.selected = 0
 	s.mu.Unlock()
 
+	s.mediaMu.Lock()
+	s.mediaInfo, s.mediaIndex, s.mediaTorrent, s.mediaReady = media.Info{}, -1, nil, false
+	s.mediaScanning, s.mediaScanIndex, s.mediaScanTorrent = false, -1, nil
+	s.mediaMu.Unlock()
+
 	s.cache.SetActive(t.InfoHash())
 	if old != nil && old != t {
 		go old.Drop()
@@ -266,12 +369,12 @@ func (s *server) loadMagnet(magnet string) error {
 	return nil
 }
 
-// pruneCache enforces the disk budget: when the cache grows past its limit,
-// whole torrent directories are deleted least recently used first. The active
-// torrent is skipped, and it is fetched again from its magnet like any other.
+// pruneCache enforces the disk budget: old torrent directories go first, then
+// old pieces inside the active torrent are punched out. The active torrent's
+// newest pieces stay so playback does not stall at the playhead.
 func (s *server) pruneCache() {
 	if removed := s.cache.Prune(); removed > 0 {
-		log.Printf("cache disk penuh: %d MiB torrent lama dibuang", removed>>20)
+		log.Printf("cache disk penuh: %d MiB dibuang (torrent/piece lama)", removed>>20)
 	}
 }
 
@@ -407,6 +510,29 @@ func (s *server) state() gin.H {
 	if f := fileAtIn(files, selected); f != nil {
 		resp["size"] = f.Length()
 	}
+
+	s.mediaMu.RLock()
+	mi := s.mediaInfo
+	mediaReady := s.mediaReady && s.mediaTorrent == t && s.mediaIndex == selected
+	s.mediaMu.RUnlock()
+	if mediaReady {
+		info := gin.H{
+			"title":       mi.Title,
+			"description": mi.Description,
+			"rating":      mi.Rating,
+			"genre":       mi.Genre,
+			"date":        mi.Date,
+			"chapters":    mi.Chapters,
+			"video":       mi.Video,
+			"audio":       mi.Audio,
+			"subs":        mi.Subs,
+		}
+		if len(mi.Cover) > 0 {
+			info["poster"] = fmt.Sprintf("/cover/%d", selected)
+		}
+		resp["media"] = info
+	}
+
 	resp["net"] = gin.H{"from_peers": fromPeers, "to_client": s.served.Load()}
 	resp["users"] = gin.H{"active": s.activeUsers(), "tabs": s.wsTabs()}
 	var heap runtime.MemStats
@@ -775,6 +901,26 @@ func (s *server) wsTabs() int {
 		tabs += n
 	}
 	return tabs
+}
+
+// coverArt serves the selected file's embedded MKV cover (cover.jpg/poster.png
+// attachment), used as the player poster.
+func (s *server) coverArt(c *gin.Context) {
+	index, err := strconv.Atoi(c.Param("index"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "index tidak valid"})
+		return
+	}
+	s.mediaMu.RLock()
+	ok := s.mediaReady && s.mediaIndex == index && len(s.mediaInfo.Cover) > 0
+	data, mime := s.mediaInfo.Cover, s.mediaInfo.CoverMIME
+	s.mediaMu.RUnlock()
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "cover tidak tersedia"})
+		return
+	}
+	c.Header("Cache-Control", "public, max-age=3600")
+	c.Data(http.StatusOK, mime, data)
 }
 
 // hlsFile serves one playlist, segment, init or subtitle of the session for a

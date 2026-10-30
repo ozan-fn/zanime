@@ -4,6 +4,8 @@ import { lastSaved, saveLast } from './last'
 import { resetEpThumbs } from '@/features/files/thumbs'
 import { useTorrent } from '@/features/torrent-state/TorrentStateProvider'
 
+const DEFAULT_MAGNET = 'magnet:?xt=urn:btih:3c5356a2834c80305e18479ad39d16a4f8b8682b&dn=%5BErai-raws%5D%20Gabriel%20DropOut%20-%2001%20~%2012%20%5B1080p%5D%5BMultiple%20Subtitle%5D&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce'
+
 const STATUS_STYLES: Record<string, string> = {
   info: 'border-border bg-card text-zinc-300',
   ok: 'border-zinc-700 bg-zinc-900 text-zinc-100',
@@ -13,7 +15,7 @@ const STATUS_STYLES: Record<string, string> = {
 export function MagnetForm() {
   const { status, statusSource, loadBusy, setStatus, loadMagnet, cancelLoad, selectFile } = useTorrent()
   const [loading, setLoading] = useState(false)
-  const [magnet, setMagnet] = useState(() => lastSaved().magnet || '')
+  const [magnet, setMagnet] = useState(() => lastSaved().magnet || DEFAULT_MAGNET)
   // Auto-resume: magnet tersimpan di localStorage disubmit ulang sekali,
   // seperti requestSubmit() amanat versi HTML.
   const autoResumed = useRef(false)
@@ -28,11 +30,8 @@ export function MagnetForm() {
 
   const onSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
-    const value = magnet.trim()
-    if (!value) {
-      setStatus('Tempel magnet link dulu.', 'error')
-      return
-    }
+    const value = magnet.trim() || DEFAULT_MAGNET
+    if (!magnet.trim()) setMagnet(DEFAULT_MAGNET)
     setLoading(true)
     setStatus('Menghubungi tracker dan menunggu metadata torrent… klik Batalkan untuk membatalkan.', 'info')
     try {

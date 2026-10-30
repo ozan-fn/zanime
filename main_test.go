@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ import (
 	"github.com/gravity-zero/mkvgo/mkv/writer"
 
 	"zanime/internal/diskcache"
+	mediameta "zanime/internal/media"
 )
 
 // TestWSStatePayload memastikan frame /api/ws memuat semua field yang dibaca
@@ -162,7 +164,7 @@ func writeFixture(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	c := &matroska.Container{Info: mkv.SegmentInfo{TimecodeScale: 1_000_000}}
 	w, h := uint32(320), uint32(240)
 	sr := 48000.0
@@ -332,4 +334,90 @@ func testCache(t *testing.T) *diskcache.Client {
 		t.Fatal(err)
 	}
 	return cache
+}
+
+// TestStateAndCoverFromMedia memastikan metadata MKV yang sudah dipindai masuk
+// ke state sebagai media.poster, dan endpoint cover melayani byte gambar hanya
+// untuk index yang sedang aktif.
+func TestStateAndCoverFromMedia(t *testing.T) {
+	info := metainfo.Info{
+		Name:        "ep01.mkv",
+		PieceLength: 1 << 20,
+		Pieces:      make([]byte, 20),
+		Files:       []metainfo.FileInfo{{Path: []string{"ep01.mkv"}, Length: 1}},
+	}
+	infoBytes, err := bencode.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := torrent.NewDefaultClientConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.DefaultStorage = testCache(t)
+	cfg.NoDHT = true
+	cfg.DisableTrackers = true
+	cfg.DisablePEX = true
+	cfg.NoDefaultPortForwarding = true
+	cfg.ListenPort = 0
+	cl, err := torrent.NewClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	tor, _, err := cl.AddTorrentSpec(torrent.TorrentSpecFromMetaInfo(&metainfo.MetaInfo{InfoBytes: infoBytes}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-tor.GotInfo()
+
+	srv := newServer(cl, testCache(t), nil, 0)
+	srv.t = tor
+	srv.files = videoFiles(tor.Files())
+	srv.selected = 0
+	cover := []byte("\x89PNG\r\n\x1a\ncover")
+	srv.mediaMu.Lock()
+	srv.mediaInfo = mediameta.Info{
+		Title:       "Episode 1",
+		Description: "Sinopsis.",
+		Chapters:    []mediameta.Chapter{{Title: "Awal", Start: 0}},
+		Cover:       cover,
+		CoverMIME:   "image/png",
+	}
+	srv.mediaIndex, srv.mediaTorrent, srv.mediaReady = 0, tor, true
+	srv.mediaMu.Unlock()
+
+	state := srv.state()
+	m, ok := state["media"].(gin.H)
+	if !ok {
+		t.Fatalf("state tanpa media: %v", state)
+	}
+	if m["title"] != "Episode 1" || m["poster"] != "/cover/0" {
+		t.Fatalf("state.media = %v", m)
+	}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/cover/:index", srv.coverArt)
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/cover/0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK || res.Header.Get("Content-Type") != "image/png" {
+		t.Fatalf("cover = %d %q", res.StatusCode, res.Header.Get("Content-Type"))
+	}
+	got, _ := io.ReadAll(res.Body)
+	if string(got) != string(cover) {
+		t.Fatalf("byte cover = %q", got)
+	}
+	if res, err = http.Get(ts.URL + "/cover/1"); err != nil {
+		t.Fatal(err)
+	} else {
+		defer func() { _ = res.Body.Close() }()
+		if res.StatusCode != http.StatusNotFound {
+			t.Fatalf("index lain = %d, want 404", res.StatusCode)
+		}
+	}
 }
