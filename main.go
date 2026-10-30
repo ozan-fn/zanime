@@ -118,6 +118,10 @@ func main() {
 	r.GET("/", srv.index)
 	r.GET("/assets/*filepath", srv.webFile) // aset Vite (JS/CSS)
 	r.GET("/favicon.ico", srv.webFile)
+	// SPA fallback: React Router punya route `/` dan `*` (404), jadi path
+	// lain harus tetap mendapat index.html biar page di-sisi browser;
+	// endpoint API/HLS yang salah tulis tetap JSON 404.
+	r.NoRoute(srv.spaFallback)
 	r.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 	r.GET("/info", srv.info)
 	r.GET("/api/state", srv.apiState) // untuk test/curl; UI memakai /api/ws
@@ -275,6 +279,19 @@ func (s *server) pruneCache() {
 	if removed := s.cache.Prune(); removed > 0 {
 		log.Printf("cache disk penuh: %d MiB torrent lama dibuang", removed>>20)
 	}
+}
+
+// SPA fallback: path GET yang tak dikenal dapat index.html (React Router
+// yang menampilkan 404), kecuali path API/HLS/stream yang salah tulis —
+// itu tetap JSON 404 supaya error di sisi client mudah dibedakan.
+func (s *server) spaFallback(c *gin.Context) {
+	p := c.Request.URL.Path
+	if strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/hls/") ||
+		strings.HasPrefix(p, "/stream") || strings.HasPrefix(p, "/fetch") {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	s.index(c)
 }
 
 // File statis hasil build Vite (aset di /assets/*, favicon).
