@@ -168,12 +168,13 @@ curl -H 'Range: bytes=0-1048575' -o chunk.bin http://127.0.0.1:8080/stream
 | Penyimpanan piece | satu file sparse per file torrent, di bawah `CACHE_DIR/<infohash>/`, dibatasi `MAX_CACHE_MB` / `-cache-mb` (default 4 GiB) | `internal/diskcache` |
 | Saat budget penuh | folder torrent paling lama (LRU) dihapus utuh; torrent yang sedang diputar tidak pernah dihapus | `diskcache.Prune` |
 | Urutan LRU | disimpan di `CACHE_DIR/lru.json` (tulis lewat tmp + rename), jadi urutan bertahan setelah restart | `internal/diskcache` |
+| Status piece | bitmap `.complete` per torrent (satu bit per piece) ditulis saat piece terverifikasi dan dimuat lagi di `OpenTorrent`; cache tetap dianggap lengkap setelah restart, tanpa rehash/unduh ulang | `internal/diskcache` |
 | Pengecekan budget | tiap 10 detik, bukan per piece, supaya jalan hanya saat cache memang membesar | `server.pruneCache` |
 | Ganti magnet | folder cache torrent lama dihapus (`DropAll`) | `main.go` |
 | Banyak tab | semua tab WS berbagi satu snapshot status 500 ms | `server.cachedState` |
 | Disk segmen | tidak ada: playlist disusun di memori, segmen di-remux mkvgo ke RAM | `internal/hls` |
 
-Isi `./tmp/cache` boleh dihapus kapan saja: setiap torrent diambil ulang dari magnet saat dibutuhkan. Cachenya bukan library, hanya mempercepat seek dan menonton ulang.
+Isi `./tmp/cache` boleh dihapus kapan saja: setiap torrent diambil ulang dari magnet saat dibutuhkan. Cachenya bukan library, hanya mempercepat seek dan menonton ulang. Selama folder torrent masih ada, bit `.complete` membuat byte yang sudah terverifikasi dipakai lagi setelah restart.
 
 ## Test
 
@@ -184,9 +185,9 @@ make vet
 make test
 ```
 
-`tests/diskcache_test.go` menjalankan seeder + leecher di proses yang sama lewat localhost, torrent 8 MiB / 8 piece, dengan `diskcache` sebagai backend leecher. Byte diambil lewat HTTP Range (maju dan mundur) tanpa internet. `internal/diskcache/diskcache_test.go` menguji pemetaan piece yang menembus dua file, prune LRU yang melewati torrent aktif, dan registry yang bertahan setelah restart.
+`tests/diskcache_test.go` menjalankan seeder + leecher di proses yang sama lewat localhost, torrent 8 MiB / 8 piece, dengan `diskcache` sebagai backend leecher. Byte diambil lewat HTTP Range (maju dan mundur) tanpa internet. `internal/diskcache/diskcache_test.go` menguji pemetaan piece yang menembus dua file, prune LRU yang melewati torrent aktif, registry yang bertahan setelah restart, dan bitmap `.complete` yang membuat piece terverifikasi tidak diunduh ulang setelah reopen.
 
-`internal/hls/hls_test.go` menulis fixture Matroska kecil (H.264 + audio) dengan writer mkvgo, lalu memeriksa sesi: `master.m3u8` memuat satu rendition audio per track, segmen `segNNNNN.m4s` terbit saat diminta, nama di luar sesi/lewat akhir file ditolak, dan subtitle yang tidak ada tidak dijual. `main_test.go` menguji route `/hls` end-to-end dengan file yang sama diserve lewat HTTP Range.
+`internal/hls/hls_test.go` menulis fixture Matroska kecil (H.264 + audio) dengan writer mkvgo, lalu memeriksa sesi: `master.m3u8` memuat satu rendition audio per track (termasuk playlist/init/segmen `audioN`/`seg_aN_*`), segmen `segNNNNN.m4s` terbit saat diminta, nama di luar sesi/lewat akhir file ditolak, dan subtitle yang tidak ada tidak dijual. Fixture subtitle memeriksa `LANGUAGE`/`NAME` dari master serta resource `subs0.vtt`, `sub1.vtt`, dan `sub1_00001.vtt`. `main_test.go` menguji route `/hls` end-to-end dengan file yang sama diserve lewat HTTP Range.
 
 E2E butuh server hidup dan network torrent:
 

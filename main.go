@@ -358,10 +358,10 @@ func (s *server) state() gin.H {
 		cacheUsed = s.cache.UsedByTorrent(t.InfoHash())
 	}
 	resp := gin.H{
-		"ready":      len(files) > 0,
-		"loading":    loading,
-		"files":      list,
-		"selected":   selected,
+		"ready":    len(files) > 0,
+		"loading":  loading,
+		"files":    list,
+		"selected": selected,
 		"cache": gin.H{
 			"used":      cacheUsed,
 			"limit":     s.cache.Limit(),
@@ -433,6 +433,7 @@ func (s *server) state() gin.H {
 				subs[i] = gin.H{
 					"file":   sub.File,
 					"name":   sub.Name,
+					"lang":   sub.Lang,
 					"format": sub.Format,
 					"url":    fmt.Sprintf("/hls/%d/%s", st.Index, sub.File),
 				}

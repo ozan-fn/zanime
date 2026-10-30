@@ -31,6 +31,11 @@ import (
 
 const registryName = "lru.json"
 
+// completionName is the per-torrent sidecar bitset of verified pieces. It lives
+// inside the torrent directory, so DropAll and LRU eviction remove it together
+// with the cached bytes.
+const completionName = ".complete"
+
 var dbgOn = os.Getenv("DISKCACHE_DBG") != ""
 
 func dbg() bool { return dbgOn }
@@ -221,6 +226,7 @@ func (c *Client) OpenTorrent(_ context.Context, info *metainfo.Info, infoHash me
 	c.touch(name)
 	c.mu.Unlock()
 	t := &torrentImpl{dir: dir, info: info, files: info.UpvertedFiles(), complete: map[int64]bool{}}
+	t.loadCompletion()
 
 	return storage.TorrentImpl{
 		Piece: func(p metainfo.Piece) storage.PieceImpl {
@@ -243,6 +249,71 @@ func (t *torrentImpl) setComplete(off int64, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.complete[off] = ok
+	t.persistLocked(off, ok)
+}
+
+// completionPath is the sidecar bitset for this torrent.
+func (t *torrentImpl) completionPath() string {
+	return filepath.Join(t.dir, completionName)
+}
+
+// loadCompletion marks pieces recorded as verified by an earlier run. A missing
+// or short sidecar simply leaves the rest incomplete; the bytes are then
+// fetched again instead of being trusted.
+func (t *torrentImpl) loadCompletion() {
+	if t.info == nil || t.info.PieceLength <= 0 {
+		return
+	}
+	data, err := os.ReadFile(t.completionPath())
+	if err != nil {
+		return
+	}
+	n := t.info.NumPieces()
+	for i := 0; i < n; i++ {
+		if i/8 >= len(data) {
+			break
+		}
+		if data[i/8]&(1<<(uint(i)%8)) != 0 {
+			t.complete[int64(i)*t.info.PieceLength] = true
+		}
+	}
+}
+
+// persistLocked writes one bit of the sidecar. The bitmap is small (one bit per
+// piece), so a one-byte WriteAt per verified piece is cheap and survives a
+// restart without rehashing; a crash between the data write and this bit can
+// only cost one re-download, never a false "complete".
+func (t *torrentImpl) persistLocked(off int64, ok bool) {
+	if t.info == nil || t.info.PieceLength <= 0 {
+		return
+	}
+	i := off / t.info.PieceLength
+	if i < 0 || int(i) >= t.info.NumPieces() {
+		return
+	}
+	path := t.completionPath()
+	if !ok {
+		if _, err := os.Stat(path); err != nil {
+			return // tidak ada yang perlu dibersihkan
+		}
+	}
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	byteOff := i / 8
+	bit := byte(1 << (uint(i) % 8))
+	var buf [1]byte
+	if _, err := f.ReadAt(buf[:], byteOff); err != nil && !errors.Is(err, io.EOF) {
+		return
+	}
+	if ok {
+		buf[0] |= bit
+	} else {
+		buf[0] &^= bit
+	}
+	_, _ = f.WriteAt(buf[:], byteOff)
 }
 
 func (t *torrentImpl) isComplete(off int64) bool {
@@ -390,9 +461,9 @@ func (p *piece) WriteAt(b []byte, off int64) (int, error) {
 }
 
 // MarkComplete and MarkNotComplete are called by the torrent client setelah
-// memverifikasi hash piece. State disimpan di memori untuk masa hidup torrent,
-// seperti NewMapPieceCompletion di storage file upstream; byte-nya tetap di
-// disk, jadi on-disk state tidak butuh persistence ekstra.
+// memverifikasi hash piece. Status disimpan di bitmap .complete dalam folder
+// torrent, jadi cache yang sama tetap dianggap lengkap setelah restart: byte di
+// disk dipakai ulang, bukan diunduh lagi.
 func (p *piece) MarkComplete() error {
 	p.torrent.setComplete(p.p.Offset(), true)
 	return nil

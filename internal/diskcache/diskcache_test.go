@@ -29,6 +29,7 @@ func fakeInfo() *metainfo.Info {
 	return &metainfo.Info{
 		Name:        "show",
 		PieceLength: 4,
+		Pieces:      make([]byte, 20*3), // tiga piece; isinya tidak dibaca
 		Files: []metainfo.FileInfo{
 			{Path: []string{"ep01.mkv"}, Length: 6, TorrentOffset: 0},
 			{Path: []string{"ep02.mkv"}, Length: 6, TorrentOffset: 6},
@@ -170,5 +171,61 @@ func TestRegistrySurvivesRestart(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(root, registryName))
 	if err != nil || !strings.Contains(string(data), hash.String()) {
 		t.Fatalf("file registry = %q (%v)", data, err)
+	}
+}
+
+// Piece yang sudah diverifikasi tetap dianggap lengkap setelah client dibuka
+// ulang (restart): sidecar .complete yang menyimpannya, bukan rehash.
+func TestCompletionSurvivesReopen(t *testing.T) {
+	root := t.TempDir()
+	info := fakeInfo()
+	hash := hashOf("restart")
+
+	c, err := New(root, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl, err := c.OpenTorrent(context.Background(), info, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p0 := impl.Piece(info.Piece(0))
+	if _, err := p0.WriteAt([]byte("abcd"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := p0.MarkComplete(); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := New(root, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl2, err := again.OpenTorrent(context.Background(), info, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := impl2.Piece(info.Piece(0)).Completion(); !got.Ok || !got.Complete {
+		t.Fatalf("piece 0 setelah reopen = %+v, want complete", got)
+	}
+	if got := impl2.Piece(info.Piece(1)).Completion(); !got.Ok || got.Complete {
+		t.Fatalf("piece 1 setelah reopen = %+v, want incomplete", got)
+	}
+
+	// MarkNotComplete menghapus bit, jadi open berikutnya juga menganggapnya
+	// belum lengkap (mis. hash gagal setelah data lama dipakai).
+	if err := impl2.Piece(info.Piece(0)).MarkNotComplete(); err != nil {
+		t.Fatal(err)
+	}
+	third, err := New(root, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impl3, err := third.OpenTorrent(context.Background(), info, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := impl3.Piece(info.Piece(0)).Completion(); got.Complete {
+		t.Fatalf("piece 0 setelah MarkNotComplete = %+v", got)
 	}
 }

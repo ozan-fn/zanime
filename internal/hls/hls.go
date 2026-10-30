@@ -38,6 +38,7 @@ var ErrNoSuchFile = errors.New("sesi hls tidak tersedia untuk file ini")
 type Subtitle struct {
 	File   string // WebVTT utuh untuk player: subs0.vtt
 	Name   string
+	Lang   string // LANGUAGE dari master playlist (BCP-47), "und" bila kosong
 	Format string // selalu vtt
 	index  int    // rendition sub%d (1-based) di plan
 }
@@ -110,13 +111,19 @@ func (j *Job) prepare(ctx context.Context, streamURL string, m *Manager) {
 		log.Printf("hls: index %d: %v", j.index, err)
 		return
 	}
-	j.plan, j.subs, j.ready = plan, subtitleList(plan), true
+	j.plan, j.subs, j.ready = plan, subtitleList(ctx, plan), true
 	log.Printf("hls siap: index %d (%d segmen, %d subtitle)", j.index, plan.NumSegments(), len(j.subs))
 }
 
 // subtitleList publishes every text subtitle rendition as one whole WebVTT
 // file, subsN.vtt (source index N). Bitmap subtitles never reach a plan.
-func subtitleList(plan *mp4.HLSPlan) []Subtitle {
+//
+// Name and language come from the master playlist (mkvgo writes
+// #EXT-X-MEDIA:TYPE=SUBTITLES,NAME=...,LANGUAGE=...): the player's subtitle
+// menu calls toUpperCase() on lang, so it must never be empty.
+func subtitleList(ctx context.Context, plan *mp4.HLSPlan) []Subtitle {
+	master, _, _ := plan.Resource(ctx, "master.m3u8")
+	meta := subtitleMeta(string(master))
 	var out []Subtitle
 	for _, name := range plan.Resources() {
 		n, ok := strings.CutPrefix(name, "sub")
@@ -127,14 +134,75 @@ func subtitleList(plan *mp4.HLSPlan) []Subtitle {
 		if err != nil || i < 1 {
 			continue
 		}
+		m := meta[i]
+		label := m.name
+		if label == "" {
+			label = fmt.Sprintf("Subtitle %d", i)
+		}
+		lang := m.lang
+		if lang == "" {
+			lang = "und"
+		}
 		out = append(out, Subtitle{
 			File:   fmt.Sprintf("subs%d.vtt", i-1),
-			Name:   fmt.Sprintf("Subtitle %d", i),
+			Name:   label,
+			Lang:   lang,
 			Format: "vtt",
 			index:  i,
 		})
 	}
 	return out
+}
+
+type subtitleAttrs struct {
+	name string
+	lang string
+}
+
+// subtitleMeta reads the TYPE=SUBTITLES entries of a master playlist, keyed by
+// rendition number (subN.m3u8). Attribute values may be quoted and contain
+// commas, so a plain split is not enough.
+func subtitleMeta(master string) map[int]subtitleAttrs {
+	out := make(map[int]subtitleAttrs)
+	for _, line := range strings.Split(master, "\n") {
+		if !strings.HasPrefix(line, "#EXT-X-MEDIA:") || !strings.Contains(line, "TYPE=SUBTITLES") {
+			continue
+		}
+		uri := hlsAttr(line, "URI")
+		rest, ok := strings.CutPrefix(uri, "sub")
+		n, err := strconv.Atoi(strings.TrimSuffix(rest, ".m3u8"))
+		if !ok || !strings.HasSuffix(uri, ".m3u8") || err != nil || n < 1 {
+			continue
+		}
+		out[n] = subtitleAttrs{name: hlsAttr(line, "NAME"), lang: hlsAttr(line, "LANGUAGE")}
+	}
+	return out
+}
+
+// hlsAttr returns one quoted or bare attribute from an HLS tag.
+func hlsAttr(line, key string) string {
+	for i := 0; ; {
+		j := strings.Index(line[i:], key+"=")
+		if j < 0 {
+			return ""
+		}
+		j += i
+		if j == 0 || line[j-1] == ',' || line[j-1] == ':' {
+			value := line[j+len(key)+1:]
+			if strings.HasPrefix(value, `"`) {
+				value = value[1:]
+				if end := strings.IndexByte(value, '"'); end >= 0 {
+					return value[:end]
+				}
+				return value
+			}
+			if end := strings.IndexByte(value, ','); end >= 0 {
+				return value[:end]
+			}
+			return strings.TrimSpace(value)
+		}
+		i = j + len(key) + 1
+	}
 }
 
 // Stop ends the running session and drops its cached segments.
@@ -217,7 +285,9 @@ func (m *Manager) Segment(ctx context.Context, index int, name string) ([]byte, 
 	return plan.Resource(ctx, name)
 }
 
-// Subtitle returns the whole WebVTT of one subtitle rendition (subsN.vtt).
+// Subtitle returns the whole WebVTT of one subtitle rendition (subsN.vtt) or
+// any per-segment .vtt the plan exposes (subN_00001.vtt): hls.js/Shaka request
+// those directly when the master playlist carries the subtitle group.
 func (m *Manager) Subtitle(ctx context.Context, index int, name string) ([]byte, error) {
 	job := m.currentIndex(index)
 	if job == nil {
@@ -234,6 +304,19 @@ func (m *Manager) Subtitle(ctx context.Context, index int, name string) ([]byte,
 			}
 			return plan.Subtitle(ctx, sub.index-1)
 		}
+	}
+	// Nama resource asli mkvgo (sub1.vtt, sub1_00002.vtt) dipakai player saat
+	// subtitle group dari master playlist aktif.
+	if strings.HasSuffix(name, ".vtt") {
+		plan := job.wait(ctx)
+		if plan == nil {
+			return nil, ErrNoSuchFile
+		}
+		data, _, err := plan.Resource(ctx, name)
+		if err != nil {
+			return nil, ErrNoSuchFile
+		}
+		return data, nil
 	}
 	return nil, ErrNoSuchFile
 }

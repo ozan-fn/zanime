@@ -2,6 +2,7 @@ package hls
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -123,6 +124,30 @@ func TestSegmentAndSubtitle(t *testing.T) {
 	}
 }
 
+// Beberapa track audio: tiap rendition (audio1.m3u8, audio2.m3u8, init_aN.mp4,
+// seg_aN_*.m4s) harus bisa diambil lewat sesi yang sama.
+func TestMultipleAudioRenditions(t *testing.T) {
+	m := NewManager()
+	t.Cleanup(m.Stop)
+	m.Start(context.Background(), 0, fixture(t, "jpn", "eng"))
+	if st := waitReady(t, m); st.Error != "" {
+		t.Fatalf("sesi gagal: %s", st.Error)
+	}
+	ctx := context.Background()
+	for _, i := range []int{1, 2} {
+		name := fmt.Sprintf("audio%d.m3u8", i)
+		if _, ok := m.Playlist(ctx, 0, name); !ok {
+			t.Fatalf("%s tidak tersedia", name)
+		}
+		if _, _, err := m.Segment(ctx, 0, fmt.Sprintf("init_a%d.mp4", i)); err != nil {
+			t.Fatalf("init_a%d: %v", i, err)
+		}
+		if _, _, err := m.Segment(ctx, 0, fmt.Sprintf("seg_a%d_00001.m4s", i)); err != nil {
+			t.Fatalf("seg_a%d: %v", i, err)
+		}
+	}
+}
+
 func TestUnknownIndexIsNotFound(t *testing.T) {
 	m := NewManager()
 	t.Cleanup(m.Stop)
@@ -145,4 +170,66 @@ func countLines(s, sub string) int {
 		}
 	}
 	return n
+}
+
+// subtitleFixture sama seperti fixture, ditambah satu track subtitle SRT.
+func subtitleFixture(t *testing.T, lang, name string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "sub.mkv")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("buat fixture: %v", err)
+	}
+	defer f.Close()
+
+	c := &matroska.Container{Info: mkv.SegmentInfo{TimecodeScale: 1_000_000, MuxingApp: "test", WritingApp: "test"}}
+	w, h := uint32(320), uint32(240)
+	tracks := []mkv.Track{
+		{ID: 1, Type: mkv.VideoTrack, Codec: "h264", Width: &w, Height: &h, CodecPrivate: []byte{1}},
+		{ID: 2, Type: mkv.SubtitleTrack, Codec: "srt", Language: lang, Name: name},
+	}
+	mw := writer.NewMKVWriter(f)
+	if err := mw.WriteStart(); err != nil {
+		t.Fatalf("mulai fixture: %v", err)
+	}
+	if err := mw.WriteMetadata(c, tracks, 4000); err != nil {
+		t.Fatalf("metadata fixture: %v", err)
+	}
+	for tc := int64(0); tc < 4000; tc += 500 {
+		var blocks []mkv.Block
+		if tc%1000 == 0 {
+			blocks = append(blocks, mkv.Block{TrackNumber: 1, Timecode: tc, Keyframe: true, Data: []byte("videoframe")})
+		}
+		if tc == 0 {
+			blocks = append(blocks, mkv.Block{TrackNumber: 2, Timecode: tc, Keyframe: true,
+				Data: []byte("1\n00:00:00,000 --> 00:00:01,000\nhalo\n")})
+		}
+		if err := mw.WriteClusterWithCues(tc, 1_000_000, blocks); err != nil {
+			t.Fatalf("cluster fixture: %v", err)
+		}
+	}
+	if err := mw.Finalize(); err != nil {
+		t.Fatalf("finalisasi fixture: %v", err)
+	}
+	return path
+}
+
+func TestSubtitleLangAndResources(t *testing.T) {
+	m := NewManager()
+	t.Cleanup(m.Stop)
+	m.Start(context.Background(), 0, subtitleFixture(t, "fre", "Français"))
+	st := waitReady(t, m)
+	if st.Error != "" {
+		t.Fatalf("sesi gagal: %s", st.Error)
+	}
+	if len(st.Subs) != 1 || st.Subs[0].Lang != "fre" || st.Subs[0].Name != "Français" {
+		t.Fatalf("subtitle = %+v", st.Subs)
+	}
+	ctx := context.Background()
+	for _, name := range []string{"subs0.vtt", "sub1.vtt", "sub1_00001.vtt"} {
+		data, err := m.Subtitle(ctx, 0, name)
+		if err != nil || len(data) == 0 {
+			t.Fatalf("%s: %v (%d byte)", name, err, len(data))
+		}
+	}
 }

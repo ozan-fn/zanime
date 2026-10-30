@@ -172,19 +172,26 @@ async function applySubtitles(el: MoviElement, index: number, subs: any[] | unde
     selectSubtitleLang?: (lang: string | null) => Promise<boolean>
   } | null
   if (!api?.addSubtitleTrack) return // player belum siap; dicoba lagi pada frame berikutnya
+  // MoviPlayer memanggil lang.toUpperCase() di menu subtitle; jangan pernah
+  // mendaftarkan track tanpa lang walau server mengirim data lama.
+  const tracks = subs.map((sub, i) => ({
+    ...sub,
+    lang: sub.lang || `und${i}`,
+    label: sub.name || sub.lang || `Subtitle ${i + 1}`,
+  }))
   const have = (api.getSubtitleLangs?.() || []).map((track) => track.lang)
-  const missing = subs.filter((sub) => !have.includes(sub.lang))
+  const missing = tracks.filter((sub) => !have.includes(sub.lang))
   if (!missing.length) return
 
-  const key = `${index}:${subs.map((sub) => sub.url || sub.file || sub.lang).join(',')}`
+  const key = `${index}:${tracks.map((sub) => sub.url || sub.file || sub.lang).join(',')}`
   if (ctl.subsSession === key) return // sudah didaftarkan untuk sesi ini
   ctl.subsSession = key
 
   // Server mengekstrak subtitle dari seluruh file (bisa lama untuk file
   // besar). Tunggu isinya siap dulu, baru daftarkan + pilih; kalau tidak,
   // track tampak terpilih tapi tidak ada teks sampai ekstraksi selesai.
-  const first = subs[0]
-  setStatus(`Menyiapkan subtitle ${first.name || first.lang}…`, 'info')
+  const first = tracks[0]
+  setStatus(`Menyiapkan subtitle ${first.label}…`, 'info')
   try {
     const res = await fetch(first.url, { cache: 'no-store' })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -196,10 +203,10 @@ async function applySubtitles(el: MoviElement, index: number, subs: any[] | unde
   }
   if (ctl.subsSession !== key) return // sesi sudah berganti saat menunggu
 
-  for (const sub of subs) {
-    api.addSubtitleTrack({ url: sub.url, lang: sub.lang, label: sub.name || sub.lang, format: sub.format || 'vtt' })
+  for (const sub of tracks) {
+    api.addSubtitleTrack({ url: sub.url, lang: sub.lang, label: sub.label, format: sub.format || 'vtt' })
   }
   ;(el as any).updateSubtitleTrackMenu?.()
   await api.selectSubtitleLang?.(first.lang)
-  setStatus(`Subtitle ${first.name || first.lang} aktif.`, 'ok')
+  setStatus(`Subtitle ${first.label} aktif.`, 'ok')
 }
