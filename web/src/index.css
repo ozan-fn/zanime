@@ -1,0 +1,58 @@
+@import 'tailwindcss';
+
+@theme {
+  --radius: 2px;
+  --radius-sm: 2px;
+  --radius-md: 2px;
+  --radius-lg: 2px;
+  --radius-xl: 2px;
+  --radius-2xl: 2px;
+  --radius-3xl: 2px;
+  --radius-full: 2px;
+  --color-border: #27272a;
+  --color-muted: #3f3f46;
+  --color-card: #111113;
+  --color-primary: #fafafa;
+  --color-primary-contrast: #18181b;
+}
+
+html, body { height: 100%; }
+body { background: #09090b; }
+movi-player { width: 100%; aspect-ratio: 16 / 9; background: #000; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+.file-row[aria-current="true"] { box-shadow: inset 3px 0 0 #fafafa; }
+/* Panah kecepatan: redup saat diam, berdenyut searah aliran saat aktif. */
+.net-ic { display: inline-block; opacity: .3; transition: opacity .3s; }
+.net-ic.on { opacity: 1; animation: net-flow .8s ease-in-out infinite; }
+.net-ic.down.on { animation-name: net-flow-down; }
+.net-ic.up.on { animation-name: net-flow-up; }
+@keyframes net-flow-down {
+  0%, 100% { opacity: .4; transform: translateY(-2px); }
+  50% { opacity: 1; transform: translateY(2px); }
+}
+@keyframes net-flow-up {
+  0%, 100% { opacity: .4; transform: translateY(2px); }
+  50% { opacity: 1; transform: translateY(-2px); }
+}
+dialog::backdrop { background: rgba(9, 9, 11, .78); }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none;
+  border: 1px solid #27272a; background: #111113; color: #a1a1aa;
+  padding: 4px 10px; border-radius: 2px; font-size: 12px; line-height: 16px; white-space: nowrap;
+  transition: all .15s;
+}.chip:hover { border-color: #3f3f46; color: #e4e4e7; }
+.chip.on { background: #fafafa; border-color: #fafafa; color: #18181b; font-weight: 500; }
+.chip[disabled] { opacity: .4; cursor: default; }
+button:focus-visible, input:focus-visible { outline: 2px solid #52525b; outline-offset: 1px; }
+/* Teks terpotong (ellipsis) bergeser melebar saat hover + tooltip teks
+   lengkap, jadi judul/path file panjang tetap terbaca tanpa menggeser list. */
+.sq { overflow: hidden; min-width: 0; white-space: nowrap; text-overflow: ellipsis; }
+.sq-inner { display: inline-block; white-space: nowrap; }
+.sq:hover { text-overflow: clip; }
+.sq:hover .sq-inner { animation: sq-slide var(--sq-dur, 6s) linear .5s infinite alternate; }
+@keyframes sq-slide {
+  from { transform: translateX(0); }
+  to { transform: translateX(var(--sq-shift, 0px)); }
+}

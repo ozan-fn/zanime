@@ -1,0 +1,1588 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>kafuu — torrent streaming</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script>
+    // Radius 2px di semua sudut, sesuai tampilan rata yang dipilih.
+    tailwind.config = {
+      theme: {
+        extend: {
+          borderRadius: {
+            DEFAULT: '2px', sm: '2px', md: '2px', lg: '2px',
+            xl: '2px', '2xl': '2px', '3xl': '2px', full: '2px',
+          },
+          colors: {
+            border: '#27272a',
+            muted: '#3f3f46',
+            card: '#111113',
+            primary: '#fafafa',
+            'primary-contrast': '#18181b',
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    html, body { height: 100%; }
+    body { background: #09090b; }
+    movi-player { width: 100%; aspect-ratio: 16 / 9; background: #000; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    .file-row[aria-current="true"] { box-shadow: inset 3px 0 0 #fafafa; }
+    /* Panah kecepatan: redup saat diam, berdenyut searah aliran saat aktif. */
+    .net-ic { display: inline-block; opacity: .3; transition: opacity .3s; }
+    .net-ic.on { opacity: 1; animation: net-flow .8s ease-in-out infinite; }
+    .net-ic.down.on { animation-name: net-flow-down; }
+    .net-ic.up.on { animation-name: net-flow-up; }
+    @keyframes net-flow-down {
+      0%, 100% { opacity: .4; transform: translateY(-2px); }
+      50% { opacity: 1; transform: translateY(2px); }
+    }
+    @keyframes net-flow-up {
+      0%, 100% { opacity: .4; transform: translateY(2px); }
+      50% { opacity: 1; transform: translateY(-2px); }
+    }
+    dialog::backdrop { background: rgba(9, 9, 11, .78); }
+    .chip {
+      display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none;
+      border: 1px solid #27272a; background: #111113; color: #a1a1aa;
+      padding: 4px 10px; border-radius: 2px; font-size: 12px; line-height: 16px; white-space: nowrap;
+      transition: all .15s;
+    }
+    .chip:hover { border-color: #3f3f46; color: #e4e4e7; }
+    .chip.on { background: #fafafa; border-color: #fafafa; color: #18181b; font-weight: 500; }
+    .chip[disabled] { opacity: .4; cursor: default; }
+    button:focus-visible, input:focus-visible { outline: 2px solid #52525b; outline-offset: 1px; }
+    /* Teks terpotong (ellipsis) bergeser melebar saat hover + tooltip teks
+       lengkap, jadi judul/path file panjang tetap terbaca tanpa menggeser list. */
+    .sq { overflow: hidden; min-width: 0; white-space: nowrap; text-overflow: ellipsis; }
+    .sq-inner { display: inline-block; white-space: nowrap; }
+    .sq:hover { text-overflow: clip; }
+    .sq:hover .sq-inner { animation: sq-slide var(--sq-dur, 6s) linear .5s infinite alternate; }
+    @keyframes sq-slide {
+      from { transform: translateX(0); }
+      to { transform: translateX(var(--sq-shift, 0px)); }
+    }
+  </style>
+</head>
+<body class="min-h-full text-zinc-200 antialiased selection:bg-zinc-500/40">
+  <div class="mx-auto flex min-h-screen max-w-7xl flex-col px-4 py-6 sm:px-6 lg:px-8">
+    <header class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <div class="grid h-10 w-10 place-items-center rounded-lg border border-border bg-card text-zinc-200">
+          <i data-lucide="clapperboard" class="h-5 w-5"></i>
+        </div>
+        <div>
+          <h1 class="text-lg font-semibold tracking-tight text-white">kafuu</h1>
+          <p class="text-xs text-zinc-500">Streaming torrent lewat HLS</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="search-btn" type="button"
+          class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-zinc-300 transition hover:bg-zinc-800 hover:text-white">
+          <i data-lucide="search" class="h-3.5 w-3.5"></i>
+          Cari
+        </button>
+        <button id="transcode-btn" type="button" aria-pressed="false"
+          class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[11px] text-zinc-400 transition hover:bg-zinc-800 hover:text-white">
+          <i data-lucide="cpu" class="h-3 w-3"></i>
+          <span>transcode: off</span>
+        </button>
+        <label for="audio-rate" class="sr-only">Bitrate audio</label>
+        <select id="audio-rate" title="Bitrate audio AAC"
+          class="h-7 rounded-lg border border-border bg-card px-2 text-[11px] text-zinc-300 outline-none transition hover:bg-zinc-800 focus:border-zinc-600">
+          <option value="128">audio 128k</option>
+          <option value="192">audio 192k</option>
+          <option value="256">audio 256k</option>
+        </select>
+      </div>
+    </header>
+
+    <main class="mt-6 grid flex-1 items-start gap-5 lg:grid-cols-[390px_minmax(0,1fr)]">
+      <section class="flex min-w-0 flex-col gap-4">
+        <div class="rounded-xl border border-border bg-card p-4">
+          <form id="magnet-form" class="space-y-3">
+            <div class="flex items-center justify-between">
+              <label for="magnet" class="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Magnet link</label>
+              <span class="text-[11px] text-zinc-600">BitTorrent</span>
+            </div>
+            <textarea id="magnet" rows="3" spellcheck="false" autocomplete="off"
+      class="w-full resize-none rounded-lg border border-border bg-zinc-900 px-3 py-2.5 font-mono text-xs leading-relaxed text-zinc-200 outline-none transition placeholder:text-zinc-600 focus:border-zinc-600"
+              placeholder="magnet:?xt=urn:btih:..."></textarea>
+            <div class="flex items-stretch gap-2">
+              <button id="load-btn" type="submit"
+                class="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-contrast transition hover:bg-zinc-200 focus:outline-none focus:ring-2 focus:ring-zinc-500/50 disabled:cursor-not-allowed disabled:opacity-60">
+                <svg id="load-spinner" class="hidden h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-80" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4Z"></path>
+                </svg>
+                <i data-lucide="download" class="h-4 w-4"></i>
+                <span>Muat torrent</span>
+              </button>
+              <button id="cancel-btn" type="button"
+                class="hidden shrink-0 items-center justify-center gap-1.5 rounded-lg border border-rose-400/30 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 focus:outline-none focus:ring-2 focus:ring-rose-400/40 disabled:cursor-not-allowed disabled:opacity-60 [&:not(.hidden)]:inline-flex">
+                <i data-lucide="x" class="h-4 w-4 shrink-0"></i>
+                Batalkan
+              </button>
+            </div>
+          </form>
+
+          <div id="status" class="mt-3 hidden rounded-xl border px-3 py-2 text-xs leading-relaxed" role="status"></div>
+        </div>
+
+        <div id="files-card" class="hidden rounded-xl border border-border bg-card p-4">
+          <div class="flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <h2 class="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Pilih video</h2>
+              <p id="torrent-name" class="mt-1 truncate text-sm font-medium text-zinc-200"></p>
+            </div>
+            <span id="file-count" class="shrink-0 rounded-full border border-border bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-400"></span>
+          </div>
+          <div id="files" class="mt-3 max-h-[380px] space-y-1.5 overflow-y-auto pr-1"></div>
+        </div>
+
+        <div id="stats-card" class="hidden rounded-xl border border-border bg-card p-4">
+          <div class="flex items-center justify-between">
+            <h2 class="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+              Status
+              <span id="status-source" class="font-normal normal-case tracking-normal text-zinc-600">menyambung…</span>
+            </h2>
+            <span id="peers-wrap" class="text-[11px] text-zinc-500"><span id="peers" class="font-semibold text-zinc-300">0</span> peer</span>
+          </div>
+
+          <div class="mt-3 space-y-3.5 text-[11px]">
+            <div>
+              <div class="flex items-center justify-between">
+                <span class="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Torrent</span>
+                <span id="tor-hash" class="max-w-[8rem] truncate font-mono text-[10px] text-zinc-500">—</span>
+              </div>
+              <div class="mt-1 space-y-1">
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Piece</span>
+                  <span id="tor-pieces" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Byte lengkap</span>
+                  <span id="tor-ram" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Parsial</span>
+                  <span id="tor-partial" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Peer</span>
+                  <span id="tor-peers" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Seeder</span>
+                  <span id="tor-seeders" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Negosiasi</span>
+                  <span id="tor-handshake" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Chunk</span>
+                  <span id="tor-chunks" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="shrink-0">Wire / hash</span>
+                  <span id="tor-wire" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="border-t border-border/60 pt-3">
+              <div class="flex items-center justify-between text-zinc-500">
+                <span>Cache disk</span>
+                <span><span id="cache-text" class="text-zinc-300">0 B</span> · <span id="evictions" class="text-zinc-300">0</span> evict</span>
+              </div>
+              <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                <div id="cache-bar" class="h-full w-0 rounded-full bg-zinc-100 transition-[width] duration-500"></div>
+              </div>
+              <div class="mt-1 flex items-baseline justify-between gap-3 text-zinc-600">
+                <span>Torrent di disk</span>
+                <span id="cache-pieces" class="tabular-nums text-zinc-400">—</span>
+              </div>
+              <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                <span>Eviction / menit</span>
+                <span id="evict-rate" class="tabular-nums text-zinc-400">—</span>
+              </div>
+            </div>
+
+            <div class="border-t border-border/60 pt-3">
+              <div class="flex items-center justify-between text-zinc-500">                  <span>Terunduh (semua file)</span>
+                <span id="dl-text" class="text-zinc-300">0 B</span>
+              </div>
+              <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                <div id="dl-bar" class="h-full w-0 rounded-full bg-zinc-100 transition-[width] duration-500"></div>
+              </div>
+              <div class="mt-1 space-y-1">
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="flex items-center gap-1.5">
+                    <span id="net-down-ic" class="net-ic down" aria-hidden="true">↓</span>
+                    Peer → server
+                  </span>
+                  <span id="net-down" class="tabular-nums text-zinc-300">0 Mbps</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span class="flex items-center gap-1.5">
+                    <span id="net-up-ic" class="net-ic up" aria-hidden="true">↑</span>
+                    <span id="net-up-label">server → client</span>
+                  </span>
+                  <span id="net-up" class="tabular-nums text-zinc-300">0 Mbps</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span>Byte terbuang</span>
+                  <span id="dl-wasted" class="min-w-0 truncate text-right tabular-nums text-zinc-400">—</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="border-t border-border/60 pt-3">
+              <div class="flex items-center justify-between">
+                <span class="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Server</span>
+                <span id="srv-hls" class="text-[10px] text-zinc-500">—</span>
+              </div>
+              <div class="mt-1 space-y-1">
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span>User / tab</span>
+                  <span id="srv-users" class="tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span>Uptime</span>
+                  <span id="srv-uptime" class="tabular-nums text-zinc-400">—</span>
+                </div>
+                <div class="flex items-baseline justify-between gap-3 text-zinc-600">
+                  <span>Heap / goroutine</span>
+                  <span id="srv-heap" class="tabular-nums text-zinc-400">—</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="flex min-w-0 flex-col gap-3">
+        <div class="overflow-hidden rounded-xl border border-border bg-black">
+          <!-- MoviPlayer memutar HLS (menu audio per track + subtitle). -->
+<movi-player id="player"
+            controls autoplay playsinline thumb
+            theme="dark"
+            buffersize="64"
+            bindav="false"
+            subtitlepicker
+            persist="loop muted volume speed ambient stablevolume hdr aspect audiolang subtitlelang"
+            persistkey="zanime"></movi-player>
+          <div id="live-note" class="hidden items-start gap-2 border-t border-amber-400/30 bg-amber-400/10 px-4 py-2.5 text-[11px] leading-relaxed text-amber-300">
+            <svg viewBox="0 0 24 24" class="mt-0.5 h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M12 9v4M12 17h.01M10.3 3.9 2 18a2 2 0 0 0 1.7 3h16.6A2 2 0 0 0 22 18L13.7 3.9a2 2 0 0 0-3.4 0Z"></path>
+            </svg>
+            <span>Durasi video tidak terbaca, jadi diputar sebagai <strong class="font-medium">stream live</strong>: durasi dan lompat ke akhir tidak tersedia.</span>
+          </div>
+          <div id="now-playing" class="hidden items-center justify-between gap-3 border-t border-border bg-card px-4 py-3">
+            <img id="np-thumb" alt="" class="hidden h-11 w-20 shrink-0 rounded-md border border-border bg-zinc-900 object-cover" />
+            <div class="min-w-0">
+              <p id="np-title" class="sq text-sm font-medium text-zinc-100"></p>
+              <p id="np-sub" class="sq mt-0.5 text-[11px] text-zinc-500"></p>
+            </div>
+            <span class="hidden shrink-0 items-center gap-1 rounded-full border border-border bg-zinc-900 px-2.5 py-1 text-[11px] text-zinc-400 sm:inline-flex">
+              <i data-lucide="radio" class="h-3 w-3"></i> streaming
+            </span>
+          </div>
+        </div>
+        <div class="flex items-start gap-2 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-[11px] leading-relaxed text-zinc-500">
+          <svg viewBox="0 0 24 24" class="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-600" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8h.01"></path>
+          </svg>
+          <span>Semua video di-remux mkvgo (pure Go, tanpa ffmpeg) dan dikirim ke player sebagai HLS. Tidak ada encode ulang, jadi browser harus mendukung codec sumbernya (H.264/HEVC/AV1 + AAC/Opus).</span>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="search-dlg"
+    class="mx-auto w-[min(860px,94vw)] h-[min(720px,86vh)] max-h-[86vh] rounded-xl border border-border bg-zinc-950 p-0 text-zinc-200 shadow-xl shadow-black/50">
+    <div class="flex h-full min-h-0 flex-col">
+      <div class="flex items-center gap-2 border-b border-border px-4 py-3">
+        <input id="search-q" autocomplete="off" spellcheck="false" placeholder="Cari judul, mis. frieren"
+          class="min-w-0 flex-1 rounded-lg border border-border bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-zinc-600" />
+        <button id="search-go" type="button"
+          class="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-sm font-semibold text-primary-contrast transition hover:bg-zinc-200">
+          <i data-lucide="search" class="h-4 w-4 shrink-0"></i>
+          Cari
+        </button>
+        <button id="search-close" type="button"
+          class="rounded-lg border border-border p-2 text-zinc-400 transition hover:bg-zinc-800 hover:text-white">
+          <i data-lucide="x" class="h-4 w-4"></i>
+        </button>
+      </div>
+      <div id="search-tabs" class="flex flex-wrap items-center gap-1.5 border-b border-border px-4 py-2.5">
+        <button type="button" data-tab="all" class="chip on">All</button>
+        <button type="button" data-tab="movie" class="chip">Movie</button>
+        <button type="button" data-tab="series" class="chip">Series</button>
+        <button type="button" data-muv="trending" class="chip">🔥Trending</button>
+        <button type="button" data-muv="indo" class="chip">🇮🇩Indo</button>
+        <button type="button" data-muv="korea" class="chip">Korea</button>
+        <button type="button" data-muv="china" class="chip">China</button>
+        <button type="button" data-muv="india" class="chip">India</button>
+        <button type="button" data-muv="horror" class="chip">Horror</button>
+        <button type="button" data-muv="anime" class="chip">Anime</button>
+        <button type="button" data-muv="comedy" class="chip">Comedy</button>
+        <button type="button" data-muv="romance" class="chip">Romance</button>
+        <button type="button" data-muv="action" class="chip">Action</button>
+        <button type="button" data-ac="0" class="chip">🗼Anime Pop</button>
+        <button type="button" data-ac="1" class="chip">🗼Anime Top</button>
+        <button type="button" data-ac="2" class="chip">🗼Anime Airing</button>
+        <button type="button" data-ac="3" class="chip">🗼AniList</button>
+        <button type="button" data-ac="4" class="chip">Netflix</button>
+        <button type="button" data-ac="5" class="chip">Top Rated</button>
+        <button type="button" id="search-back" class="chip ml-auto" disabled>
+          <i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>
+          Kembali
+        </button>
+      </div>
+      <div id="search-body" class="min-h-0 flex-1 overflow-y-auto px-4 py-3"></div>
+    </div>
+  </dialog>
+
+  <footer class="mt-6 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] pt-4 text-[11px] text-zinc-600">
+      <span>kafuu · streaming torrent</span>
+      <span>cache <span id="footer-cache">4 GiB</span> · data torrent di <code class="text-zinc-500">./tmp/cache</code></span>
+    </footer>
+  </div>
+
+  <!-- MoviPlayer: player HLS/MKV/HEVC + menu audio & subtitle. -->
+  <script type="module" src="https://cdn.jsdelivr.net/npm/movi-player@0.4.1/dist/element.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const form = $('magnet-form');
+    const magnetInput = $('magnet');
+    const loadBtn = $('load-btn');
+    const statusEl = $('status');
+    const filesCard = $('files-card');
+    const filesEl = $('files');
+    const statsCard = $('stats-card');
+    const nowPlaying = $('now-playing');
+    const player = $('player');
+
+    let lastFileKey = '';
+    let directPlay = false; // sedang memutar stream direct (/fetch), bukan torrent
+    let wantedKey = '';     // url playlist HLS yang sedang dimuat
+    let resumeStartAt = 0;  // > 0: reload berikutnya harus seek ke detik ini
+    let retries = 0;        // reload otomatis karena stream macet
+    let lastRetry = 0;
+
+    /* Semua playback lewat mkvgo: server membuat plan dari header file lebih
+     * dulu (durasi penuh, semua rendition), lalu tiap segmen fMP4 baru di-remux
+     * saat player memintanya — tanpa encode, tanpa menulis apa pun ke disk. */
+    // Elemen <movi-player> datang dari CDN. Sebelum bundle-nya selesai,
+    // `player.src = url` hanya menulis properti biasa yang hilang saat elemen
+    // ter-upgrade, jadi src tidak pernah ada dan video tidak diputar. `tagName`
+    // sudah MOVI-PLAYER sejak parsing, jadi penandanya method bundle-nya;
+    // polling status akan memanggil loadHLS lagi setelah elemen siap.
+    const playerUpgraded = () => typeof player.load === 'function';
+
+    // Properti `src` yang terlanjur dibuat sebelum elemen siap menutupi setter
+    // aslinya; buang dulu supaya assignment memakai setter elemen.
+    function setPlayerSrc(url) {
+      if (Object.prototype.hasOwnProperty.call(player, 'src')) delete player.src;
+      player.src = url;
+    }
+
+    function loadHLS(index, playlist) {
+      const url = `/hls/${index}/${playlist || 'index.m3u8'}`;
+      if (!playerUpgraded() || wantedKey === url) return false;
+      wantedKey = url;
+      setPlayerSrc(url);
+      player.load?.();
+      return true;
+    }
+
+    // Subtitle di dalam file: server mengekstrak track teks jadi WebVTT saat
+    // diminta, lalu player memuatnya sebagai track subtitle biasa (termasuk
+    // menu subtitle di player).
+    let subsSession = '';
+    async function applySubtitles(index, subs) {
+      if (!subs?.length) return;
+      const api = player.player;
+      if (!api?.addSubtitleTrack) return; // player belum siap; dicoba lagi
+      const have = (api.getSubtitleLangs?.() || []).map((track) => track.lang);
+      const missing = subs.filter((sub) => !have.includes(sub.lang));
+      if (!missing.length) return;
+
+      const key = `${index}:${subs.map((sub) => sub.file).join(',')}`;
+      if (subsSession === key) return; // sudah didaftarkan untuk sesi ini
+      subsSession = key;
+
+      // Server mengekstrak subtitle dari seluruh file (bisa lama untuk file
+      // besar). Tunggu isinya siap dulu, baru daftarkan + pilih; kalau tidak,
+      // track tampak terpilih tapi tidak ada teks sampai ekstraksi selesai.
+      const first = subs[0];
+      setStatus(`Menyiapkan subtitle ${first.name || first.lang}…`, 'info');
+      try {
+        const res = await fetch(first.url, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await res.text(); // isi masuk cache server: permintaan player berikutnya instan
+      } catch (err) {
+        if (subsSession === key) subsSession = '';
+        setStatus(`Subtitle gagal dimuat: ${err.message}`, 'error');
+        return;
+      }
+      if (subsSession !== key) return; // sesi sudah berganti saat menunggu
+
+      for (const sub of subs) {
+        api.addSubtitleTrack({ url: sub.url, lang: sub.lang, label: sub.name || sub.lang, format: sub.format || 'vtt' });
+      }
+      player.updateSubtitleTrackMenu?.();
+      await api.selectSubtitleLang?.(first.lang);
+      setStatus(`Subtitle ${first.name || first.lang} aktif.`, 'ok');
+    }
+
+    // Buang playback sekarang; applyState memuat ulang begitu sesi baru siap
+    // (dipakai saat ganti file).
+    function resetPlayer() {
+      wantedKey = '';
+      subsSession = '';
+      resumeStartAt = 0;
+      if (player.hasAttribute('startat')) player.removeAttribute('startat');
+      if (player.hasAttribute('src')) player.removeAttribute('src');
+    }
+
+    // Magnet + episode terakhir bertahan setelah reload.
+    const LAST_KEY = 'zanime.last';
+    const lastSaved = () => {
+      try { return JSON.parse(localStorage.getItem(LAST_KEY)) || {}; } catch { return {}; }
+    };
+    const saveLast = (patch) => localStorage.setItem(LAST_KEY, JSON.stringify({ ...lastSaved(), ...patch }));
+
+    // Thumbnail episode per judul (kunci "season:episode") + thumbnail pilihan
+    // terakhir; ikut disimpan bersama magnet supaya bertahan setelah reload.
+    let epThumbs = lastSaved().thumbs || {};
+    let pickedThumb = lastSaved().thumb || '';
+    const buildEpThumbs = () => Object.fromEntries(
+      sv.videos.filter((v) => v.thumbnail && v.season != null)
+        .map((v) => [`${v.season}:${v.episode}`, v.thumbnail]));
+    // Nama file SxxEyy → thumbnail episode; kalau tidak cocok (mis. nama file
+    // tanpa kode episode), coba pola nama seragam, lalu thumb terakhir.
+    const epThumbFor = (file) => {
+      const m = (file.name || '').match(/S(\d{1,2})E(\d{1,3})/i);
+      const hit = m && epThumbs[`${+m[1]}:${+m[2]}`];
+      if (hit) return hit;
+      return thumbByEpisodeNumber(file) ?? (file.index === lastState?.selected ? pickedThumb : '');
+    };
+
+    /* Fallback thumbnail berbasis pola nama: kalau semua file identik kecuali
+     * satu angka (mis. "[G] Show - 01 [1080p].mkv" beda hanya 01/02/03), angka
+     * itu nomor episode → pinjam thumbnail episode nomor sama dari Simkl
+     * walau nama file tidak berformat SxxEyy. Nama yang tidak seragam tidak
+     * ditebak: angka bisa berarti resolusi/tahun. */
+    const skeletonOf = (name) => (name || '').replace(/\d+/g, '#');
+    function uniformEpisodeRunIndex(files) {
+      if (files.length < 2) return null;
+      const runsOf = (f) => (f.name || '').match(/\d+/g) || [];
+      const first = runsOf(files[0]);
+      if (!first.length || files.some((f) => {
+        const runs = runsOf(f);
+        return runs.length !== first.length || skeletonOf(f.name) !== skeletonOf(files[0].name);
+      })) return null;
+      for (let i = 0; i < first.length; i++) {
+        if (files.some((f) => runsOf(f)[i] !== first[i])) return i;
+      }
+      return null;
+    }
+    function thumbByEpisodeNumber(file) {
+      const files = (lastState?.files || []);
+      const runIndex = uniformEpisodeRunIndex(files);
+      if (runIndex == null) return null;
+      const runs = (file.name || '').match(/\d+/g) || [];
+      const episode = runs[runIndex] != null ? +runs[runIndex] : null;
+      if (episode == null) return null;
+      const seasons = [...new Set(Object.keys(epThumbs).map((k) => k.split(':')[0]))].sort((a, b) => a - b);
+      for (const season of seasons) {
+        const thumb = epThumbs[`${season}:${episode}`];
+        if (thumb) return thumb;
+      }
+      return null;
+    }
+
+    const fmt = (n) => {
+      if (!n || n < 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0;
+      let v = n;
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+      const digits = i === 0 || v >= 10 ? 0 : 1;
+      return `${v.toFixed(digits)} ${units[i]}`;
+    };
+
+    const fmtDur = (sec) => {
+      const s = Math.max(0, Math.round(sec));
+      if (s < 60) return `${s} dtk`;
+      const m = Math.floor(s / 60);
+      if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`;
+      return `${Math.floor(m / 60)}j ${String(m % 60).padStart(2, '0')}m`;
+    };
+
+    // setSq: teks satu baris terpotong; saat hover, teks meluncur ke kiri
+    // memperlihatkan bagian terpotongnya (marquee alternating) dan teks
+    // lengkapnya jadi tooltip title=.
+    function setSq(el, text) {
+      el.textContent = '';
+      const inner = document.createElement('span');
+      inner.className = 'sq-inner';
+      inner.textContent = text;
+      el.append(inner);
+      el.title = text;
+      requestAnimationFrame(() => {
+        const over = inner.scrollWidth - el.clientWidth;
+        if (over > 4) {
+          el.style.setProperty('--sq-shift', `-${over}px`);
+          el.style.setProperty('--sq-dur', `${Math.max(2, Math.round(over / 30))}s`);
+        }
+      });
+    }
+
+    function setStatus(message, kind = 'info') {
+      const styles = {
+        info: 'border-border bg-card text-zinc-300',
+        ok: 'border-zinc-700 bg-zinc-900 text-zinc-100',
+        error: 'border-rose-400/20 bg-rose-400/[0.07] text-rose-200',
+      };
+      // break-all: nama file panjang (satu token tanpa spasi) dibungkus per
+      // karakter, jadi tidak mendorong kartu lain melebar / tidak sejajar.
+      statusEl.className = `mt-3 min-w-0 break-all rounded-xl border px-3 py-2 text-xs leading-relaxed ${styles[kind] || styles.info}`;
+      statusEl.textContent = message;
+      statusEl.classList.remove('hidden');
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      const text = await res.text();
+      let body = {};
+      try { body = text ? JSON.parse(text) : {}; } catch { /* non-JSON error */ }
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      return body;
+    }
+
+    function renderFiles(files, selected) {
+      filesEl.replaceChildren();
+      for (const file of files) {
+        const active = file.index === selected;
+        // div + role=button supaya tombol Cache bisa bersarang (button di
+        // dalam button tidak valid).
+        const btn = document.createElement('div');
+        btn.dataset.index = String(file.index);
+        btn.setAttribute('role', 'button');
+        btn.tabIndex = 0;
+        btn.setAttribute('aria-current', active ? 'true' : 'false');
+        btn.className = [
+          'file-row group flex w-full cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition focus-visible:outline focus-visible:outline-1 focus-visible:outline-zinc-500',
+          active
+            ? 'border-border bg-zinc-800/60'
+            : 'border-transparent hover:border-border hover:bg-zinc-800/40',
+        ].join(' ');
+
+        // Thumbnail episode (dengan fallback pola nama); kalau tidak ada /
+        // gagal muat, pakai kotak kosong supaya baris tetap rapi.
+        const emptyThumb = () => {
+          const ph = document.createElement('span');
+          ph.className = 'h-11 w-20 shrink-0 rounded-md border border-border bg-zinc-900';
+          return ph;
+        };
+        let lead;
+        const thumb = epThumbFor(file);
+        if (thumb) {
+          const img = document.createElement('img');
+          img.src = thumb;
+          img.alt = '';
+          img.loading = 'lazy';
+          img.className = 'h-11 w-20 shrink-0 rounded-md border border-border bg-zinc-900 object-cover';
+          img.onerror = () => img.replaceWith(emptyThumb());
+          lead = img;
+        } else {
+          lead = emptyThumb();
+        }
+        const body = document.createElement('span');
+        body.className = 'min-w-0 flex-1';
+        const name = document.createElement('span');
+        name.className = active ? 'block sq text-sm font-medium text-white' : 'block sq text-sm text-zinc-300';
+        setSq(name, file.name);
+        const sub = document.createElement('span');
+        sub.className = 'mt-0.5 block sq text-[11px] text-zinc-500';
+        setSq(sub, file.path && file.path !== file.name ? file.path : fmt(file.size));
+        body.append(name, sub);
+
+        const size = document.createElement('span');
+        size.className = 'ml-2 shrink-0 text-[11px] tabular-nums text-zinc-500';
+        size.textContent = fmt(file.size);
+
+        btn.append(lead, body, size);
+        const pick = () => selectFile(file);
+        btn.addEventListener('click', pick);
+        btn.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            pick();
+          }
+        });
+        filesEl.appendChild(btn);
+      }
+    }
+
+    function applyState(state) {
+      lastState = state;
+      syncLoadBusy();
+      $('footer-cache').textContent = state.cache ? fmt(state.cache.limit) : '4 GiB';
+
+      const files = Array.isArray(state.files) ? state.files : [];
+      filesCard.classList.toggle('hidden', files.length === 0);
+      statsCard.classList.toggle('hidden', !state.name);
+      nowPlaying.classList.toggle('hidden', files.length === 0);
+      nowPlaying.classList.toggle('flex', files.length > 0);
+
+      if (state.name) {
+        $('torrent-name').textContent = state.name;
+        $('torrent-name').title = state.name; // path panjang: teks lengkap via hover
+      }
+      $('file-count').textContent = `${files.length} file`;
+
+      const key = files.map((f) => `${f.index}:${f.name}:${f.size}`).join('|') + '#' + state.selected;
+      if (key !== lastFileKey) {
+        lastFileKey = key;
+        renderFiles(files, state.selected);
+      }
+
+      // Detail torrent: progress piece, komposisi peer, dan byte terbuang.
+      const tor = state.torrent;
+      if (state.cache) {
+        const used = state.cache.used || 0;
+        const limit = state.cache.limit || 1;
+        $('cache-text').textContent = `${fmt(used)} / ${fmt(limit)}`;
+        $('cache-bar').style.width = `${Math.min(100, (used / limit) * 100)}%`;
+        const evictions = state.cache.evictions || 0;
+        $('evictions').textContent = String(evictions);
+        $('cache-pieces').textContent = `${fmt(used)} (${torrentCount(tor)})`;
+
+        // Laju eviction dari selisih antar frame waktu; window >= 1 dtk saja
+        // supaya angkanya tidak melonjak saat WS dan fetch datang berdekatan.
+        const nowT = performance.now();
+        if (lastEvict && nowT - lastEvict.t >= 1000) {
+          const perMin = Math.max(0, evictions - lastEvict.n) / ((nowT - lastEvict.t) / 1000) * 60;
+          $('evict-rate').textContent = perMin >= 1 ? perMin.toFixed(0) : perMin > 0 ? '<1' : '0';
+          lastEvict = { n: evictions, t: nowT };
+        } else if (!lastEvict) {
+          lastEvict = { n: evictions, t: nowT };
+        }
+      }
+      $('peers').textContent = String(state.peers || 0);
+
+      if (tor) {
+        const hash = state.info_hash || '';
+        $('tor-hash').textContent = hash ? `${hash.slice(0, 10)}…` : '—';
+        $('tor-hash').title = hash;
+        $('tor-pieces').textContent = `${tor.complete_pieces || 0}/${tor.pieces || 0} · ${fmt(tor.piece_length || 0)}/piece`;
+        $('tor-ram').textContent = fmt(tor.ram_bytes || 0);
+        $('tor-partial').textContent = `${tor.partial_pieces || 0} piece · ${tor.busy_pieces || 0} hash`;
+        $('tor-peers').textContent = `${state.peers || 0} aktif · ${tor.total_peers || 0} total`;
+        $('tor-seeders').textContent = String(tor.seeders || 0);
+        $('tor-handshake').textContent = `${tor.half_open || 0} half-open · ${tor.pending_peers || 0} pending`;
+        $('tor-chunks').textContent = `${tor.chunks_useful || 0} useful · ${tor.chunks_wasted || 0} waste`;
+        $('tor-wire').textContent = `${fmt(tor.wire_in || 0)} · ${fmt(tor.hashed || 0)}`;
+        const wasted = tor.wasted_bytes || 0;
+        const share = tor.data_in ? (wasted / tor.data_in) * 100 : 0;
+        $('dl-wasted').textContent = `${fmt(wasted)} · ${share.toFixed(1)}%`;
+      }
+
+      const total = state.length || 0;
+      // Unduhan kumulatif bisa melebihi ukuran torrent saat piece diambil ulang.
+      const dl = total ? Math.min(state.downloaded || 0, total) : (state.downloaded || 0);
+      $('dl-text').textContent = total ? `${fmt(dl)} / ${fmt(total)}` : fmt(dl);
+      $('dl-bar').style.width = total ? `${Math.min(100, (dl / total) * 100)}%` : '0%';
+
+
+      // Toggle transcode mengikuti state server, jadi tab lain ikut benar.
+      const transcode = Boolean(state.transcode);
+      const tcBtn = $('transcode-btn');
+      tcBtn.setAttribute('aria-pressed', String(transcode));
+      tcBtn.className = transcode
+        ? 'inline-flex h-7 items-center gap-1.5 rounded-lg border border-emerald-400/40 bg-emerald-400/10 px-2.5 text-[11px] text-emerald-300 transition'
+        : 'inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[11px] text-zinc-400 transition hover:bg-zinc-800 hover:text-white';
+      tcBtn.querySelector('span').textContent = transcode ? 'transcode: on' : 'transcode: off';
+
+      // Bitrate audio AAC pilihan user (128/192/256 kbps).
+      const rate = $('audio-rate');
+      const kbps = String(state.audio_kbps || 128);
+      if ([...rate.options].some((option) => option.value === kbps) && rate.value !== kbps) {
+        rate.value = kbps;
+      }
+
+      // Playlist sudah lengkap begitu durasi terbaca: player langsung dapat
+      // durasi penuh dan bisa seek; segmen menyusul saat diminta.
+      const hlsInfo = state.hls;
+      const liveNote = $('live-note');
+      const live = Boolean(!directPlay && hlsInfo?.index === state.selected && hlsInfo.live);
+      liveNote.classList.toggle('hidden', !live);
+      liveNote.classList.toggle('flex', live);
+      if (!directPlay && hlsInfo?.index === state.selected) {
+        const name = files.find((f) => f.index === state.selected)?.name || 'video';
+        if (hlsInfo.ready) {
+          if (loadHLS(state.selected, hlsInfo.playlist)) {
+            setStatus(resumeStartAt
+              ? `Melanjutkan ${name} dari ${fmtDur(resumeStartAt)}…`
+              : `Memutar ${name}.`, 'ok');
+          }
+          applySubtitles(state.selected, hlsInfo.subs);
+        } else if (hlsInfo.error) {
+          setStatus(`Gagal menyiapkan video: ${hlsInfo.error}`, 'error');
+        } else {
+          setStatus(`Membaca durasi ${name}…`, 'info');
+        }
+      }
+
+      // Status proses server: user/tab, uptime, memori, sesi HLS.
+      const users = state.users;
+      if (users) {
+        $('srv-users').textContent = `${users.active || 0} user · ${users.tabs || 0} tab`;
+      }
+      const srv = state.server;
+      if (srv) {
+        $('srv-uptime').textContent = fmtDur(srv.uptime || 0);
+        $('srv-heap').textContent = `${fmt(srv.heap || 0)} · ${srv.goroutines || 0}`;
+        $('srv-hls').textContent = state.hls
+          ? `hls #${state.hls.index} ${state.hls.ready ? 'siap' : 'menunggu'}`
+          : 'hls mati';
+      }
+
+      applyNet(state.net);
+    }
+
+    /* Kecepatan dari selisih byte kumulatif antara dua push status (0,7 dtk).
+     * Dua arah: peer → server (unduhan dari swarm) dan server → client
+     * (byte yang keluar ke player). Panah menyala saat ada aliran. */
+    let lastNet = null;
+    let lastEvict = null;
+    function applyNet(net) {
+      const now = performance.now();
+      const from = net?.from_peers || 0;
+      const to = net?.to_client || 0;
+      if (lastNet && net) {
+        const dt = (now - lastNet.t) / 1000;
+        if (dt >= 0.2) {
+          const down = Math.max(0, from - lastNet.from) / dt * 8 / 1e6;
+          const up = Math.max(0, to - lastNet.to) / dt * 8 / 1e6;
+          const fmtMbps = (v) => (v >= 10 ? v.toFixed(1) : v.toFixed(2));
+          $('net-down').textContent = `${fmtMbps(down)} Mbps`;
+          $('net-up').textContent = `${fmtMbps(up)} Mbps`;
+          $('net-up-ic').classList.toggle('on', up >= 0.05);
+          $('net-down-ic').classList.toggle('on', down >= 0.05);
+        }
+      }
+      lastNet = { t: now, from, to };
+    }
+
+    // Src dipasang applyState begitu playlist HLS untuk file ini siap.
+    function playFile(file) {
+      directPlay = false;
+      const th = epThumbFor(file);
+      const npTh = $('np-thumb');
+      npTh.src = th || '';
+      npTh.classList.toggle('hidden', !th);
+      setSq($('np-title'), file.name);
+      setSq($('np-sub'), `${fmt(file.size)} · ${file.path || file.name}`);
+      resetPlayer();
+    }
+
+    async function selectFile(file) {
+      try {
+        const state = await api('/api/select', {
+          method: 'POST',
+          body: JSON.stringify({ index: file.index }),
+        });
+        applyState(state);
+        saveLast({ index: file.index });
+        playFile(file);
+      } catch (err) {
+        setStatus(err.message, 'error');
+      }
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Update kartu Status lewat WebSocket: server mendorong status tiap 0,7
+     * detik. `#status-source` menandai socket hidup atau sedang menyambung
+     * ulang, jadi angka yang diam bisa dibedakan dari socket yang mati.
+     * ------------------------------------------------------------------ */
+    function markStatusSource(state) {
+      const el = $('status-source');
+      if (!el || el.dataset.source === state) return;
+      el.dataset.source = state;
+      el.textContent = state === 'ws' ? 'live' : state === 'poll' ? 'polling 2 dtk' : 'menyambung…';
+      el.className = state === 'ws'
+        ? 'font-normal normal-case tracking-normal text-zinc-400'
+        : 'font-normal normal-case tracking-normal text-amber-400';
+    }
+
+    // Cadangan kalau WebSocket diblokir reverse proxy (Upgrade dibuang): status
+    // tetap terisi lewat /api/state tiap 2 dtk. Polling berhenti sendiri begitu
+    // ada frame WS yang masuk.
+    let wsLive = false;
+    let pollTimer = null;
+    function startStatusPolling() {
+      if (pollTimer) return;
+      pollTimer = setInterval(async () => {
+        if (wsLive) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          return;
+        }
+        try {
+          applyState(await api('/api/state'));
+          markStatusSource('poll');
+        } catch (err) {
+          console.error('polling status gagal', err);
+        }
+      }, 2000);
+    }
+
+    function connectStatus() {
+      const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+      const socket = new WebSocket(`${scheme}://${location.host}/api/ws`);
+      socket.addEventListener('message', (event) => {
+        // Tandai live dulu: frame yang isinya rusak tidak boleh membuat panel
+        // terlihat "menyambung" terus.
+        wsLive = true;
+        markStatusSource('ws');
+        try {
+          applyState(JSON.parse(event.data));
+        } catch (err) {
+          console.error('frame status gagal diterapkan', err);
+        }
+      });
+      socket.addEventListener('close', () => {
+        wsLive = false;
+        markStatusSource('reconnect');
+        startStatusPolling();
+        setTimeout(connectStatus, 1000);
+      });
+      socket.addEventListener('error', () => socket.close());
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Memuat magnet = satu job di server.
+     *   - selama job jalan, tombol Muat mati dan tombol Batalkan muncul; status
+     *     ini ikut state server, jadi tab lain / halaman yang di-reload ikut benar
+     *   - klik Batalkan: request tab ini di-abort, lalu POST /api/cancel yang
+     *     menghentikan job-nya di server (torrent yang sedang aktif tidak diusik)
+     *   - spam klik tidak menumpuk job: request kedua diabaikan selama request
+     *     pertama dari tab ini masih jalan, magnet yang sama memakai job yang sama
+     *     di server, dan magnet baru membatalkan job magnet lama
+     *   - timeout metadata (45s), magnet invalid, dan error tracker muncul sebagai
+     *     pesan status dari balasan server
+     * ------------------------------------------------------------------ */
+    const cancelBtn = $('cancel-btn');
+    let loadPending = false; // request /api/magnet dari tab ini masih berjalan
+    let magnetAbort = null;  // AbortController request tersebut
+    let lastState = null;
+
+    function setLoadBusy(busy) {
+      loadBtn.disabled = busy;
+      $('load-spinner').classList.toggle('hidden', !busy);
+      cancelBtn.classList.toggle('hidden', !busy);
+    }
+
+    function syncLoadBusy() {
+      setLoadBusy(loadPending || lastState?.loading === true);
+    }
+
+    cancelBtn.addEventListener('click', async () => {
+      loadPending = false;
+      magnetAbort?.abort();
+      magnetAbort = null;
+      syncLoadBusy();
+      setStatus('Membatalkan pemuatan magnet…', 'info');
+      try {
+        // Server membalas status terbaru; frame WS berikutnya menyusul sendiri.
+        applyState(await api('/api/cancel', { method: 'POST' }));
+        setStatus('Pemuatan magnet dibatalkan. Torrent yang sedang aktif tidak diubah.', 'ok');
+      } catch (err) {
+        setStatus(`Batalkan gagal: ${err.message}`, 'error');
+      }
+    });
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const magnet = magnetInput.value.trim();
+      if (!magnet) {
+        setStatus('Tempel magnet link dulu.', 'error');
+        return;
+      }
+      if (loadPending) return; // spam klik: satu request per tab
+
+      loadPending = true;
+      magnetAbort = new AbortController();
+      syncLoadBusy();
+      setStatus('Menghubungi tracker dan menunggu metadata torrent… klik Batalkan untuk membatalkan.', 'info');
+
+      try {
+        const state = await api('/api/magnet', {
+          method: 'POST',
+          body: JSON.stringify({ magnet }),
+          signal: magnetAbort.signal,
+        });
+        applyState(state);
+        const files = state.files || [];
+        const saved = lastSaved();
+        // Magnet baru dari kolom tempel: buang thumbnail judul sebelumnya.
+        // Magnet sama (auto-resume reload) memakai thumbnail yang tersimpan.
+        if (saved.magnet !== magnet) { epThumbs = {}; pickedThumb = ''; }
+        const pick = (saved.magnet === magnet ? files[saved.index] : null)
+          || files[state.selected] || files[0];
+        saveLast({ magnet, index: pick ? pick.index : 0, thumb: pickedThumb, thumbs: epThumbs });
+        setStatus(`Torrent siap: ${state.name || 'tanpa nama'}. Pilih video untuk diputar.`, 'ok');
+        if (pick) selectFile(pick);
+      } catch (err) {
+        // AbortError = kita sendiri yang membatalkan; pesannya sudah diatur
+        // oleh handler tombol Batalkan.
+        if (err.name !== 'AbortError') setStatus(err.message, 'error');
+      } finally {
+        loadPending = false;
+        magnetAbort = null;
+        syncLoadBusy();
+      }
+    });
+
+    /* ------------------------------------------------------------------ *
+     * Dialog pencarian: Cinemeta (judul/seri/episode) → streams Torrentio.
+     *   - Tab All/Movie/Series memilih sumber Cinemeta.
+     *   - Series: tab S1, S2… lalu daftar episode; movie langsung ke streams.
+     *   - Streams: chips filter diturunkan dari teks stream-nya sendiri:
+     *     provider (Torrentio/…), kualitas 480p…, bahasa dari emoji bendera,
+     *     dan toggle HEVC. Klik stream = magnet infoHash-nya ke /api/magnet,
+     *     dengan fileIndex bila Torrentio memberikannya (season pack).
+     *   - Reset filter setiap ganti judul/episode.
+     * ------------------------------------------------------------------ */
+    // Addon Stremio Absolute Cinema: katalog anime (Kitsu/AniList, tanpa
+    // daftar episode — pilih rilis batch/season); stream-nya torrent
+    // (infoHash), jadi lariku dengan alur Torrentio. Netflix/Top kêm katalog
+    // TMDB → id `tt`, meta lewat Cinemeta.
+    const AC = 'https://cinema.debrid.in';
+    const AC_FAMILIES = [
+      { label: '🗼Anime Pop', cats: [{ t: 'anime', c: 'kitsu_popular' }] },
+      { label: '🗼Anime Top', cats: [{ t: 'anime', c: 'kitsu_top_rated' }] },
+      { label: '🗼Anime Airing', cats: [{ t: 'anime', c: 'kitsu_current' }] },
+      { label: '🗼AniList', cats: [{ t: 'anime', c: 'anilist_trending' }] },
+      { label: 'Netflix', cats: [{ t: 'movie', c: 'tmdb_netflix_movie_us' }, { t: 'series', c: 'tmdb_netflix_series_us' }] },
+      { label: 'Top Rated', cats: [{ t: 'movie', c: 'tmdb_discover_top_movie' }, { t: 'series', c: 'tmdb_discover_top_series' }] },
+    ];
+    const TIO = 'https://torrentio.strem.fun/sort=seeders|language=indonesian';
+    const CINEMETA = 'https://v3-cinemeta.strem.io';
+    // Addon Stremio Muvibox: katalog film/serial (Trending dukung `search=`,
+    // sisanya browse saja) + stream direct MP4 (bukan torrent).
+    const MUV = 'https://muvibox.inulpc.web.id';
+    // Keluarga katalog: id memetakan ke `mb_{movie|series}s_{id}.json`.
+    const MUV_FAMILIES = [
+      { id: 'trending', label: '🔥Trending', types: ['movie', 'series'], search: true },
+      { id: 'indo', label: '🇮🇩Indo', types: ['movie', 'series'] },
+      { id: 'korea', label: 'Korea', types: ['movie', 'series'] },
+      { id: 'china', label: 'China', types: ['movie', 'series'] },
+      { id: 'india', label: 'India', types: ['movie', 'series'] },
+      { id: 'horror', label: 'Horror', types: ['movie'] },
+      { id: 'anime', label: 'Anime', types: ['movie', 'series'] },
+      { id: 'comedy', label: 'Comedy', types: ['movie', 'series'] },
+      { id: 'romance', label: 'Romance', types: ['movie', 'series'] },
+      { id: 'action', label: 'Action', types: ['movie', 'series'] },
+    ];
+    const searchDlg = $('search-dlg'), searchQ = $('search-q'), searchBody = $('search-body');
+    const searchGo = $('search-go'), searchBack = $('search-back'), searchBtn = $('search-btn');
+
+    let sv = {
+      tab: 'all',
+      results: [],
+      cur: null,    // meta judul yang dipilih (movie) / series
+      videos: [],   // episode lengkap dari meta series
+      season: null,
+      streams: [],
+      qs: new Set(), // kualitas terpilih
+      ls: new Set(), // bahasa (emoji) terpilih
+      provs: new Set(),
+      hevc: false,
+    };
+
+    // Katalog Cinemeta, Absolute Cinema, Muvibox, dan streams Torrentio diambil
+    // lewat /api/addon (server). Browser hanya bicara same-origin, jadi tidak
+    // ada preflight CORS dan rate limit addon menempel ke IP server, bukan IP
+    // tiap penonton.
+    async function jget(url) {
+      const res = await fetch(`/api/addon?url=${encodeURIComponent(url)}`);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      return body;
+    }
+
+    const cineSearch = (type, q) => `${CINEMETA}/catalog/${type}/top/search=${encodeURIComponent(q)}.json`;
+
+    async function doSearch(q) {
+      const body = (html) => { searchBody.innerHTML = html; };
+      body('<p class="p-6 text-center text-sm text-zinc-500">Mencari…</p>');
+      const types = sv.tab === 'all' ? ['series', 'movie'] : [sv.tab];
+      try {
+        const metas = (await Promise.allSettled(types.map((t) => jget(cineSearch(t, q)))))
+          .flatMap((r) => (r.status === 'fulfilled' ? r.value.metas || [] : []));
+        // Tab All bisa memuat satu judul dua kali (movie + series).
+        const seen = new Set();
+        sv.results = metas.filter((m) => m.id && m.poster && !seen.has(m.id) && seen.add(m.id));
+        sv.cur = null;
+        sv.videos = [];
+        syncBack();
+        body(sv.results.length ? '' : '<p class="p-6 text-center text-sm text-zinc-500">Tidak ada hasil.</p>');
+        renderResults();
+      } catch (err) {
+        body(`<p class="p-6 text-center text-sm text-rose-300">${err.message}</p>`);
+      }
+    }
+
+    // Katalog Muvibox: gabungan katalog movie+series satu keluarga.
+    // Trending meneruskan isi kotak pencarian; keluarga lain mengabaikannya.
+    async function loadMuv(famId, q) {
+      const fam = MUV_FAMILIES.find((f) => f.id === famId);
+      if (!fam) return;
+      searchBody.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Memuat katalog Muvibox…</p>';
+      try {
+        const reqs = fam.types.map((t) => {
+          const slug = fam.search && q ? `${fam.id}/search=${encodeURIComponent(q)}` : fam.id;
+          return jget(`${MUV}/catalog/${t}/mb_${t}s_${slug}.json`);
+        });
+        const metas = (await Promise.allSettled(reqs))
+          .flatMap((r) => (r.status === 'fulfilled' ? r.value.metas || [] : []));
+        const seen = new Set();
+        sv.results = metas.filter((m) => m.id && m.poster && !seen.has(m.id) && seen.add(m.id));
+        sv.cur = null;
+        sv.videos = [];
+        syncBack();
+        searchBody.innerHTML = sv.results.length
+          ? ''
+          : '<p class="p-6 text-center text-sm text-zinc-500">Katalog kosong.</p>';
+        renderResults();
+      } catch (err) {
+        searchBody.innerHTML = `<p class="p-6 text-center text-sm text-rose-300">${err.message}</p>`;
+      }
+    }
+
+    // Katalog Absolute Cinema: satu keluarga bisa berisi beberapa katalog.
+    // Anime (Kitsu) tidak punya daftar episode -> pilih rilis/batch saja.
+    async function loadAc(famIdx) {
+      const fam = AC_FAMILIES[famIdx];
+      if (!fam) return;
+      searchBody.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Memuat katalog Absolute Cinema…</p>';
+      try {
+        const reqs = fam.cats.map((c) => jget(`${AC}/catalog/${c.t}/${c.c}.json`));
+        const metas = (await Promise.allSettled(reqs))
+          .flatMap((r) => (r.status === 'fulfilled' ? r.value.metas || [] : []));
+        const seen = new Set();
+        sv.results = metas.filter((m) => m.id && m.poster && !seen.has(m.id) && seen.add(m.id));
+        sv.cur = null;
+        sv.videos = [];
+        syncBack();
+        searchBody.innerHTML = sv.results.length
+          ? ''
+          : '<p class="p-6 text-center text-sm text-zinc-500">Katalog kosong.</p>';
+        renderResults();
+      } catch (err) {
+        searchBody.innerHTML = `<p class="p-6 text-center text-sm text-rose-300">${err.message}</p>`;
+      }
+    }
+
+    function renderResults() {
+      const grid = document.createElement('div');
+      grid.className = 'grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3';
+      for (const m of sv.results) {
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'group text-left transition hover:-translate-y-0.5';
+        const img = document.createElement('img');
+        img.src = m.poster;
+        img.alt = m.name || m.id;
+        img.loading = 'lazy';
+        img.className = 'aspect-[2/3] w-full rounded-lg border border-border bg-zinc-900 object-cover';
+        const badge = document.createElement('span');
+        badge.textContent = (m.type === 'anime' ? 'Anime' : m.type === 'series' ? 'Series' : 'Movie') + (m.releaseInfo ? ` · ${String(m.releaseInfo).split('–')[0]}` : '');
+        badge.className = 'absolute left-1 top-1 z-10 rounded bg-black/80 px-1 text-[9px] font-medium text-zinc-300';
+        const wrap = document.createElement('span');
+        wrap.className = 'relative block';
+        wrap.append(img, badge);
+        const name = document.createElement('span');
+        // Satu baris: judul cinemeta bisa sangat panjang; bergulir saat hover.
+        name.className = 'mt-1 block sq text-[11px] leading-tight text-zinc-300 group-hover:text-white';
+        setSq(name, m.name || m.id);
+        card.append(wrap, name);
+        card.addEventListener('click', () => openTitle(m));
+        grid.append(card);
+      }
+      searchBody.replaceChildren(grid);
+      window.lucide?.createIcons();
+    }
+
+    async function openTitle(m) {
+      try {
+        searchBody.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Memuat detail…</p>';
+        pickedThumb = ''; // judul baru: thumbnail episode lama tidak dipakai
+        if (m.type === 'movie') {
+          sv.cur = m; sv.videos = []; sv.playRuntime = metaSeconds(m.runtime); syncBack();
+          return loadStreams(m.id, 'movie');
+        }
+        // Anime Kitsu: metanya tanpa daftar episode → perlakukan seperti
+        // movie: pilih rilis (biasanya batch/season), lantas episode
+        // dipilih dari daftar file di sidebar setelah torrent termuat.
+        if (m.type === 'anime') {
+          sv.cur = m; sv.videos = []; sv.playRuntime = metaSeconds(m.runtime); syncBack();
+          setStatus('Kitsu tidak menyediakan daftar episode: pilih rilis batch/season, lalu pilih file episode dari sidebar.', 'ok');
+          return loadStreams(m.id, 'anime');
+        }
+        // Meta `mb:` hanya ada di addon MuvIndo, selebihnya Cinemeta.
+        const metaUrl = m.id.startsWith('mb:')
+          ? `${MUV}/meta/series/${encodeURIComponent(m.id)}.json`
+          : `${CINEMETA}/meta/series/${m.id}.json`;
+        const meta = await jget(metaUrl);
+        sv.cur = m;
+        sv.videos = (meta.meta?.videos || []).filter((v) => v.season != null);
+        sv.season = sv.videos[0]?.season ?? 1;
+        sv.playRuntime = 0; // durasi diisi saat episode dipilih
+        syncBack();
+        renderSeasons();
+      } catch (err) {
+        searchBody.innerHTML = `<p class="p-6 text-center text-sm text-rose-300">${err.message}</p>`;
+      }
+    }
+
+    function seasons() {
+      return [...new Set(sv.videos.map((v) => v.season))].sort((a, b) => a - b);
+    }
+
+    function renderSeasons() {
+      const tabs = document.createElement('div');
+      tabs.className = 'flex flex-wrap gap-1.5';
+      for (const s of seasons()) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'chip' + (s === sv.season ? ' on' : '');
+        b.textContent = s === 0 ? 'Specials' : 'S' + s;
+        b.addEventListener('click', () => { sv.season = s; renderSeasons(); });
+        tabs.append(b);
+      }
+      const list = document.createElement('div');
+      list.className = 'mt-3 space-y-1.5';
+      const eps = sv.videos.filter((v) => v.season === sv.season).sort((a, b) => (a.episode ?? 0) - (b.episode ?? 0));
+      for (const v of eps) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'file-row group flex w-full items-center gap-3 rounded-lg border border-border bg-zinc-900 px-3 py-2.5 text-left transition hover:bg-zinc-800';
+        if (v.thumbnail) {
+          const th = document.createElement('img');
+          th.src = v.thumbnail;
+          th.alt = '';
+          th.loading = 'lazy';
+          th.className = 'h-11 w-20 shrink-0 rounded-md border border-border bg-zinc-800 object-cover';
+          th.onerror = () => th.remove(); // thumbnail hilang → tampil label E saja
+          row.append(th);
+        }
+        const label = document.createElement('span');
+        label.textContent = 'E' + (v.episode ?? '?');
+        label.className = 'grid h-8 w-9 shrink-0 place-items-center rounded-md bg-zinc-800 text-[11px] font-semibold text-zinc-300';
+        const name = document.createElement('span');
+        name.className = 'min-w-0 flex-1 truncate text-sm text-zinc-300 group-hover:text-white';
+        name.title = v.name || v.title || '';
+        name.textContent = v.name || v.title || '';
+        row.append(label, name);
+        row.addEventListener('click', () => {
+          pickedThumb = v.thumbnail || '';
+          sv.playRuntime = metaSeconds(v.runtime);
+          loadStreams(v.id || `${sv.cur.id}:${v.season}:${v.episode}`, 'series');
+        });
+        list.append(row);
+      }
+      searchBody.replaceChildren(tabs, list);
+      window.lucide?.createIcons();
+    }
+
+    const FLAG = /\p{Regional_Indicator}{2}/gu;
+
+    // Flag emoji → kode 2 huruf → nama bahasa. Windows tidak punya font bendera,
+    // jadi emoji flag tampil sebagai "ID"/"GB" — dipetakan biar jelas.
+    const LANG_NAMES = {
+      id: 'Indonesia', en: 'Inggris', gb: 'Inggris', us: 'Inggris',
+      ru: 'Rusia', it: 'Italia', pt: 'Portugis', br: 'Portugis', es: 'Spanyol', mx: 'Latino',
+      cn: 'Mandarin', tw: 'Mandarin', hk: 'Kanton', fr: 'Prancis', de: 'Jerman', sa: 'Arab',
+      my: 'Melayu', th: 'Thai', vn: 'Vietnam', nl: 'Belanda', jp: 'Jepang', kr: 'Korea',
+      in: 'Hindi', pk: 'Urdu', tr: 'Turki', pl: 'Polandia', dk: 'Denmark', se: 'Swedia',
+      no: 'Norwegia', fi: 'Finlandia', il: 'Ibrani', gr: 'Yunani', ro: 'Rumania',
+      hu: 'Hongaria', cz: 'Ceko', ph: 'Filipina',
+    };
+
+    function flagName(f) {
+      const cp = [...f];
+      const code = (String.fromCodePoint(cp[0].codePointAt(0) - 127397)
+        + String.fromCodePoint(cp[1].codePointAt(0) - 127397)).toLowerCase();
+      return LANG_NAMES[code] || code.toUpperCase();
+    }
+
+    // "1.4K" / "980" di sebelah 👤 diubah ke angka untuk pengurutan.
+    function parseCount(s) {
+      const m = (s || '').match(/[\d.,]+/);
+      if (!m) return -1;
+      let n = parseFloat(m[0].replace(/,/g, ''));
+      if (/K$/i.test(s)) n *= 1e3;
+      else if (/M$/i.test(s)) n *= 1e6;
+      return n;
+    }
+
+    function parseStream(s) {
+      const text = (s.name || '') + ' ' + (s.title || '');
+      const q = (text.match(/\b(\d{3,4})p\b/i) || [])[1]?.toLowerCase() || '';
+      const t = s.title || '';
+      const prov = (t.match(/⚙️\s*([^\n]+)/)?.[1]?.trim())
+        || (s.name?.split('\n')[0].trim() || '') || 'Torrentio';
+      const seed = (t.match(/👤\s*([\d.,]+[KkMm]?)/) || [''])[1];
+      const size = (t.match(/💾\s*([\d.,]+\s*[KMG]?B)/i) || [''])[1];
+      const flags = [...new Set((t.match(FLAG) || []).map(flagName))];
+      return { raw: s, prov, q, seed, seedNum: parseCount(seed), size, flags, hevc: /hevc|h\.?265|x265/i.test(text) };
+    }
+
+    // Durasi dari metadata addon (menit untuk movie, detik untuk episode).
+    // Durasi perkiraan; mkvgo tetap membaca durasi sebenarnya dari header file.
+    const metaSeconds = (raw) => {
+      const n = parseFloat(raw);
+      if (!Number.isFinite(n) || n <= 0) return 0;
+      return Math.round(n > 300 ? n : n * 60);
+    };
+
+    async function loadStreams(id, type) {
+      searchBody.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Mengambil streams…</p>';
+      try {
+        const enc = encodeURIComponent(id);
+        // Stream hanya dari Torrentio.
+        const res = await jget(`${TIO}/stream/${type}/${enc}.json`);
+        const pools = [res.streams || []];
+        // Torrentio dedupe infoHash, MuvIndo dedupe url.
+        const seen = new Set();
+        sv.streams = pools.flat()
+          .filter((raw) => {
+            const key = raw.infoHash ? 'h:' + raw.infoHash : 'u:' + (raw.url || raw.externalUrl || '');
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          })
+          .map(parseStream)
+          .sort((a, b) => b.seedNum - a.seedNum); // seed terbanyak di atas
+        sv.qs = new Set(); sv.ls = new Set(); sv.provs = new Set(); sv.hevc = false;
+        syncBack();
+        renderStreams();
+      } catch (err) {
+        searchBody.innerHTML = `<p class="p-6 text-center text-sm text-rose-300">${err.message}</p>`;
+      }
+    }
+
+    function streamsFiltered() {
+      return sv.streams.filter((s) =>
+        (!sv.provs.size || sv.provs.has(s.prov))
+        && (!sv.qs.size || sv.qs.has(s.q))
+        && (!sv.ls.size || s.flags.some((f) => sv.ls.has(f)))
+        && (!sv.hevc || s.hevc));
+    }
+
+    function chip(label, on, onClick) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.className = 'chip' + (on ? ' on' : '');
+      b.addEventListener('click', onClick);
+      return b;
+    }
+
+    function renderStreams() {
+      const chipWrap = document.createElement('div');
+      chipWrap.className = 'mb-3 space-y-2';
+      const list = streamsFiltered();
+      const rows = [document.createElement('div'), document.createElement('div'), document.createElement('div')];
+      for (const row of rows) row.className = 'mb-2 flex flex-wrap gap-1.5';
+      const [rProv, rQual, rLang] = rows;
+      const count = document.createElement('span');
+      count.className = 'chip';
+      count.textContent = `Streams (${list.length}/${sv.streams.length})`;
+      rProv.append(count);
+      for (const p of new Set(sv.streams.map((s) => s.prov))) {
+        rProv.append(chip(p, sv.provs.has(p), () => {
+          sv.provs.has(p) ? sv.provs.delete(p) : sv.provs.add(p);
+          renderStreams();
+        }));
+      }
+      for (const q of [...new Set(sv.streams.map((s) => s.q).filter(Boolean))]
+        .sort((a, b) => parseInt(b) - parseInt(a))) {
+        rQual.append(chip(q + 'p', sv.qs.has(q), () => {
+          sv.qs.has(q) ? sv.qs.delete(q) : sv.qs.add(q);
+          renderStreams();
+        }));
+      }
+      if (sv.streams.some((s) => s.hevc)) {
+        rQual.append(chip(`HEVC (${sv.streams.filter((s) => s.hevc).length})`, sv.hevc, () => {
+          sv.hevc = !sv.hevc;
+          renderStreams();
+        }));
+      }
+      // Bahasa: Indonesia dulu, lalu Inggris, lalu sisanya dari yang paling banyak.
+      const langs = {};
+      for (const s of sv.streams) for (const f of s.flags) langs[f] = (langs[f] || 0) + 1;
+      const order = Object.entries(langs)
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .sort((a, b) => b[0] === 'Indonesia' ? 1 : a[0] === 'Indonesia' ? -1 : b[0] === 'Inggris' ? 1 : a[0] === 'Inggris' ? -1 : 0);
+      for (const [f, n] of order) {
+        rLang.append(chip(`${f} ${n}`, sv.ls.has(f), () => {
+          sv.ls.has(f) ? sv.ls.delete(f) : sv.ls.add(f);
+          renderStreams();
+        }));
+      }
+      const body = document.createElement('div');
+      body.className = 'space-y-1.5';
+      body.replaceChildren(...list.map(streamRow));
+      if (sv.streams.length && !list.length) {
+        body.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Tidak ada stream yang lolos filter.</p>';
+      }
+      chipWrap.replaceChildren(...rows);
+      searchBody.replaceChildren(chipWrap, body);
+      window.lucide?.createIcons();
+    }
+
+    function streamRow(s) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'group flex w-full flex-col rounded-lg border border-border bg-zinc-900 px-3 py-2.5 text-left transition hover:border-zinc-600 hover:bg-zinc-800';
+      const meta = document.createElement('div');
+      meta.className = 'flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11px]';
+      const prov = document.createElement('span');
+      prov.textContent = s.prov;
+      prov.className = 'font-medium text-zinc-300';
+      const q = document.createElement('span');
+      q.textContent = s.q || 'lainnya';
+      q.className = 'font-medium text-zinc-100';
+      const stat = document.createElement('span');
+      stat.textContent = [s.seed && '👤 ' + s.seed, s.size].filter(Boolean).join(' · ');
+      stat.className = 'text-zinc-500';
+      const rel = document.createElement('div');
+      rel.textContent = (s.raw.title || s.raw.name || '').split('\n')
+        .filter((l) => l.trim() && !/👤|⚙️/.test(l))
+        .map((l) => l.replace(FLAG, '').replace(/\/\s+(?=\/|$)/g, '').replace(/\s{2,}/g, ' ').trim())
+        .filter(Boolean).join(' — ') || s.raw.name || '';
+      rel.title = rel.textContent; // teks lengkap via tooltip kalau terpotong
+      rel.className = 'mt-1 line-clamp-2 text-xs leading-snug text-zinc-300';
+      const fl = document.createElement('div');
+      fl.textContent = s.flags.join(' · ');
+      fl.className = 'mt-1 text-[12px] tracking-wide';
+      meta.append(prov, q, stat);
+      b.append(meta, rel, fl);
+      b.addEventListener('click', () => playStream(s));
+      return b;
+    }
+
+    async function playStream(s) {
+      const raw = s.raw;
+      if (!raw.infoHash) {
+        if (raw.url) return playDirect(s);
+        if (raw.externalUrl) { window.open(raw.externalUrl, '_blank', 'noopener'); return; }
+        setStatus('Stream ini bukan torrent murni (debrid), tidak bisa dimuat.', 'error');
+        return;
+      }
+      searchBody.innerHTML = '<p class="p-6 text-center text-sm text-zinc-500">Memuat torrent… (metadata bisa sampai 45 detik)</p>';
+      const trs = (raw.sources || []).filter((x) => x.startsWith('tracker:'))
+        .map((x) => '&tr=' + encodeURIComponent(x.slice(8))).join('');
+      const dn = raw.title?.split('\n')[0].slice(0, 180) || raw.name || '';
+      const magnet = `magnet:?xt=urn:btih:${raw.infoHash}&dn=${encodeURIComponent(dn)}${trs}`;
+      const body = { magnet };
+      if (Number.isInteger(raw.fileIdx)) body.fileIndex = raw.fileIdx;
+      if (sv.playRuntime) body.runtime = sv.playRuntime; // durasi dari metadata API
+      try {
+        const state = await api('/api/magnet', { method: 'POST', body: JSON.stringify(body) });
+        searchDlg.close();
+        epThumbs = buildEpThumbs();
+        applyState(state);
+        const files = state.files || [];
+        const pick = files[state.selected ?? 0] || files[0];
+        saveLast({ magnet, index: pick?.index ?? 0, thumb: pickedThumb, thumbs: epThumbs });
+        setStatus(`Torrent siap: ${state.name || 'tanpa nama'}.`, 'ok');
+        if (pick) playFile(pick);
+      } catch (err) {
+        renderStreams();
+        setStatus(err.message, 'error');
+      }
+    }
+
+    // Putar stream direct MP4 via proxy RAM `/fetch` (bukan torrent).
+    // URL Bungkus muvibox (`player.muvibox...?url=<inner mp4>`) dibuka
+    // dulu untuk mengambil URL video aslinya; token di dalamnya
+    // terbatas waktu (Time-limited), jadi selalu ambil daftar stream baru
+    // Setiap kali mau memutar.
+    function playDirect(s) {
+      const raw = s.raw;
+      let link = raw.url;
+      // Halaman bungkus bukan file media: ambil isi parameter `url=`.
+      if (!/\.(mp4|mkv|webm|m3u8|avi|mov)([?#]|$)/i.test(new URL(link).pathname)) {
+        const inner = new URL(link).searchParams.get('url');
+        if (!inner) {
+          setStatus('URL bungkus tidak berisi video yang bisa dimainkan.', 'error');
+          return;
+        }
+        link = inner;
+      }
+      directPlay = true;
+      resetPlayer();
+      const name = raw.title?.split('\n')[0] || s.prov;
+      $('np-thumb').classList.add('hidden');
+      setSq($('np-title'), name);
+      setSq($('np-sub'), `${s.prov}${s.q ? ' · ' + s.q : ''} · direct (bukan torrent)`);
+      setPlayerSrc(`/fetch?url=${encodeURIComponent(link)}`);
+      searchDlg.close();
+      setStatus('Memutar langsung lewat proxy RAM /fetch — tidak diunduh ke disk.', 'ok');
+    }
+
+    // Kembali: streams → episode/movie, episode → daftar hasil.
+    function syncBack() {
+      const at = s_currentView();
+      searchBack.disabled = at === 'results';
+    }
+    function s_currentView() {
+      if (sv.streams.length) return 'streams';
+      if (sv.cur) return 'episodes';
+      return 'results';
+    }
+    searchBack.addEventListener('click', () => {
+      const at = s_currentView();
+      if (at === 'streams') {
+        sv.streams = [];
+        if (sv.cur?.type === 'movie') { syncBack(); renderResults(); }
+        else { syncBack(); renderSeasons(); }
+      } else if (at === 'episodes') {
+        sv.cur = null; sv.videos = []; syncBack(); renderResults();
+      }
+    });
+
+    // Tab Cinemeta (pencarian) + katalog Muvibox/Absolute Cinema (browse).
+    for (const b of searchDlg.querySelectorAll('[data-tab],[data-muv],[data-ac]')) {
+      b.addEventListener('click', () => {
+        searchDlg.querySelectorAll('[data-tab],[data-muv],[data-ac]').forEach((x) => x.classList.toggle('on', x === b));
+        if (b.dataset.tab) {
+          sv.tab = b.dataset.tab;
+          if (searchQ.value.trim()) doSearch(searchQ.value.trim());
+        } else if (b.dataset.muv) {
+          sv.tab = 'mb:' + b.dataset.muv;
+          loadMuv(b.dataset.muv, searchQ.value.trim());
+        } else {
+          sv.tab = 'ac:' + b.dataset.ac;
+          loadAc(Number(b.dataset.ac));
+        }
+      });
+    }
+    searchGo.addEventListener('click', () => {
+      const q = searchQ.value.trim();
+      // Muvibox Trending mencari; keluarga lain + Absolute Cinema muat ulang saja.
+      if (sv.tab.startsWith('mb:')) {
+        loadMuv(sv.tab.slice(3), q);
+        return;
+      }
+      if (sv.tab.startsWith('ac:')) {
+        loadAc(Number(sv.tab.slice(3)));
+        return;
+      }
+      if (q) doSearch(q);
+    });
+    searchQ.addEventListener('keydown', (e) => { if (e.key === 'Enter') searchGo.click(); });
+    $('search-close').addEventListener('click', () => searchDlg.close());
+    $('search-btn').addEventListener('click', () => {
+      if (!searchDlg.open) searchDlg.showModal();
+      searchQ.focus();
+    });
+
+    // Event `error` MoviPlayer membawa Error di `detail`. "Timeout" berarti
+    // byte belum sempat datang dari swarm: muat ulang src yang sama, tapi
+    // lanjutkan dari posisi terakhir, bukan dari detik 0.
+    player.addEventListener('playing', () => {
+      // Seek awal sudah terjadi: buang startat supaya file berikutnya tidak
+      // ikut mulai dari posisi ini.
+      if (!resumeStartAt) return;
+      resumeStartAt = 0;
+      player.removeAttribute('startat');
+    });
+    player.addEventListener('error', (event) => {
+      const message = event.detail?.message;
+      if (!message) return;
+      if (!/Timeout/.test(message) || !player.getAttribute('src')) {
+        setStatus(`Player: ${message}`, 'error');
+        return;
+      }
+      const now = Date.now();
+      if (now - lastRetry > 60_000) retries = 0; // macet lagi setelah sempat lancar
+      if (retries >= 3) {
+        setStatus('Stream macet: sumber tidak mengirim data. Coba lagi atau pilih kualitas lain.', 'error');
+        return;
+      }
+      retries++;
+      lastRetry = now;
+      const at = Math.max(0, Math.floor(player.currentTime || 0));
+      resumeStartAt = at > 1 ? at : 0;
+      if (resumeStartAt) player.setAttribute('startat', String(resumeStartAt));
+      setStatus(resumeStartAt
+        ? `Stream macet, melanjutkan dari ${fmtDur(resumeStartAt)}…`
+        : 'Stream macet, memuat ulang…', 'info');
+      setTimeout(() => {
+        const src = player.getAttribute('src');
+        if (src) setPlayerSrc(src);
+      }, 1500);
+    });
+
+    // Bitrate audio: sesi HLS memuat playlist baru (playlist lama sudah berisi
+    // bitrate sebelumnya), jadi player dimuat ulang dan melanjutkan dari
+    // posisi terakhir.
+    $('audio-rate').addEventListener('change', async (event) => {
+      const kbps = Number(event.target.value);
+      try {
+        const at = Math.max(0, Math.floor(player.currentTime || 0));
+        if (at > 1) {
+          resumeStartAt = at;
+          player.setAttribute('startat', String(at));
+        }
+        wantedKey = ''; // paksa playlist yang sama dimuat ulang
+        applyState(await api('/api/audio', { method: 'POST', body: JSON.stringify({ kbps }) }));
+      } catch (err) {
+        setStatus(err.message, 'error');
+      }
+    });
+
+    // Toggle transcode: hanya menyimpan flag. mkvgo tidak meng-encode, jadi
+    // stream tidak diubah dan player tidak perlu dimuat ulang.
+    $('transcode-btn').addEventListener('click', async () => {
+      const enabled = !lastState?.transcode;
+      try {
+        applyState(await api('/api/transcode', { method: 'POST', body: JSON.stringify({ enabled }) }));
+        setStatus('mkvgo tidak meng-encode: playback tetap memakai track sumber (toggle tidak berpengaruh).', 'ok');
+      } catch (err) {
+        setStatus(err.message, 'error');
+      }
+    });
+
+    const saved = lastSaved();
+    if (saved.magnet) magnetInput.value = saved.magnet;
+    window.lucide?.createIcons(); // ikon statis di markup
+    startStatusPolling(); // panel terisi walau WS belum/tidak tersambung
+    connectStatus();
+
+    // Script module jalan setelah script biasa: tunggu elemen ter-upgrade
+    // sebelum menyentuh `src`, kalau tidak setter-nya belum ada.
+    if (saved.magnet) customElements.whenDefined('movi-player').then(() => form.requestSubmit());
+  </script>
+</body>
+</html>
