@@ -6,6 +6,7 @@ require (
 	github.com/anacrolix/torrent v1.61.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/gorilla/websocket v1.5.0
+	github.com/gravity-zero/mkvgo v0.61.0
 )
 
 require (

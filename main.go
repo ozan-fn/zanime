@@ -28,12 +28,12 @@ import (
 	"github.com/gorilla/websocket"
 
 	"zanime/internal/config"
+	"zanime/internal/diskcache"
 	"zanime/internal/hls"
-	"zanime/internal/memstorage"
 	"zanime/internal/stream"
 )
 
-//go:embed web
+//go:embed web/dist
 var webFiles embed.FS
 
 const defaultMagnet = "magnet:?xt=urn:btih:3c5356a2834c80305e18479ad39d16a4f8b8682b&dn=%5BErai-raws%5D%20Gabriel%20DropOut%20-%2001%20~%2012%20%5B1080p%5D%5BMultiple%20Subtitle%5D&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce"
@@ -61,20 +61,24 @@ func main() {
 
 	magnet := flag.String("magnet", defaultMagnet, "torrent magnet URI loaded at startup (empty to start idle)")
 	addr := flag.String("addr", "0.0.0.0:"+config.String("PORT", "8080"), "HTTP listen address")
-	cacheMB := flag.Int64("cache-mb", config.Int("MAX_MEMORY_MB", 200), "in-memory piece cache limit in MiB")
+	cacheDir := flag.String("cache-dir", config.String("CACHE_DIR", "./tmp/cache"), "folder cache piece torrent")
+	cacheMB := flag.Int64("cache-mb", config.Int("MAX_CACHE_MB", 4096), "disk piece cache limit in MiB")
 	flag.Parse()
 
 	if *cacheMB <= 0 {
 		log.Fatal("cache-mb must be positive")
 	}
 
-	mem := memstorage.New(*cacheMB << 20)
+	cache, err := diskcache.New(*cacheDir, *cacheMB<<20)
+	if err != nil {
+		log.Fatalf("cache dir %s: %v", *cacheDir, err)
+	}
 
 	cfg := torrent.NewDefaultClientConfig()
-	cfg.DataDir = "" // zero disk: every piece lives in memstorage
-	cfg.DefaultStorage = mem
+	cfg.DataDir = *cacheDir
+	cfg.DefaultStorage = cache
 	// Client-only: jangan buka port di router (produksi hanya membuka port web)
-	// dan jangan mengunggah balik dari cache RAM setelah file selesai.
+	// dan jangan mengunggah balik setelah file selesai.
 	cfg.NoDefaultPortForwarding = true
 	cfg.Seed = false
 	cl, err := torrent.NewClient(cfg)
@@ -83,7 +87,7 @@ func main() {
 	}
 	defer cl.Close()
 
-	webRoot, err := fs.Sub(webFiles, "web")
+	webRoot, err := fs.Sub(webFiles, "web/dist")
 	if err != nil {
 		log.Fatalf("embedded web files: %v", err)
 	}
@@ -93,8 +97,12 @@ func main() {
 		log.Fatalf("listen %s: %v", *addr, err)
 	}
 
-	srv := newServer(cl, mem, webRoot, ln.Addr().(*net.TCPAddr).Port)
-	go srv.syncEvictions()
+	srv := newServer(cl, cache, webRoot, ln.Addr().(*net.TCPAddr).Port)
+	go func() {
+		for range time.Tick(10 * time.Second) {
+			srv.pruneCache()
+		}
+	}()
 	if *magnet != "" {
 		go func() {
 			if err := srv.loadMagnet(*magnet); err != nil {
@@ -108,6 +116,8 @@ func main() {
 	r.Use(gin.Recovery())
 	r.Use(srv.withUser)
 	r.GET("/", srv.index)
+	r.GET("/assets/*filepath", srv.webFile) // aset Vite (JS/CSS)
+	r.GET("/favicon.ico", srv.webFile)
 	r.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 	r.GET("/info", srv.info)
 	r.GET("/api/state", srv.apiState) // untuk test/curl; UI memakai /api/ws
@@ -116,6 +126,7 @@ func main() {
 	r.POST("/api/cancel", srv.apiCancel)
 	r.POST("/api/select", srv.apiSelect)
 	r.POST("/api/transcode", srv.apiTranscode)
+	r.POST("/api/audio", srv.apiAudio)
 	r.GET("/api/addon", srv.addonProxy) // katalog/meta/streams: browser tidak menghubungi addon langsung
 	r.GET("/fetch", srv.fetchProxy)
 	r.HEAD("/fetch", srv.fetchProxy)
@@ -126,7 +137,7 @@ func main() {
 	r.GET("/hls/:index/*name", srv.hlsFile)
 	r.HEAD("/hls/:index/*name", srv.hlsFile)
 
-	log.Printf("listening on %s (memory cache %d MiB, zero disk)", ln.Addr(), *cacheMB)
+	log.Printf("listening on %s (disk cache %s, limit %d MiB)", ln.Addr(), *cacheDir, *cacheMB)
 	if err := r.RunListener(ln); err != nil {
 		log.Fatal(err)
 	}
@@ -134,13 +145,17 @@ func main() {
 
 type server struct {
 	cl      *torrent.Client
-	mem     *memstorage.Client
+	cache   *diskcache.Client
 	hls     *hls.Manager
 	web     fs.FS
-	port    int // HTTP port ffmpeg reads /stream from; 0 = not listening yet
+	port    int // HTTP port mkvgo reads /stream from; 0 = not listening yet
 	started time.Time
 
-	transcodeOn atomic.Bool // ffmpeg re-encode untuk browser tanpa codec sumber
+	transcodeOn atomic.Bool  // legacy: mkvgo tidak meng-encode, nilainya tidak berpengaruh
+	audioKbps   atomic.Int64 // bitrate AAC pilihan UI (128/192/256 kbps)
+
+	hintIndex int     // index file yang punya durasi dari API metadata
+	hintSecs  float64 // durasi dari API metadata (0 = tidak ada); hanya untuk UI
 
 	addMu sync.Mutex // serializes magnet loads
 
@@ -161,15 +176,17 @@ type server struct {
 	served atomic.Int64 // byte yang sudah dikirim ke klien (stream/hls/fetch)
 }
 
-func newServer(cl *torrent.Client, mem *memstorage.Client, web fs.FS, port int) *server {
-	return &server{cl: cl, mem: mem, hls: hls.NewManager(), web: web, port: port, selected: -1,
+func newServer(cl *torrent.Client, cache *diskcache.Client, web fs.FS, port int) *server {
+	srv := &server{cl: cl, cache: cache, hls: hls.NewManager(), web: web, port: port, selected: -1,
 		started: time.Now(), wsUsers: make(map[string]int)}
+	srv.audioKbps.Store(128)
+	return srv
 }
 
-// startHLS segments the selected file in the background: ffmpeg reads our own
-// /stream endpoint (so it can seek), copies or transcodes the video, and the
-// playlist/segments are served to the player. A session for the same index and
-// mode is kept.
+// startHLS prepares the selected file: mkvgo plans the HLS presentation over our
+// own /stream endpoint (HTTP Range, so it can seek) and packages each segment
+// when the player asks for it — no ffmpeg, no re-encode, nothing on disk. A
+// session for the same index is kept.
 func (s *server) startHLS(index int) {
 	if s.port == 0 {
 		return // server belum listen
@@ -180,16 +197,7 @@ func (s *server) startHLS(index int) {
 	}
 	target := fmt.Sprintf("http://127.0.0.1:%d/stream/%d/%s",
 		s.port, index, url.PathEscape(path.Base(f.Path())))
-	transcode := s.transcodeOn.Load()
-	go func() {
-		ctx := context.Background()
-		ffmpeg, err := hls.Ensure(ctx)
-		if err != nil {
-			log.Printf("hls: %v", err)
-			return
-		}
-		s.hls.Start(ctx, index, target, ffmpeg, transcode)
-	}()
+	s.hls.Start(context.Background(), index, target)
 }
 
 // loadMagnet replaces the active torrent and waits for its metadata. It is
@@ -249,35 +257,47 @@ func (s *server) loadMagnet(magnet string) error {
 	s.selected = 0
 	s.mu.Unlock()
 
+	s.cache.SetActive(t.InfoHash())
 	if old != nil && old != t {
 		go old.Drop()
-		s.mem.DropAll(old.InfoHash()) // piece torrent lama jangan makan budget RAM
-		s.hls.Stop()                  // segmen lama milik torrent lama
+		s.cache.DropAll(old.InfoHash()) // cache torrent lama jangan makan budget disk
+		s.hls.Stop()                    // segmen lama milik torrent lama
 	}
 	log.Printf("torrent siap: %s (%d file video)", t.Name(), len(files))
 	s.startHLS(0)
 	return nil
 }
 
-// syncEvictions marks pieces dropped from RAM as incomplete, so the torrent
-// client fetches them again on a later seek. Only the active torrent is
-// touched; evictions belonging to a dropped torrent are ignored.
-func (s *server) syncEvictions() {
-	for ev := range s.mem.Evicted() {
-		s.mu.RLock()
-		t := s.t
-		s.mu.RUnlock()
-		if t == nil || t.InfoHash() != ev.Hash {
-			continue
-		}
-		if ev.Index >= 0 && ev.Index < t.NumPieces() {
-			// Piece yang sudah tidak dianggap lengkap tidak perlu dicek ulang;
-			// tiap UpdateCompletion memicu kunci client + hitung ulang selesai.
-			if ps := t.Piece(ev.Index).State(); !ps.Complete && !ps.Partial {
-				continue
-			}
-			t.Piece(ev.Index).UpdateCompletion()
-		}
+// pruneCache enforces the disk budget: when the cache grows past its limit,
+// whole torrent directories are deleted least recently used first. The active
+// torrent is skipped, and it is fetched again from its magnet like any other.
+func (s *server) pruneCache() {
+	if removed := s.cache.Prune(); removed > 0 {
+		log.Printf("cache disk penuh: %d MiB torrent lama dibuang", removed>>20)
+	}
+}
+
+// File statis hasil build Vite (aset di /assets/*, favicon).
+func (s *server) webFile(c *gin.Context) {
+	name := strings.TrimPrefix(c.Request.URL.Path, "/")
+	if name == "" || name == "index.html" {
+		s.index(c)
+		return
+	}
+	data, err := fs.ReadFile(s.web, name)
+	if err != nil {
+		c.String(http.StatusNotFound, "tidak ada")
+		return
+	}
+	switch {
+	case strings.HasSuffix(name, ".js"):
+		c.Data(http.StatusOK, "text/javascript; charset=utf-8", data)
+	case strings.HasSuffix(name, ".css"):
+		c.Data(http.StatusOK, "text/css; charset=utf-8", data)
+	case strings.HasSuffix(name, ".svg"):
+		c.Data(http.StatusOK, "image/svg+xml", data)
+	default:
+		c.Data(http.StatusOK, "application/octet-stream", data)
 	}
 }
 
@@ -294,11 +314,12 @@ func (s *server) index(c *gin.Context) {
 
 func (s *server) info(c *gin.Context) {
 	resp := gin.H{
-		"ready":           false,
-		"storage":         "memory",
-		"cache_limit":     s.mem.Limit(),
-		"cache_used":      s.mem.Used(),
-		"cache_evictions": s.mem.Evictions(),
+		"ready":        false,
+		"storage":      "disk",
+		"cache_dir":    s.cache.Root(),
+		"cache_limit":  s.cache.Limit(),
+		"cache_used":   s.cache.Used(),
+		"cache_pruned": s.cache.Pruned(),
 	}
 	if f := s.fileAt(s.currentIndex()); f != nil {
 		resp["ready"] = true
@@ -321,21 +342,21 @@ func (s *server) state() gin.H {
 
 	// Jumlah piece dihitung per torrent aktif, supaya sisa torrent lama (yang
 	// masih bisa ada beberapa saat setelah diganti) tidak ikut terhitung.
-	piecesInRAM := s.mem.Pieces()
+	cacheUsed := s.cache.Used()
 	if t != nil {
-		piecesInRAM = s.mem.PiecesOf(t.InfoHash())
+		cacheUsed = s.cache.UsedByTorrent(t.InfoHash())
 	}
 	resp := gin.H{
-		"ready":     len(files) > 0,
-		"loading":   loading,
-		"files":     list,
-		"selected":  selected,
-		"transcode": s.transcodeOn.Load(),
+		"ready":      len(files) > 0,
+		"loading":    loading,
+		"files":      list,
+		"selected":   selected,
+		"transcode":  s.transcodeOn.Load(),
+		"audio_kbps": s.audioKbps.Load(),
 		"cache": gin.H{
-			"used":      s.mem.Used(),
-			"limit":     s.mem.Limit(),
-			"evictions": s.mem.Evictions(),
-			"pieces":    piecesInRAM,
+			"used":      cacheUsed,
+			"limit":     s.cache.Limit(),
+			"evictions": s.cache.Pruned(),
 		},
 	}
 	// Byte kumulatif; UI menghitung Mbps dari selisih antar frame.
@@ -350,7 +371,7 @@ func (s *server) state() gin.H {
 		resp["name"] = t.Name()
 		resp["info_hash"] = t.InfoHash().String()
 		resp["length"] = t.Length()
-		// Kumulatif dari peer, bukan isi RAM: tetap naik walau piece di-evict.
+		// Kumulatif dari peer, bukan isi cache: tetap naik walau torrent dibuang.
 		resp["downloaded"] = stats.BytesReadUsefulData.Int64()
 		resp["peers"] = stats.ActivePeers
 		fromPeers = stats.BytesReadUsefulData.Int64()
@@ -389,14 +410,27 @@ func (s *server) state() gin.H {
 	}
 	if st, exists := s.hls.Status(); exists {
 		hlsInfo := gin.H{
-			"index":     st.Index,
-			"ready":     st.Ready,
-			"transcode": st.Transcode,
-			"playlist":  st.Playlist,
-			"progress":  st.Progress,
+			"index":      st.Index,
+			"ready":      st.Ready,
+			"live":       st.Live,
+			"transcode":  false,
+			"audio_kbps": s.audioKbps.Load(),
+			"playlist":   st.Playlist,
 		}
 		if st.Error != "" {
 			hlsInfo["error"] = st.Error
+		}
+		if len(st.Subs) > 0 {
+			subs := make([]gin.H, len(st.Subs))
+			for i, sub := range st.Subs {
+				subs[i] = gin.H{
+					"file":   sub.File,
+					"name":   sub.Name,
+					"format": sub.Format,
+					"url":    fmt.Sprintf("/hls/%d/%s", st.Index, sub.File),
+				}
+			}
+			hlsInfo["subs"] = subs
 		}
 		resp["hls"] = hlsInfo
 	}
@@ -467,7 +501,7 @@ func (s *server) cachedState() gin.H {
 }
 
 // pieceCounts summarizes the torrent's piece states in one pass over the
-// state runs: complete in RAM, partially downloaded, and being hashed/marked.
+// state runs: complete, partially downloaded, and being hashed/marked.
 func pieceCounts(t *torrent.Torrent) (complete, partial, busy int) {
 	for _, run := range t.PieceStateRuns() {
 		if run.Complete {
@@ -563,6 +597,7 @@ func (s *server) apiMagnet(c *gin.Context) {
 	var req struct {
 		Magnet    string `json:"magnet"`
 		FileIndex *int   `json:"fileIndex"`
+		Runtime   int64  `json:"runtime"` // detik, dari API metadata (opsional)
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "body harus {\"magnet\": \"...\"}"})
@@ -581,6 +616,12 @@ func (s *server) apiMagnet(c *gin.Context) {
 		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
+	s.mu.Lock()
+	s.hintSecs, s.hintIndex = 0, -1
+	if req.Runtime > 0 {
+		s.hintSecs = float64(req.Runtime)
+	}
+	s.mu.Unlock()
 	if req.FileIndex != nil {
 		s.selectTorrentFile(*req.FileIndex)
 	}
@@ -609,8 +650,8 @@ func (s *server) apiSelect(c *gin.Context) {
 	c.JSON(http.StatusOK, s.state())
 }
 
-// apiTranscode switches the HLS session between `-c copy` and a real encode,
-// and restarts the session for the selected file so the player reloads it.
+// apiTranscode keeps the old UI toggle working: mkvgo never transcodes, so the
+// flag is recorded and reported back but does not touch the stream.
 func (s *server) apiTranscode(c *gin.Context) {
 	var req struct {
 		Enabled bool `json:"enabled"`
@@ -619,10 +660,25 @@ func (s *server) apiTranscode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "body harus {\"enabled\": true|false}"})
 		return
 	}
-	if s.transcodeOn.Swap(req.Enabled) != req.Enabled {
-		s.hls.Stop()
-		s.startHLS(s.currentIndex())
+	s.transcodeOn.Store(req.Enabled)
+	c.JSON(http.StatusOK, s.state())
+}
+
+// apiAudio keeps the old UI bitrate field: mkvgo copies the source audio
+// unchanged, so only the reported value changes.
+func (s *server) apiAudio(c *gin.Context) {
+	var req struct {
+		Kbps int `json:"kbps"`
 	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": `body harus {"kbps": 128|192|256}`})
+		return
+	}
+	if req.Kbps < 64 || req.Kbps > 320 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bitrate audio harus 64–320 kbps"})
+		return
+	}
+	s.audioKbps.Store(int64(req.Kbps))
 	c.JSON(http.StatusOK, s.state())
 }
 
@@ -745,28 +801,53 @@ func (s *server) wsTabs() int {
 	return tabs
 }
 
-// hlsFile serves the playlist and segments of the session for one file index.
+// hlsFile serves one playlist, segment, init or subtitle of the session for a
+// file index. Everything is packaged on demand by mkvgo.
 func (s *server) hlsFile(c *gin.Context) {
 	index, err := strconv.Atoi(c.Param("index"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "index tidak valid"})
 		return
 	}
-	file, ok := s.hls.Path(index, c.Param("name"))
-	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "sesi hls tidak tersedia untuk file ini"})
-		return
-	}
-	switch strings.ToLower(path.Ext(file)) {
-	case ".m3u8":
-		// Playlist tumbuh selama ffmpeg berjalan: jangan pernah di-cache.
-		c.Header("Content-Type", "application/vnd.apple.mpegurl")
+	name := strings.TrimPrefix(c.Param("name"), "/")
+	switch {
+	case name == "master.m3u8", strings.HasSuffix(name, ".m3u8"):
+		data, ok := s.hls.Playlist(c.Request.Context(), index, name)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "sesi hls tidak tersedia untuk file ini"})
+			return
+		}
 		c.Header("Cache-Control", "no-store")
-	case ".ts":
-		c.Header("Content-Type", "video/mp2t")
+		c.Data(http.StatusOK, "application/vnd.apple.mpegurl", data)
+	case strings.HasSuffix(name, ".vtt"):
+		data, err := s.hls.Subtitle(c.Request.Context(), index, name)
+		if errors.Is(err, hls.ErrNoSuchFile) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "subtitle tidak tersedia"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		s.countWriter(c)
+		c.Data(http.StatusOK, "text/vtt", data)
+	case strings.HasSuffix(name, ".m4s"), strings.HasSuffix(name, ".mp4"):
+		data, contentType, err := s.hls.Segment(c.Request.Context(), index, name)
+		if errors.Is(err, hls.ErrNoSuchFile) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "segmen tidak tersedia"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		s.countWriter(c)
+		c.Data(http.StatusOK, contentType, data)
+	default:
+		c.JSON(http.StatusNotFound, gin.H{"error": "sesi hls tidak tersedia untuk file ini"})
 	}
-	s.countWriter(c)
-	http.ServeFile(c.Writer, c.Request, file)
 }
 
 func (s *server) stream(c *gin.Context) {

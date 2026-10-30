@@ -1,13 +1,13 @@
 # zanime
 
-Torrent video streaming server: Gin HTTP, virtual streaming + seek, cache RAM-only, zero disk, plus a web UI untuk tempel magnet dan memilih video.
+Torrent video streaming server: Gin HTTP, virtual streaming + seek, cache piece di disk (`./tmp/cache`), plus a web UI untuk tempel magnet dan memilih video.
 
-Alurnya: **torrent → ffmpeg HLS → client**. Semua playback lewat ffmpeg: server membaca piece dari torrent (RAM), ffmpeg mengubah file terpilih menjadi playlist + segmen HLS, dan [MoviPlayer](https://moviplayer.com) memutarnya (HLS diurus Shaka, fallback hls.js). Toggle **transcode** menentukan ffmpeg menyalin track (`-c copy`) atau meng-encode H.264/AAC.
+Alurnya: **torrent → [mkvgo](https://github.com/gravity-zero/mkvgo) on demand → client**. Playback lewat mkvgo (pure Go, tanpa ffmpeg/CGO): server membaca header + Cues file sekali lewat HTTP Range, membuat plan HLS, lalu setiap segmen CMAF/fMP4 di-remux saat player memintanya — tanpa encode ulang, tanpa menulis apa pun ke disk. [MoviPlayer](https://moviplayer.com) memutarnya (HLS diurus Shaka, fallback hls.js). Browser harus mendukung codec sumber (H.264/HEVC/AV1 + AAC/Opus/AC-3/E-AC-3); toggle **transcode** tidak berpengaruh lagi.
 
 ## Kenapa `anacrolix/torrent`
 
-- `File.NewReader()` mengembalikan `io.ReadSeekCloser`, langsung cocok untuk `http.ServeContent` (HEAD, Range/206, multi-range, 416) dan sebagai input ffmpeg.
-- Storage backend bisa diganti, jadi piece bisa disimpan di RAM.
+- `File.NewReader()` mengembalikan `io.ReadSeekCloser`, langsung cocok untuk `http.ServeContent` (HEAD, Range/206, multi-range, 416) dan sebagai sumber HTTP Range mkvgo.
+- Storage backend bisa diganti, jadi piece bisa disimpan di disk dengan budget LRU sendiri (`internal/diskcache`).
 - `cenkalti/rain` v2.4.4 tidak mengekspos API baca piece (`File` hanya `Length`/`Path`), jadi tidak bisa virtual streaming/seek.
 
 ## Struktur
@@ -15,13 +15,13 @@ Alurnya: **torrent → ffmpeg HLS → client**. Semua playback lewat ffmpeg: ser
 ```
 main.go                        gin server, API magnet/file/transcode, embed web/
 web/index.html                 UI Tailwind + <movi-player>, di-embed lewat go:embed
-internal/config/               loader .env (PORT, MAX_MEMORY_MB)
+internal/config/               loader .env (PORT, CACHE_DIR, MAX_CACHE_MB)
 internal/stream/               handler HTTP Range/seek (dipakai main + test)
 internal/stream/*_test.go      unit test HEAD/Range/seek/416
-internal/memstorage/           storage torrent RAM-only, LRU
-internal/memstorage/*_test.go  unit test cache + eviction
-internal/hls/                  sesi ffmpeg HLS (master + rendition audio) + auto-download binary
-internal/hls/*_test.go         unit test sesi, probe audio, argumen ffmpeg, toggle mode
+internal/diskcache/            storage torrent di disk, budget LRU per torrent
+internal/diskcache/*_test.go   unit test pemetaan piece→file, prune, registry
+internal/hls/                  sesi HLS on demand (mp4.HLSPlan mkvgo, segmen CMAF saat diminta)
+internal/hls/*_test.go         unit test sesi: playlist, segmen, subtitle, nama di luar sesi
 tests/eviction_test.go         eviction + refetch, seeder/leecher lokal (tanpa internet)
 tests/e2e_test.go              e2e streaming + seek + API + cek disk ke server hidup
 ```
@@ -31,7 +31,7 @@ tests/e2e_test.go              e2e streaming + seek + API + cek disk ke server h
 Butuh Go 1.27+.
 
 ```sh
-cp .env.example .env   # lalu sesuaikan PORT / MAX_MEMORY_MB
+cp .env.example .env   # lalu sesuaikan PORT / CACHE_DIR / MAX_CACHE_MB
 make build             # ./zanime: ldflags "-s -w", lalu upx --best --lzma
 make run               # go run .
 make vet               # go vet ./...
@@ -52,20 +52,22 @@ upx, build tetap selesai dan hanya memberi pesan bahwa kompresi dilewati.
 
 ```dotenv
 PORT=8080
-MAX_MEMORY_MB=200
+CACHE_DIR=./tmp/cache
+MAX_CACHE_MB=4096
 ```
 
 | Variabel | Arti |
 |----------|------|
 | `PORT` | port HTTP web (satu-satunya port yang perlu dibuka di produksi) |
-| `MAX_MEMORY_MB` | batas RAM cache piece torrent (MiB) |
+| `CACHE_DIR` | folder cache piece torrent (default `./tmp/cache`) |
+| `MAX_CACHE_MB` | batas ukuran cache di disk (MiB, default 4096) |
 
 Flag CLI menimpa nilai `.env`:
 
 ```sh
 go run .                       # magnet contoh, 0.0.0.0:8080, cache dari .env
 go run . -magnet ''            # mulai tanpa torrent, isi magnet dari UI
-go run . -addr 0.0.0.0:8080 -cache-mb 128
+go run . -addr 0.0.0.0:8080 -cache-dir ./tmp/cache -cache-mb 8192
 ```
 
 ## Alur
@@ -76,44 +78,42 @@ Urutan tetap setiap kali sebuah video dipilih:
 |---|-------|--------|--------------|--------------------|
 | 1 | Magnet | browser → server | `POST /api/magnet` menunggu metadata (maks 45 dtk), lalu daftar file video diurutkan nama | `state.files[]` |
 | 2 | Pilih file | browser → server | `POST /api/select` menyetel `selected` dan memulai sesi HLS untuk index itu | `state.selected` |
-| 3 | Ambil piece | torrent client | piece ditulis ke RAM (`memstorage`), LRU membuang yang paling lama; eviction ditandai belum lengkap agar diunduh ulang | `state.cache`, `state.torrent` |
-| 4 | Baca file | ffmpeg → `/stream/:index/:name` | ffmpeg membaca file lewat HTTP Range dari server sendiri, jadi bisa seek | `GET /stream...` |
-| 5 | Segmentasi | ffmpeg | menulis playlist + segmen ke folder temp OS `zanime-hls-*` (`-hls_time 4`, `-hls_playlist_type vod`). Satu track audio → `index.m3u8`; lebih dari satu → `master.m3u8` + `video/`, `audio0..N/`. `-progress` dilaporkan ke server | `master.m3u8`, `video/index.m3u8`, `audio0/index.m3u8`, `seg00000.ts` |
-| 6 | Siap | server | ffmpeg selesai dan playlist berisi `#EXT-X-ENDLIST` → `hls.ready = true`. Selama menyiapkan, `state.hls.progress` (0–100%) tampil di UI | `state.hls {index,ready,transcode,playlist,progress,duration,error}` |
-| 7 | Putar | browser | `<movi-player>` memuat playlist **VOD** (HLS lewat Shaka, fallback hls.js): durasi langsung terisi, seek ke mana saja, menu audio berisi satu item per rendition | `GET /hls/:index/:file` |
-| 8 | Toggle | browser → server | `POST /api/transcode` mengganti mode, sesi lama dibatalkan, sesi baru dimulai, player dimuat ulang | `state.transcode` |
+| 3 | Ambil piece | torrent client | piece ditulis ke file sparse di `./tmp/cache/<infohash>/<nama torrent>/`; kalau cache lewat batas, folder torrent paling lama (LRU) dihapus utuh | `state.cache`, `state.torrent` |
+| 4 | Baca file | mkvgo → `/stream/:index/:name` | mkvgo (`httpfs` + `mp4.PlanHLS`) membaca file lewat HTTP Range dari server sendiri, jadi bisa seek tanpa mengunduh seluruh file | `GET /stream...` |
+| 5 | Plan | mkvgo → `/stream` | satu kali pembacaan head: durasi, track video/audio (+bahasa), subtitle teks, index Cues. File tidak diunduh | plan `mp4.HLSPlan` |
+| 6 | Playlist | server | playlist **VOD lengkap** disusun dari durasi: slot 4 dtk sampai akhir + `#EXT-X-ENDLIST`. `master.m3u8` berisi ladder 1080/720 (tidak pernah di atas resolusi sumber) + satu rendition audio per track | `state.hls {index,ready,live,transcode,audio_kbps,playlist,subs,error}` |
+| 7 | Putar/seek | browser → server | player minta satu segmen; mkvgo me-remux satu jendela 4 dtk jadi fMP4 (`segNNNNN.m4s`) dari sampel sumber apa adanya. Posisi mana pun sudah ada di playlist, jadi seek tidak perlu menunggu apa pun diproses lebih dulu | `GET /hls/:index/segNNNNN.m4s` |
+| 8 | Subtitle | browser → server | track teks (SRT/VTT/ASS/SSA) dijadikan satu WebVTT utuh saat diminta; subtitle gambar (PGS) dibuang | `GET /hls/:index/subsN.vtt` |
+| 9 | Toggle | browser → server | `POST /api/transcode` hanya menyimpan flag; stream tidak berubah (mkvgo tidak pernah meng-encode) | `state.transcode` |
+| 10 | Bitrate audio | browser → server | `POST /api/audio` hanya menyimpan angka; audio sumber disalin apa adanya | `state.audio_kbps`, `state.hls.audio_kbps` |
 
-### Mode ffmpeg
+### Mode streaming
 
-| Toggle | Perintah | Kapan dipakai | Konsekuensi |
-|--------|----------|---------------|-------------|
-| **transcode: off** (default) | `-c copy -sn` + satu rendition per track audio | browser mendukung codec sumber (H.264/AAC paling aman) | tanpa CPU tambahan, mulai cepat, tapi HEVC/AV1 bergantung browser |
-| **transcode: on** | `-c:v libx264 -preset veryfast -c:a aac -b:a 128k -sn` | file HEVC/AV1 atau browser tanpa dukungan codec | bisa diputar di browser apa pun, butuh CPU server dan lebih lambat siap |
+| Hal | Perilaku | Kapan dipakai | Konsekuensi |
+|-----|----------|---------------|-------------|
+| **copy** (satu-satunya mode) | sampel video & audio disalin verbatim ke segmen CMAF, satu rendition audio per track | browser mendukung codec sumber (H.264 + AAC paling aman) | tanpa CPU encode, segmen nyaris instan; HEVC/AV1/AAC bergantung browser |
+| **transcode** | tidak ada | — | mkvgo tidak punya transcoder: file HEVC 10-bit ke browser tanpa dukungan HEVC tidak akan bisa diputar |
 
-Track audio dihitung lewat banner `ffmpeg -i` (ffprobe tidak ikut di build statis) lalu tiap track jadi rendition sendiri: `-map 0:a:0 ... -map 0:a:N`, `-var_stream_map "v:0,agroup:aud,name:video a:0,agroup:aud,name:audio0,default:yes a:1,..."`. Bahasa dari metadata dipakai sebagai `LANGUAGE` rendition.
+Playlist dan segmen disusun oleh mkvgo, bukan tool eksternal: plan sudah lengkap (durasi penuh, `TYPE:VOD` + `EXT-X-ENDLIST`, `master.m3u8` + `playlist.m3u8` + `audioN.m3u8` + `subN.m3u8`) sebelum satu segmen pun diminta. Tiap track audio jadi rendition sendiri dengan `LANGUAGE` dari metadata; `manifest.mpd` (DASH) ikut tersedia. Segmen yang diservis server adalah `.m4s` (fMP4), bukan `.ts`.
 
 ### Siklus sesi
 
-| Kejadian | Sesi lama | Sesi baru | Folder temp |
+| Kejadian | Sesi lama | Sesi baru | Cache segmen |
 |----------|-----------|-----------|--------------|
-| Pilih file lain (`/api/select`) | dibatalkan | index baru, mode sama | lama dihapus, baru dibuat |
-| Ganti magnet (`/api/magnet`) | dibatalkan | index 0 torrent baru | lama dihapus |
-| Toggle transcode (`/api/transcode`) | dibatalkan | index sama, mode baru | lama dihapus |
-| Index + mode sama diminta lagi | dipakai ulang | tidak dibuat | tetap |
-| ffmpeg selesai | — | — | **disimpan** sampai sesi diganti (playback tetap jalan) |
-| ffmpeg gagal | — | — | dihapus; `state.hls.error` dikirim ke UI |
+| Pilih file lain (`/api/select`) | dibatalkan | index baru, mode sama | lama dibuang |
+| Ganti magnet (`/api/magnet`) | dibatalkan | index 0 torrent baru | lama dibuang |
+| Toggle transcode / bitrate audio | tetap | tidak dibuat ulang | tetap (flag hanya untuk UI) |
+| Index sama diminta lagi | dipakai ulang | tidak dibuat | tetap |
+| Durasi gagal dibaca | — | — | tidak ada; `state.hls.error` dikirim ke UI |
+| Durasi gagal dibaca | — | — | tidak ada; `state.hls.error` dikirim ke UI |
 
-Catatan yang berlaku di semua baris tabel: subtitle di dalam file tidak ikut (`-sn`, karena PGS/ASS membuat muxer TS gagal) — penonton bisa menambahkan file subtitle sendiri lewat tombol subtitle di player (`subtitlepicker`); playlist `TYPE:VOD` + `EXT-X-ENDLIST` ditulis setelah segmentasi selesai, jadi player mendapat durasi penuh dan bisa seek ke posisi mana pun; satu sesi aktif pada satu waktu.
+Catatan yang berlaku di semua baris tabel: tidak ada proses eksternal sama sekali — segmen dibuat di dalam proses Go; playlist `TYPE:VOD` + `EXT-X-ENDLIST` terbit begitu plan selesai, jadi player langsung mendapat durasi penuh dan bisa seek ke posisi mana pun; request segmen yang sama dibagikan oleh mkvgo (window cache) dan satu sesi aktif pada satu waktu.
 
-### Sumber ffmpeg
+Subtitle **teks** di dalam file dipetakan mkvgo jadi rendition WebVTT: SRT, WebVTT, ASS/SSA (gaya diratakan jadi teks) semuanya tersedia sebagai `subsN.vtt` utuh, karena loader subtitle eksternal movi-player 0.4.1 hanya mem-parsing srt/ttml/vtt. Subtitle gambar (PGS/DVD) dibuang oleh mkvgo dan picker subtitle di player tetap bisa dipakai untuk file subtitle dari luar.
 
-| Urutan | Yang dipakai | Kapan |
-|--------|--------------|-------|
-| 1 | `ffmpeg` dari `PATH` | ffmpeg terpasang di sistem |
-| 2 | `./tmp/ffmpeg` (`./tmp/ffmpeg.exe` di Windows) | sistem tidak punya, salinan lama masih ada dan bisa dijalankan |
-| 3 | unduh build statis ffmpeg-static ke `./tmp` | keduanya tidak ada |
+### Sumber mkvgo
 
-Unduhan hanya terjadi sekali: hasilnya dicek dengan `ffmpeg -version` sebelum dipakai, ditulis ke `*.part` lalu di-rename (unduhan terputus tidak meninggalkan binary rusak), dan path yang sudah terselesaikan di-cache untuk proses itu.
+Tidak ada binary yang diunduh atau dijalankan. Library `github.com/gravity-zero/mkvgo` di-import langsung (zero dependency, tanpa CGO), jadi satu binary statis sudah cukup dan tidak ada `./tmp/ffmpeg`, `PATH` lookup, maupun unduhan saat start.
 
 ## UI
 
@@ -122,16 +122,17 @@ Buka `http://127.0.0.1:8080`:
 | Aksi di UI | Request | Efek |
 |------------|---------|------|
 | Tempel magnet → **Muat torrent** | `POST /api/magnet` | menunggu metadata, daftar file video tampil urut nama; magnet + episode terakhir disimpan di `localStorage` (`zanime.last`) |
-| Klik satu file | `POST /api/select` | sesi HLS untuk file itu dimulai; status menampilkan `Menyiapkan … · N%`, player baru memasang playlist `state.hls.playlist` ketika `state.hls.ready` |
-| Tunggu penyiapan | `GET /api/ws` | persen dari `-progress` ffmpeg terhadap durasi file; gagal → pesan error dari `state.hls.error` |
-| Pilih audio / subtitle di player | — | menu audio berisi tiap rendition dari `master.m3u8`; subtitle dalam file belum dikirim, subtitle eksternal bisa diunggah lewat picker player |
-| Klik toggle **transcode** di header | `POST /api/transcode` | mode ffmpeg berganti, sesi diulang, player dimuat ulang |
+| Klik satu file | `POST /api/select` | sesi HLS untuk file itu dimulai; begitu durasi terbaca (1–3 dtk) playlist VOD dipasang dan playback jalan |
+| Playback / seek | `GET /hls/:index/…` | segmen yang diminta di-remux saat itu juga (beberapa ms–ratusan ms); subtitle teks dalam file dimuat otomatis |
+| Pilih audio / subtitle di player | — | menu audio berisi tiap rendition dari `master.m3u8`; menu subtitle berisi track dari file (`subsN.srt` apa adanya, `subsN.vtt` untuk ASS/SSA), plus file subtitle yang diunggah lewat picker player. Track didaftarkan sekali per sesi dan tidak diulang tiap update status, jadi pilihan tidak berkedip |
+| Klik toggle **transcode** di header | `POST /api/transcode` | tidak ada efek (legacy; mkvgo tidak meng-encode) |
+| Pilih **audio 128k/192k/256k** di header | `POST /api/audio` | tidak ada efek (legacy; audio sumber disalin apa adanya) |
 | Klik **Batalkan** saat memuat | `POST /api/cancel` | job magnet dihentikan; torrent yang sedang aktif tidak diusik |
 | Buka **Cari** | `GET /api/addon?url=...` | Cinemeta (judul/seri/episode) + Torrentio (stream); katalog Muvibox/Absolute Cinema untuk browsing saja |
 | Klik stream non-torrent | `GET /fetch?url=...` | media direct diputar lewat proxy RAM (Range diteruskan, tanpa disk) |
 | Diamkan panel status | `GET /api/ws` | server mendorong status tiap 700 ms (angka tidak dipolling); fallback `/api/state` tiap 2 dtk kalau WS diblokir proxy |
 
-Panel status menampilkan: piece lengkap/parsial/hash, peer aktif·total·seeder·negosiasi, chunk useful/wasted, byte wire dan hash, isi RAM per piece, laju eviction/menit, kecepatan peer→server dan server→client, user/tab, uptime, heap, goroutine, dan status sesi HLS. **Stream hanya diambil dari Torrentio** (magnet + `fileIndex` untuk season pack).
+Panel status menampilkan: piece lengkap/parsial/hash, peer aktif·total·seeder·negosiasi, chunk useful/wasted, byte wire dan hash, isi cache disk, laju eviction/menit, kecepatan peer→server dan server→client, user/tab, uptime, heap, goroutine, dan status sesi HLS. **Stream hanya diambil dari Torrentio** (magnet + `fileIndex` untuk season pack).
 
 MoviPlayer (`movi-player@0.4.1`), Tailwind, dan lucide di-load dari CDN. Tidak ada build frontend. Status `loading` ikut terkirim lewat WS, jadi tab lain / halaman yang di-reload ikut benar.
 
@@ -145,11 +146,12 @@ MoviPlayer (`movi-player@0.4.1`), Tailwind, dan lucide di-load dari CDN. Tidak a
 | `POST /api/magnet` | `{"magnet":"...","fileIndex":N}` — ganti torrent aktif, tunggu metadata; `fileIndex` opsional (urutan file di torrent) |
 | `POST /api/cancel` | batalkan pemuatan magnet yang sedang jalan |
 | `POST /api/select` | `{"index":N}` — pilih file video, mulai sesi HLS-nya |
-| `POST /api/transcode` | `{"enabled":true\|false}` — mode ffmpeg `copy` ↔ encode H.264/AAC; sesi terpilih diulang |
+| `POST /api/transcode` | `{"enabled":true\|false}` — legacy; nilai disimpan dan dikirim di state, tanpa efek pada stream |
+| `POST /api/audio` | `{"kbps":128\|192\|256}` (64–320) — legacy; audio sumber disalin apa adanya |
 | `GET /api/addon?url=...` | proxy katalog/meta/streams (Cinemeta, Torrentio, Absolute Cinema, Muvibox) — hanya host yang di-whitelist; browser tidak pernah memanggil addon langsung |
-| `GET /stream` | file terpilih apa adanya; dukung `HEAD` dan `Range` (input ffmpeg + fallback) |
+| `GET /stream` | file terpilih apa adanya; dukung `HEAD` dan `Range` (sumber mkvgo + fallback) |
 | `GET /stream/:index/:name` | file tertentu; `name` dipakai untuk MIME/ekstensi |
-| `GET/HEAD /hls/:index/:file` | file sesi HLS: `index.m3u8` (satu audio) atau `master.m3u8` + `video/index.m3u8`, `audio0/index.m3u8`, … dan segmen `.ts`; 404 bila sesi bukan untuk file tersebut |
+| `GET/HEAD /hls/:index/:file` | sesi HLS: `master.m3u8`, `playlist.m3u8`, `audioN.m3u8`, `manifest.mpd`, `init.mp4`, `segNNNNN.m4s`, `subsN.vtt`; semua dibangun saat diminta; 404 bila sesi bukan untuk file tersebut atau nama di luar sesi |
 | `GET/HEAD /fetch?url=...` | proxy streaming media direct (Range diteruskan; RAM, tanpa disk) |
 | `GET /info` | ringkasan siap/nama/ukuran/cache (dipakai e2e) |
 | `GET /healthz` | `ok` |
@@ -163,7 +165,9 @@ curl -X POST http://127.0.0.1:8080/api/magnet \
   -d '{"magnet":"magnet:?xt=urn:btih:..."}'
 curl -X POST http://127.0.0.1:8080/api/transcode \
   -H 'Content-Type: application/json' -d '{"enabled":true}'
-curl http://127.0.0.1:8080/hls/0/index.m3u8
+curl -X POST http://127.0.0.1:8080/api/audio \
+  -H 'Content-Type: application/json' -d '{"kbps":192}'
+curl http://127.0.0.1:8080/hls/0/master.m3u8
 curl -I http://127.0.0.1:8080/stream
 curl -H 'Range: bytes=0-1048575' -o chunk.bin http://127.0.0.1:8080/stream
 ```
@@ -172,17 +176,15 @@ curl -H 'Range: bytes=0-1048575' -o chunk.bin http://127.0.0.1:8080/stream
 
 | Aspek | Detail | Lokasi |
 |-------|--------|--------|
-| Penyimpanan piece | `map` + LRU (`container/list`), dibatasi `MAX_MEMORY_MB` / `-cache-mb` (default 200 MiB) | `internal/memstorage` |
-| Saat budget penuh | piece paling lama dibuang, `Eviction{Hash, Index}` dikirim lewat channel `Evicted()` | `internal/memstorage` |
-| Sinkronisasi torrent | `t.Piece(index).UpdateCompletion()` untuk piece yang dibuang, jadi diunduh ulang saat ffmpeg membacanya lagi | `server.syncEvictions` |
-| Disk torrent | `cfg.DataDir = ""` + `DefaultStorage = memstorage`; tidak ada file data | `main.go` |
-| Piece > limit | tetap disimpan (satu piece harus muat) agar progres tidak macet | `internal/memstorage` |
-| Ganti magnet | piece torrent lama dilepas (`DropAll`); `cache.pieces` hanya menghitung torrent aktif (`PiecesOf`) | `main.go` |
-| Eviction berulang | piece yang sudah ditandai tidak lengkap dilewati (`State()` dicek dulu) | `server.syncEvictions` |
+| Penyimpanan piece | satu file sparse per file torrent, di bawah `CACHE_DIR/<infohash>/`, dibatasi `MAX_CACHE_MB` / `-cache-mb` (default 4 GiB) | `internal/diskcache` |
+| Saat budget penuh | folder torrent paling lama (LRU) dihapus utuh; torrent yang sedang diputar tidak pernah dihapus | `diskcache.Prune` |
+| Urutan LRU | disimpan di `CACHE_DIR/lru.json` (tulis lewat tmp + rename), jadi urutan bertahan setelah restart | `internal/diskcache` |
+| Pengecekan budget | tiap 10 detik, bukan per piece, supaya jalan hanya saat cache memang membesar | `server.pruneCache` |
+| Ganti magnet | folder cache torrent lama dihapus (`DropAll`) | `main.go` |
 | Banyak tab | semua tab WS berbagi satu snapshot status 500 ms | `server.cachedState` |
-| Disk ffmpeg | playlist + segmen HLS di folder temp OS `zanime-hls-*`, dihapus saat sesi berhenti/ganti | `internal/hls` |
+| Disk segmen | tidak ada: playlist disusun di memori, segmen di-remux mkvgo ke RAM | `internal/hls` |
 
-Data torrent tidak pernah menyentuh disk. Satu episode tersimpan penuh di folder temp selama diputar (event playlist menyimpan semua segmen supaya seek ke belakang tetap jalan).
+Isi `./tmp/cache` boleh dihapus kapan saja: setiap torrent diambil ulang dari magnet saat dibutuhkan. Cachenya bukan library, hanya mempercepat seek dan menonton ulang.
 
 ## Test
 
@@ -193,9 +195,9 @@ make vet
 make test
 ```
 
-`tests/eviction_test.go` menjalankan seeder + leecher di proses yang sama lewat localhost, torrent 8 MiB / 8 piece, cache 2 piece. Efeknya eviction, refetch setelah seek, dan isi byte diverifikasi tanpa internet (~0,2 detik). Kedua `DataDir` dicek tetap kosong.
+`tests/diskcache_test.go` menjalankan seeder + leecher di proses yang sama lewat localhost, torrent 8 MiB / 8 piece, dengan `diskcache` sebagai backend leecher. Byte diambil lewat HTTP Range (maju dan mundur) tanpa internet. `internal/diskcache/diskcache_test.go` menguji pemetaan piece yang menembus dua file, prune LRU yang melewati torrent aktif, dan registry yang bertahan setelah restart.
 
-`internal/hls/hls_test.go` memakai ffmpeg palsu (shell script) untuk memeriksa sesi: playlist & segmen tersedia, index lain ditolak, nama tidak bisa keluar dari folder sesi, dan ganti mode transcode memulai sesi baru.
+`internal/hls/hls_test.go` menulis fixture Matroska kecil (H.264 + audio) dengan writer mkvgo, lalu memeriksa sesi: `master.m3u8` memuat satu rendition audio per track, segmen `segNNNNN.m4s` terbit saat diminta, nama di luar sesi/lewat akhir file ditolak, dan subtitle yang tidak ada tidak dijual. `main_test.go` menguji route `/hls` end-to-end dengan file yang sama diserve lewat HTTP Range.
 
 E2E butuh server hidup dan network torrent:
 
@@ -206,7 +208,7 @@ ZANIME_E2E=1 go test -run TestE2E -timeout 90s ./tests    # terminal 2
 
 Yang dicek e2e:
 
-- `/info`: `storage=memory`, file video, `cache_used <= cache_limit`
+- `/info`: `storage=disk`, file video, `cache_used <= cache_limit`
 - `HEAD /stream`: 200, `Content-Length`, `Accept-Ranges: bytes`
 - Range 0–128 KiB: 206 + `Content-Range`
 - seek 1 MiB dan 50% file: 206, offset benar
@@ -228,7 +230,9 @@ Jika satu piece torrent (4 MiB di magnet contoh) tidak selesai dalam timeout, te
 
 - Satu torrent aktif; menambah magnet baru akan mengganti torrent lama.
 - Hanya file dengan ekstensi video yang ditampilkan (`.mkv`, `.mp4`, `.webm`, `.avi`, `.mov`, `.ts`, `.m2ts`, …).
-- Satu sesi HLS aktif pada satu waktu: hanya file terpilih yang di-segmentasi.
-- Playback baru mulai setelah segmentasi selesai (setara membaca seluruh file): durasi dan seek penuh, tapi tidak instan. Mode transcode lebih lama daripada `-c copy`.
-- Subtitle di dalam file belum dikirim ke player (`-sn`); subtitle eksternal bisa diunggah lewat picker di player.
-- Nama rendition audio mengikuti ffmpeg (`audio_1`, `audio_2`, …) dengan tag `LANGUAGE` dari metadata file.
+- Satu sesi HLS aktif pada satu waktu: hanya file terpilih yang dilayani.
+- Playback mulai setelah plan selesai (head read, 1–3 dtk), bukan setelah file diunduh. Seek ke bagian yang belum pernah ditonton menunggu satu window segmen dibaca dari torrent lalu di-remux.
+- Segmen mkvgo dipotong di keyframe dengan durasi target 4 dtk (sampling terdekat), jadi batasnya bisa bergeser sedikit dari kelipatan 4 dtk.
+- Subtitle hanya untuk codec teks. Semua dijadikan WebVTT (`subsN.vtt`) karena movi-player 0.4.1 tidak mem-parsing ASS/SSA sebagai track eksternal. Subtitle gambar (PGS/DVD) tidak didukung. Mengekstrak subtitle membaca seluruh file sekali, lalu hasilnya di-cache.
+- Nama rendition audio mengikuti mkvgo (`audio1`, `audio2`, …) dengan tag `LANGUAGE` dari metadata file.
+- Kalau MoviPlayer melaporkan `Timeout` (swarm berhenti mengirim byte), UI memuat ulang sumber yang sama dengan atribut `startat` di posisi terakhir, jadi playback lanjut dari situ — bukan mengulang dari detik 0. Maksimal 3 kali berturut-turut; hitungan direset setelah 60 dtk lancar.

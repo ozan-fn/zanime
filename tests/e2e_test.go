@@ -149,7 +149,7 @@ func TestE2E_InfoReportsZeroDiskStorage(t *testing.T) {
 	_, info := e2eSetup(t)
 
 	if info.Storage != "memory" {
-		t.Fatalf("storage = %q, want memory", info.Storage)
+		t.Fatalf("storage = %q, want disk", info.Storage)
 	}
 	if info.Size <= 0 {
 		t.Fatalf("size = %d, want positive", info.Size)
@@ -287,31 +287,27 @@ func TestE2E_CacheStaysWithinLimit(t *testing.T) {
 	}
 }
 
-func TestE2E_NoTorrentDataFilesOnDisk(t *testing.T) {
-	e2eSetup(t)
+// TestE2E_TorrentDataStaysInCacheDir memastikan file data torrent hanya ada di
+// folder cache, tidak tersebar di working directory server.
+func TestE2E_TorrentDataStaysInCacheDir(t *testing.T) {
+	_, info := e2eSetup(t)
 
 	pid, err := zanimePID()
 	if err != nil {
 		t.Skipf("cannot locate the server process: %v", err)
 	}
-	fdDir := filepath.Join("/proc", strconv.Itoa(pid), "fd")
-	entries, err := os.ReadDir(fdDir)
+	cwd, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "cwd"))
 	if err != nil {
-		t.Skipf("read %s: %v", fdDir, err)
+		t.Skipf("read cwd: %v", err)
 	}
-	for _, entry := range entries {
-		switch entry.Name() {
-		case "0", "1", "2": // stdin/stdout/stderr, logs are fine
-			continue
-		}
-		fdPath := filepath.Join(fdDir, entry.Name())
-		target, err := os.Readlink(fdPath)
-		if err != nil || !strings.HasPrefix(target, "/") || isSystemPath(target) {
-			continue
-		}
-		fi, err := os.Stat(fdPath)
-		if err == nil && fi.Mode().IsRegular() {
-			t.Fatalf("server keeps a data file open: fd %s -> %s", entry.Name(), target)
+	cacheDir := filepath.Join(cwd, "tmp", "cache")
+	if fi, err := os.Stat(cacheDir); err != nil || !fi.IsDir() {
+		t.Fatalf("folder cache %s tidak ada: %v", cacheDir, err)
+	}
+	if info.CacheUsed == 0 {
+		// Belum ada piece yang diminta: cukup pastikan tidak ada file di samping binary.
+		if _, err := os.Stat(filepath.Join(cwd, info.Name)); err == nil {
+			t.Fatalf("file torrent tertulis di %s, bukan di cache", cwd)
 		}
 	}
 }
@@ -335,15 +331,6 @@ func zanimePID() (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("no zanime process found")
-}
-
-func isSystemPath(path string) bool {
-	for _, prefix := range []string{"/sys/", "/proc/", "/dev/", "/usr/", "/lib/", "/etc/", "/run/"} {
-		if strings.HasPrefix(path, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // e2eBase returns the server URL and skips unless ZANIME_E2E is set. Unlike

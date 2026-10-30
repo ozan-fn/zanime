@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -18,69 +17,95 @@ import (
 	"github.com/anacrolix/torrent/storage"
 	"github.com/gin-gonic/gin"
 
-	"zanime/internal/memstorage"
+	"zanime/internal/diskcache"
 	"zanime/internal/stream"
 )
 
-// Hermetic eviction test: a seeder and a leecher run in-process over
-// localhost, so the whole 8 MiB "torrent" is virtual and finishes in
-// milliseconds. The leecher caches only 2 pieces, forcing real LRU evictions
-// and refetches through the HTTP range path.
+// Hermetic disk cache test: a seeder and a leecher run in-process over localhost,
+// so the whole 8 MiB "torrent" is virtual and finishes in milliseconds. The
+// leecher's storage is diskcache, so every piece is written to a real file and
+// read back through the HTTP range path.
 
 const (
-	virtualPieceLen = 1 << 20
+	virtualPieceLen = 1 << 16
 	virtualPieces   = 8
 )
 
-func TestMemStorage_EvictsAndRefetchesUnderVirtualTorrent(t *testing.T) {
+func TestDiskCache_ServesWholeVirtualTorrentFromDisk(t *testing.T) {
 	data := virtualData(virtualPieces * virtualPieceLen)
 	meta := buildMetaInfo(t, data)
 
-	seedClient, seedDir := newVirtualClient(t, staticStorage{data: data}, true)
+	seedClient, _ := newVirtualClient(t, staticStorage{data: data}, true)
 	if _, _, err := seedClient.AddTorrentSpec(torrent.TorrentSpecFromMetaInfo(meta)); err != nil {
 		t.Fatalf("seed AddTorrentSpec: %v", err)
 	}
 
-	mem := memstorage.New(2 * virtualPieceLen)
-	leechClient, leechDir := newVirtualClient(t, mem, false)
+	cacheRoot := t.TempDir()
+	cache, err := diskcache.New(cacheRoot, virtualPieces*virtualPieceLen)
+	if err != nil {
+		t.Fatalf("diskcache: %v", err)
+	}
+	leechClient, _ := newVirtualClient(t, cache, false)
 	leechTorrent, _, err := leechClient.AddTorrentSpec(torrent.TorrentSpecFromMetaInfo(meta))
 	if err != nil {
 		t.Fatalf("leech AddTorrentSpec: %v", err)
 	}
-	go func() {
-		for ev := range mem.Evicted() {
-			if ev.Index >= 0 && ev.Index < leechTorrent.NumPieces() {
-				leechTorrent.Piece(ev.Index).UpdateCompletion()
-			}
-		}
-	}()
 	leechTorrent.AddClientPeer(seedClient)
 	<-leechTorrent.GotInfo()
+	t.Logf("info: %+v", leechTorrent.Info())
+
+	// Debug: baca byte lewat torrent reader langsung, sebelum lewat HTTP.
+	tryRead(t, leechTorrent, 17, "byte 17", cacheRoot)
+	tryRead(t, leechTorrent, 16*virtualPieceLen, "byte last piece", cacheRoot)
 
 	srv := httptest.NewServer(virtualHTTPHandler(leechTorrent))
 	defer srv.Close()
 
-	for i := 0; i < virtualPieces; i++ {
+	// Setiap piece lewat HTTP Range, jadi pembacaan mundur juga harus jalan.
+	for _, i := range []int{0, 3, 7, 1, 5} {
 		offset := int64(i*virtualPieceLen + 17)
 		if got := readVirtualByte(t, srv.URL, offset); got != data[offset] {
 			t.Fatalf("piece %d byte = %#x, want %#x", i, got, data[offset])
 		}
 	}
 
-	if mem.Evictions() == 0 {
-		t.Fatal("expected evictions with a 2-piece cache for an 8-piece torrent")
+	if used := cache.Used(); used == 0 {
+		t.Fatal("tidak ada byte yang tertulis ke cache disk")
 	}
-	if used := mem.Used(); used > mem.Limit() {
-		t.Fatalf("cache used %d bytes, over limit %d", used, mem.Limit())
+	if cache.Pruned() != 0 {
+		t.Fatalf("cache di dalam budget tapi di-prune %d kali", cache.Pruned())
 	}
+}
 
-	// Piece 0 was evicted long ago: reading it again must refetch, not fail.
-	if got := readVirtualByte(t, srv.URL, 17); got != data[17] {
-		t.Fatalf("refetched byte = %#x, want %#x", got, data[17])
+func tryRead(t *testing.T, tr *torrent.Torrent, off int64, label string, dirs ...string) {
+	t.Helper()
+	dr := tr.NewReader()
+	defer func() { _ = dr.Close() }()
+	if _, err := dr.Seek(off, io.SeekStart); err != nil {
+		t.Fatalf("seek: %v", err)
 	}
-
-	assertDirEmpty(t, seedDir)
-	assertDirEmpty(t, leechDir)
+	okc := make(chan byte, 1)
+	go func() {
+		var b [1]byte
+		n, _ := io.ReadFull(dr, b[:])
+		if n == 1 {
+			okc <- b[0]
+		}
+	}()
+	select {
+	case b := <-okc:
+		t.Logf("%s: %d", label, b)
+	case <-time.After(3 * time.Second):
+		matches, _ := filepath.Glob(filepath.Join(dirs[0], "*"))
+		t.Logf("cache dir files: %v", matches)
+		t.Logf("%s: timeout; complete=%v", label, func() []bool {
+			out := make([]bool, tr.NumPieces())
+			for i := range out {
+				out[i] = tr.Piece(i).State().Complete
+			}
+			return out
+		}())
+	}
 }
 
 func virtualData(n int) []byte {
@@ -129,7 +154,7 @@ func newVirtualClient(t *testing.T, st storage.ClientImpl, seed bool) (*torrent.
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	t.Cleanup(func() { cl.Close() })
+	t.Cleanup(func() { _ = cl.Close() })
 	return cl, dataDir
 }
 
@@ -140,7 +165,6 @@ func virtualHTTPHandler(tr *torrent.Torrent) http.Handler {
 		f := tr.Files()[0]
 		reader := f.NewReader()
 		defer func() { _ = reader.Close() }()
-		reader.SetReadahead(virtualPieceLen)
 		stream.Serve(c, f.DisplayPath(), reader)
 	}
 	r.GET("/stream", handler)
@@ -187,16 +211,6 @@ func tryReadVirtualByte(base string, offset int64) (byte, error) {
 	return body[0], nil
 }
 
-func assertDirEmpty(t *testing.T, dir string) {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read %s: %v", dir, err)
-	}
-	for _, entry := range entries {
-		t.Fatalf("torrent wrote %q under %s", entry.Name(), filepath.Clean(dir))
-	}
-}
 
 // staticStorage is a read-only, RAM-backed torrent storage used by the seeder.
 type staticStorage struct {

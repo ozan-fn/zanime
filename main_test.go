@@ -21,16 +21,23 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 
-	"zanime/internal/memstorage"
+	"github.com/gravity-zero/mkvgo/matroska"
+	"github.com/gravity-zero/mkvgo/mkv"
+	"github.com/gravity-zero/mkvgo/mkv/writer"
+
+	"zanime/internal/diskcache"
 )
 
 // TestWSStatePayload memastikan frame /api/ws memuat semua field yang dibaca
 // UI (index.html): files, selected, cache, peers/net, transcode, loading.
 func TestWSStatePayload(t *testing.T) {
-	mem := memstorage.New(1 << 20)
+	cache, err := diskcache.New(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := torrent.NewDefaultClientConfig()
 	cfg.DataDir = t.TempDir()
-	cfg.DefaultStorage = mem
+	cfg.DefaultStorage = cache
 	cfg.NoDHT = true
 	cfg.DisableTrackers = true
 	cfg.DisablePEX = true
@@ -42,7 +49,7 @@ func TestWSStatePayload(t *testing.T) {
 	}
 	defer cl.Close()
 
-	srv := newServer(cl, mem, nil, 0)
+	srv := newServer(cl, cache, nil, 0)
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.GET("/api/ws", srv.apiWS)
@@ -75,10 +82,10 @@ func TestWSStatePayload(t *testing.T) {
 			t.Fatalf("state.net tanpa %q: %v", key, netCounters)
 		}
 	}
-	cache, _ := state["cache"].(map[string]any)
-	for _, key := range []string{"used", "limit", "evictions", "pieces"} {
-		if _, ok := cache[key]; !ok {
-			t.Fatalf("state.cache tanpa %q: %v", key, cache)
+	cacheInfo, _ := state["cache"].(map[string]any)
+	for _, key := range []string{"used", "limit", "evictions"} {
+		if _, ok := cacheInfo[key]; !ok {
+			t.Fatalf("state.cache tanpa %q: %v", key, cacheInfo)
 		}
 	}
 	srvInfo, _ := state["server"].(map[string]any)
@@ -99,7 +106,7 @@ func TestWSStatePayload(t *testing.T) {
 // halaman yang di-reload melihat mode yang sama.
 func TestAPITranscodeToggle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	srv := newServer(nil, memstorage.New(1<<20), nil, 0)
+	srv := newServer(nil, testCache(t), nil, 0)
 	r := gin.New()
 	r.POST("/api/transcode", srv.apiTranscode)
 
@@ -127,6 +134,38 @@ func TestAPITranscodeToggle(t *testing.T) {
 	}
 }
 
+// Bitrate audio pilihan UI tersimpan di server, ikut di state, dan menolak
+// nilai di luar rentang yang masuk akal untuk AAC.
+func TestAPIAudioBitrate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	srv := newServer(nil, testCache(t), nil, 0)
+	t.Cleanup(srv.hls.Stop)
+	r := gin.New()
+	r.POST("/api/audio", srv.apiAudio)
+
+	post := func(body string) (int, map[string]any) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/audio", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(rec, req)
+		var state map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &state)
+		return rec.Code, state
+	}
+
+	if code, state := post(`{"kbps":192}`); code != http.StatusOK || state["audio_kbps"] != float64(192) {
+		t.Fatalf("set 192 = %d, audio_kbps %v", code, state["audio_kbps"])
+	}
+	if got := srv.audioKbps.Load(); got != 192 {
+		t.Fatalf("bitrate audio server = %d, want 192", got)
+	}
+	for _, body := range []string{`{"kbps":8}`, `{"kbps":2000}`, `bukan json`} {
+		if code, _ := post(body); code != http.StatusBadRequest {
+			t.Fatalf("%s = %d, want 400", body, code)
+		}
+	}
+}
+
 func TestVideoFilesSortedByName(t *testing.T) {
 	info := metainfo.Info{
 		Name:        "pack",
@@ -146,7 +185,11 @@ func TestVideoFilesSortedByName(t *testing.T) {
 
 	cfg := torrent.NewDefaultClientConfig()
 	cfg.DataDir = t.TempDir()
-	cfg.DefaultStorage = memstorage.New(1 << 20)
+	cacheDir, err := diskcache.New(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DefaultStorage = cacheDir
 	cfg.NoDHT = true
 	cfg.DisableTrackers = true
 	cfg.DisablePEX = true
@@ -174,34 +217,60 @@ func TestVideoFilesSortedByName(t *testing.T) {
 	}
 }
 
-// fakeFFmpeg menulis skrip yang berperan sebagai ffmpeg: menulis playlist
-// (argumen terakhir) + satu segmen di folder yang sama.
-func fakeFFmpeg(t *testing.T) string {
+// writeFixture menulis Matroska kecil (H.264 + satu audio) supaya mkvgo bisa
+// menyusun playlist dan segmen sungguhan.
+func writeFixture(t *testing.T) string {
 	t.Helper()
-	file := filepath.Join(t.TempDir(), "ffmpeg")
-	script := strings.Join([]string{
-		"#!/bin/sh",
-		// Invokasi probe (`-i` tanpa output) langsung keluar.
-		`case "$*" in *"-f hls"*) ;; *) exit 0 ;; esac`,
-		`for a in "$@"; do last=$a; done`,
-		`dir=$(dirname "$last")`,
-		`printf '#EXTM3U\n#EXTINF:4.0,\nseg00000.ts\n' > "$last"`,
-		`printf 'segment-bytes' > "$dir/seg00000.ts"`,
-		"",
-	}, "\n")
-	if err := os.WriteFile(file, []byte(script), 0o755); err != nil {
-		t.Fatalf("tulis ffmpeg palsu: %v", err)
+	path := filepath.Join(t.TempDir(), "x.mkv")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return file
+	defer f.Close()
+	c := &matroska.Container{Info: mkv.SegmentInfo{TimecodeScale: 1_000_000}}
+	w, h := uint32(320), uint32(240)
+	sr := 48000.0
+	ch := uint8(2)
+	tracks := []mkv.Track{
+		{ID: 1, Type: mkv.VideoTrack, Codec: "h264", Width: &w, Height: &h, CodecPrivate: []byte{1}},
+		{ID: 2, Type: mkv.AudioTrack, Codec: "aac", SampleRate: &sr, Channels: &ch,
+			Language: "jpn", CodecPrivate: []byte{0x11, 0x90}},
+	}
+	mw := writer.NewMKVWriter(f)
+	if err := mw.WriteStart(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.WriteMetadata(c, tracks, 4000); err != nil {
+		t.Fatal(err)
+	}
+	for tc := int64(0); tc < 4000; tc += 500 {
+		var blocks []mkv.Block
+		if tc%1000 == 0 {
+			blocks = append(blocks, mkv.Block{TrackNumber: 1, Timecode: tc, Keyframe: true, Data: []byte("videoframe")})
+		}
+		blocks = append(blocks, mkv.Block{TrackNumber: 2, Timecode: tc, Keyframe: true, Data: []byte("a")})
+		if err := mw.WriteClusterWithCues(tc, 1_000_000, blocks); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := mw.Finalize(); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
-// TestHLSFileServesSession memastikan route /hls mengirim playlist dan segmen
-// milik sesi file terpilih, dengan Content-Type yang benar, dan 404 untuk file
-// lain.
+// TestHLSFileServesSession memastikan route /hls mengirim master playlist dan
+// segmen yang dibuat mkvgo saat diminta, serta 404 untuk index/sesi lain.
 func TestHLSFileServesSession(t *testing.T) {
-	srv := newServer(nil, memstorage.New(1<<20), nil, 0)
+	clip := writeFixture(t)
+	srv := newServer(nil, testCache(t), nil, 0)
 	t.Cleanup(srv.hls.Stop)
-	srv.hls.Start(context.Background(), 0, "http://127.0.0.1:1/stream/0/x.mkv", fakeFFmpeg(t), false)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, clip)
+	}))
+	defer upstream.Close()
+	srv.hls.Start(context.Background(), 0, upstream.URL+"/x.mkv")
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -212,13 +281,13 @@ func TestHLSFileServesSession(t *testing.T) {
 		return rec
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if rec := fetch("/hls/0/index.m3u8"); rec.Code == http.StatusOK {
+		if rec := fetch("/hls/0/master.m3u8"); rec.Code == http.StatusOK {
 			if ct := rec.Header().Get("Content-Type"); ct != "application/vnd.apple.mpegurl" {
 				t.Fatalf("content-type playlist = %q", ct)
 			}
-			if !strings.Contains(rec.Body.String(), "seg00000.ts") {
+			if !strings.Contains(rec.Body.String(), "playlist.m3u8") {
 				t.Fatalf("playlist = %q", rec.Body.String())
 			}
 			break
@@ -229,14 +298,14 @@ func TestHLSFileServesSession(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	segment := fetch("/hls/0/seg00000.ts")
-	if segment.Code != http.StatusOK || segment.Body.String() != "segment-bytes" {
+	segment := fetch("/hls/0/seg00001.m4s")
+	if segment.Code != http.StatusOK || segment.Body.Len() == 0 {
 		t.Fatalf("segmen = %d %q", segment.Code, segment.Body.String())
 	}
-	if ct := segment.Header().Get("Content-Type"); ct != "video/mp2t" {
+	if ct := segment.Header().Get("Content-Type"); ct != "video/iso.segment" {
 		t.Fatalf("content-type segmen = %q", ct)
 	}
-	if rec := fetch("/hls/1/index.m3u8"); rec.Code != http.StatusNotFound {
+	if rec := fetch("/hls/1/master.m3u8"); rec.Code != http.StatusNotFound {
 		t.Fatalf("index lain = %d, want 404", rec.Code)
 	}
 }
@@ -258,7 +327,7 @@ func TestAddonProxy(t *testing.T) {
 	defer delete(addonHosts, host)
 
 	gin.SetMode(gin.TestMode)
-	srv := newServer(nil, memstorage.New(1<<20), nil, 0)
+	srv := newServer(nil, testCache(t), nil, 0)
 	r := gin.New()
 	r.GET("/api/addon", srv.addonProxy)
 	call := func(raw string) *httptest.ResponseRecorder {
@@ -288,7 +357,7 @@ func TestAddonProxy(t *testing.T) {
 // TestCachedStateShared memastikan semua tab WS memakai satu snapshot 500 ms,
 // jadi jumlah tab tidak mengalikan kerja per frame.
 func TestCachedStateShared(t *testing.T) {
-	srv := newServer(nil, memstorage.New(1<<20), nil, 0)
+	srv := newServer(nil, testCache(t), nil, 0)
 	srv.cachedState()
 	srv.addWSUser("u1")
 	if got := srv.cachedState()["users"].(gin.H)["active"]; got != 0 {
@@ -302,20 +371,29 @@ func TestCachedStateShared(t *testing.T) {
 	}
 }
 
-// TestIndexHTMLBalanced menjaga markup embedded tetap seimbang: satu </div>
-// berlebih pernah menutup <main> lebih awal sehingga player turun ke bawah
-// semua kartu (browser mengabaikan tag penutup yatim dengan cara berbeda-beda).
+// TestIndexHTMLBalanced menjaga markup embedded tetap valid: file harus punya
+// root React yang sama dengan yang di-bundle Vite (#root), jadi kegagalan
+// build frontend tidak diam-diam ter-embed.
 func TestIndexHTMLBalanced(t *testing.T) {
-	data, err := fs.ReadFile(webFiles, "web/index.html")
+	data, err := fs.ReadFile(webFiles, "web/dist/index.html")
 	if err != nil {
-		t.Fatalf("baca index.html: %v", err)
+		t.Fatalf("baca web/dist/index.html: %v (jalankan pnpm build di web/ dulu)", err)
 	}
 	html := string(data)
-	opens := strings.Count(html, "<div") - strings.Count(html, "</div>") // bisa negatif
-	if opens != 0 {
-		t.Fatalf("div tidak seimbang: selisih %d", opens)
+	if !strings.Contains(html, `id="root"`) {
+		t.Fatalf("web/dist/index.html tidak mengandung <div id=\"root\">")
 	}
-	if got := strings.Count(html, "<section"); got != 2 {
-		t.Fatalf("jumlah section = %d, want 2 (sidebar + player)", got)
+	if got := strings.Count(html, "<div"); got != 1 {
+		t.Fatalf("jumlah div = %d, want 1 (hanya root React)", got)
 	}
+}
+
+// testCache gives each server test its own throwaway disk cache.
+func testCache(t *testing.T) *diskcache.Client {
+	t.Helper()
+	cache, err := diskcache.New(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cache
 }

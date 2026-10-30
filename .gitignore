@@ -8,3 +8,6 @@ zanime.exe
 # go
 *.test
 *.out
+
+# cache piece torrent
+tmp/
