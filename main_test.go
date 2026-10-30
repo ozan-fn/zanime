@@ -29,7 +29,7 @@ import (
 )
 
 // TestWSStatePayload memastikan frame /api/ws memuat semua field yang dibaca
-// UI (index.html): files, selected, cache, peers/net, transcode, loading.
+// UI: files, selected, cache, peers/net, loading.
 func TestWSStatePayload(t *testing.T) {
 	cache, err := diskcache.New(t.TempDir(), 1<<20)
 	if err != nil {
@@ -71,7 +71,7 @@ func TestWSStatePayload(t *testing.T) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		t.Fatalf("frame bukan JSON: %v", err)
 	}
-	for _, key := range []string{"ready", "loading", "files", "selected", "cache", "transcode", "net", "users", "server"} {
+	for _, key := range []string{"ready", "loading", "files", "selected", "cache", "net", "users", "server"} {
 		if _, ok := state[key]; !ok {
 			t.Fatalf("state tanpa %q: %v", key, state)
 		}
@@ -98,70 +98,6 @@ func TestWSStatePayload(t *testing.T) {
 	for _, key := range []string{"active", "tabs"} {
 		if _, ok := users[key]; !ok {
 			t.Fatalf("state.users tanpa %q: %v", key, users)
-		}
-	}
-}
-
-// Toggle transcode tersimpan di server dan ikut di state, jadi tab lain dan
-// halaman yang di-reload melihat mode yang sama.
-func TestAPITranscodeToggle(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	srv := newServer(nil, testCache(t), nil, 0)
-	r := gin.New()
-	r.POST("/api/transcode", srv.apiTranscode)
-
-	toggle := func(body string) (int, map[string]any) {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/transcode", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		r.ServeHTTP(rec, req)
-		var state map[string]any
-		_ = json.Unmarshal(rec.Body.Bytes(), &state)
-		return rec.Code, state
-	}
-
-	if code, state := toggle(`{"enabled":true}`); code != http.StatusOK || state["transcode"] != true {
-		t.Fatalf("enable = %d, transcode %v", code, state["transcode"])
-	}
-	if !srv.transcodeOn.Load() {
-		t.Fatal("mode transcode tidak tersimpan di server")
-	}
-	if code, state := toggle(`{"enabled":false}`); code != http.StatusOK || state["transcode"] != false {
-		t.Fatalf("disable = %d, transcode %v", code, state["transcode"])
-	}
-	if code, _ := toggle(`bukan json`); code != http.StatusBadRequest {
-		t.Fatalf("body rusak = %d, want 400", code)
-	}
-}
-
-// Bitrate audio pilihan UI tersimpan di server, ikut di state, dan menolak
-// nilai di luar rentang yang masuk akal untuk AAC.
-func TestAPIAudioBitrate(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	srv := newServer(nil, testCache(t), nil, 0)
-	t.Cleanup(srv.hls.Stop)
-	r := gin.New()
-	r.POST("/api/audio", srv.apiAudio)
-
-	post := func(body string) (int, map[string]any) {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/api/audio", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		r.ServeHTTP(rec, req)
-		var state map[string]any
-		_ = json.Unmarshal(rec.Body.Bytes(), &state)
-		return rec.Code, state
-	}
-
-	if code, state := post(`{"kbps":192}`); code != http.StatusOK || state["audio_kbps"] != float64(192) {
-		t.Fatalf("set 192 = %d, audio_kbps %v", code, state["audio_kbps"])
-	}
-	if got := srv.audioKbps.Load(); got != 192 {
-		t.Fatalf("bitrate audio server = %d, want 192", got)
-	}
-	for _, body := range []string{`{"kbps":8}`, `{"kbps":2000}`, `bukan json`} {
-		if code, _ := post(body); code != http.StatusBadRequest {
-			t.Fatalf("%s = %d, want 400", body, code)
 		}
 	}
 }

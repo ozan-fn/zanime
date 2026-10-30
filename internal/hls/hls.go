@@ -44,14 +44,12 @@ type Subtitle struct {
 
 // Status is a snapshot of the running session for the state JSON.
 type Status struct {
-	Index     int
-	Ready     bool
-	Live      bool // plan gagal: playlist tidak bisa disusun
-	Transcode bool // dipertahankan demi state JSON lama; mkvgo tidak meng-encode
-	AudioKbps int
-	Playlist  string
-	Subs      []Subtitle
-	Error     string
+	Index    int
+	Ready    bool
+	Live     bool // plan gagal: playlist tidak bisa disusun
+	Playlist string
+	Subs     []Subtitle
+	Error    string
 }
 
 // Job is one HLS session: the mkvgo plan plus a RAM cache of what it served.

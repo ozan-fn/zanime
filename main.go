@@ -129,8 +129,6 @@ func main() {
 	r.POST("/api/magnet", srv.apiMagnet)
 	r.POST("/api/cancel", srv.apiCancel)
 	r.POST("/api/select", srv.apiSelect)
-	r.POST("/api/transcode", srv.apiTranscode)
-	r.POST("/api/audio", srv.apiAudio)
 	r.GET("/api/addon", srv.addonProxy) // katalog/meta/streams: browser tidak menghubungi addon langsung
 	r.GET("/fetch", srv.fetchProxy)
 	r.HEAD("/fetch", srv.fetchProxy)
@@ -154,9 +152,6 @@ type server struct {
 	web     fs.FS
 	port    int // HTTP port mkvgo reads /stream from; 0 = not listening yet
 	started time.Time
-
-	transcodeOn atomic.Bool  // legacy: mkvgo tidak meng-encode, nilainya tidak berpengaruh
-	audioKbps   atomic.Int64 // bitrate AAC pilihan UI (128/192/256 kbps)
 
 	hintIndex int     // index file yang punya durasi dari API metadata
 	hintSecs  float64 // durasi dari API metadata (0 = tidak ada); hanya untuk UI
@@ -183,7 +178,6 @@ type server struct {
 func newServer(cl *torrent.Client, cache *diskcache.Client, web fs.FS, port int) *server {
 	srv := &server{cl: cl, cache: cache, hls: hls.NewManager(), web: web, port: port, selected: -1,
 		started: time.Now(), wsUsers: make(map[string]int)}
-	srv.audioKbps.Store(128)
 	return srv
 }
 
@@ -368,8 +362,6 @@ func (s *server) state() gin.H {
 		"loading":    loading,
 		"files":      list,
 		"selected":   selected,
-		"transcode":  s.transcodeOn.Load(),
-		"audio_kbps": s.audioKbps.Load(),
 		"cache": gin.H{
 			"used":      cacheUsed,
 			"limit":     s.cache.Limit(),
@@ -427,12 +419,10 @@ func (s *server) state() gin.H {
 	}
 	if st, exists := s.hls.Status(); exists {
 		hlsInfo := gin.H{
-			"index":      st.Index,
-			"ready":      st.Ready,
-			"live":       st.Live,
-			"transcode":  false,
-			"audio_kbps": s.audioKbps.Load(),
-			"playlist":   st.Playlist,
+			"index":    st.Index,
+			"ready":    st.Ready,
+			"live":     st.Live,
+			"playlist": st.Playlist,
 		}
 		if st.Error != "" {
 			hlsInfo["error"] = st.Error
@@ -664,38 +654,6 @@ func (s *server) apiSelect(c *gin.Context) {
 	s.mu.Unlock()
 	s.startHLS(req.Index)
 
-	c.JSON(http.StatusOK, s.state())
-}
-
-// apiTranscode keeps the old UI toggle working: mkvgo never transcodes, so the
-// flag is recorded and reported back but does not touch the stream.
-func (s *server) apiTranscode(c *gin.Context) {
-	var req struct {
-		Enabled bool `json:"enabled"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "body harus {\"enabled\": true|false}"})
-		return
-	}
-	s.transcodeOn.Store(req.Enabled)
-	c.JSON(http.StatusOK, s.state())
-}
-
-// apiAudio keeps the old UI bitrate field: mkvgo copies the source audio
-// unchanged, so only the reported value changes.
-func (s *server) apiAudio(c *gin.Context) {
-	var req struct {
-		Kbps int `json:"kbps"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": `body harus {"kbps": 128|192|256}`})
-		return
-	}
-	if req.Kbps < 64 || req.Kbps > 320 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "bitrate audio harus 64–320 kbps"})
-		return
-	}
-	s.audioKbps.Store(int64(req.Kbps))
 	c.JSON(http.StatusOK, s.state())
 }
 

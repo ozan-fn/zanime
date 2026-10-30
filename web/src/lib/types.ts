@@ -19,8 +19,6 @@ export type TorrentState = {
   loading?: boolean
   files?: TorrentFile[]
   selected?: number
-  transcode?: boolean
-  audio_kbps?: number
   cache?: { used?: number; limit?: number; evictions?: number; dir?: string }
   peers?: number
   name?: string

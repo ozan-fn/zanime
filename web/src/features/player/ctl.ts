@@ -31,17 +31,4 @@ export function resetPlayback() {
   }
 }
 
-export function resumeSeconds(): number {
-  return Math.max(0, Math.floor(ctl.el?.currentTime || 0))
-}
 
-// Paksa playlist yang sama dimuat ulang (password: audio-rate).
-export function invalidatePlaylist() {
-  ctl.wanted = ''
-}
-
-export function applyResume(at: number) {
-  const from = at > 1
-  ctl.resumeStartAt = from ? at : 0
-  if (from) ctl.el?.setAttribute('startat', String(at))
-}
