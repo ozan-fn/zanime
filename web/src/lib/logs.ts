@@ -24,10 +24,14 @@ function clock(): string {
 }
 
 // push menambah baris; `id` non-kosong menggantikan baris dengan id sama.
+// Baris ber-id sama yang isinya (level + teks) tidak berubah tidak disiarkan
+// ulang: UI tidak melihat apa-apa yang baru, dan pemanggil yang mencatat di
+// dalam effect React tidak bisa memicu loop render (lihat Player).
 export function push(level: Level, text: string, id = '', at = clock()): void {
   const key = id || `#${++seq}`
   const i = entries.findIndex((e) => e.id === key)
   if (i >= 0) {
+    if (entries[i].level === level && entries[i].text === text) return
     const next = entries.slice()
     next[i] = { id: key, at, level, text }
     entries = next

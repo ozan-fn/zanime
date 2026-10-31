@@ -24,6 +24,23 @@ describe('logs store', () => {
     expect(getLogs()[0]).toMatchObject({ id: 'srv:X', level: 'ok', text: 'Premium X siap diputar' })
   })
 
+  it('baris ber-id sama yang tidak berubah tidak disiarkan ulang', () => {
+    const fn = vi.fn()
+    const off = subscribeLogs(fn)
+    log.info('player siap', 'player:ready')
+    expect(fn).toHaveBeenCalledTimes(1)
+    // Pemanggil yang mencatat tiap render tidak boleh memicu render berikutnya.
+    log.info('player siap', 'player:ready')
+    log.info('player siap', 'player:ready')
+    expect(fn).toHaveBeenCalledTimes(1)
+    expect(getLogs()).toHaveLength(1)
+    // Perubahan isi tetap diteruskan.
+    log.ok('player siap', 'player:ready')
+    expect(fn).toHaveBeenCalledTimes(2)
+    expect(getLogs()[0].level).toBe('ok')
+    off()
+  })
+
   it('pushEvent menormalkan level dan mempertahankan waktu server', () => {
     pushEvent({ id: 'a', at: '12:00:00.000', level: 'ok', text: 'ok' })
     pushEvent({ level: 'ngawur', text: 'x' })

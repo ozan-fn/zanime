@@ -4,12 +4,17 @@ import { fmtDur } from '@/lib/fmt'
 import { log } from '@/lib/logs'
 import { Sq } from '@/features/text/Sq'
 import { useApp } from '@/features/app/AppProvider'
+import { LogPanel } from '@/features/log/LogPanel'
 import { ctl, resetPlayback, selectFirstSub, setPlayerSource, setPlayerSrc } from './ctl'
-import { LogOverlay } from './LogOverlay'
 
 /* Wrapper movi-player: src pasang imperatif; subtitle (track VTT dari
  * embedmaster) didaftarkan lewat API source() saat stream dipasang.
- * Stream macet (Timeout) di-retry melanjutkan posisi terakhir. */
+ * Stream macet (Timeout) di-retry melanjutkan posisi terakhir.
+ *
+ * `bindav` sengaja TIDAK di-set: defaultnya menyatukan stall audio+video, jadi
+ * saat gambar tertinggal (mis. setelah kembali dari tab lain) pemain berhenti
+ * sebentar lalu lanjut lagi bersama — bukan gambar beku yang jalan sendiri
+ * tanpa pernah pulih. Opt-out `bindav="false"` justru mematikan pemulihan itu. */
 
 // Event elemen yang dicatat ke panel log saat video dimuat (memuat manifest,
 // track, buffering, error codec). Ringkas: satu nama event = satu baris log.
@@ -100,6 +105,22 @@ export function Player() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /* Callback yang dipegang elemen harus stabil: wrapper React melepas dan
+   * memasang ulang listener tiap identitasnya berubah, dan onReady mencatat ke
+   * store log — dengan arrow inline, setiap render pemain memicu satu baris log
+   * yang memicu render lagi (loop render yang menghabiskan main thread dan
+   * membuat video membeku). useCallback memutusnya di sumbernya. */
+  const handleReady = useCallback(() => log.info('elemen player siap', 'player:ready'), [])
+  const handleQoe = useCallback(
+    (e: unknown) => log.info(`qoe · ${JSON.stringify(e).slice(0, 120)}`, 'player:qoe'),
+    [],
+  )
+  const handleErrorDisplay = useCallback(
+    (info: { title?: string | null; message?: string | null }) =>
+      log.err(`error layar · ${info.message || info.title || 'tidak diketahui'}`, 'player:errdisplay'),
+    [],
+  )
+
   // Error player: "Timeout" berarti byte tidak datang; muat ulang src lalu
   // lanjut dari posisi terakhir, bukan dari detik 0.
   const handleError = useCallback((detail?: { message?: string } | unknown) => {
@@ -142,17 +163,15 @@ export function Player() {
           thumb
           theme="dark"
           buffersize={64}
-          bindav="false"
           subtitlepicker
           showtitle
           persist="loop muted volume speed ambient stablevolume hdr aspect audiolang subtitlelang"
           persistkey="zanime"
-          onReady={() => log.info('elemen player siap', 'player:ready')}
-          onQoe={(e) => log.info(`qoe · ${JSON.stringify(e).slice(0, 120)}`, 'player:qoe')}
+          onReady={handleReady}
+          onQoe={handleQoe}
           onPlay={handlePlay}
           onError={handleError}
-          onErrorDisplay={(info) =>
-            log.err(`error layar · ${info.message || info.title || 'tidak diketahui'}`, 'player:errdisplay')}
+          onErrorDisplay={handleErrorDisplay}
         />
       ) : (
         <div className="grid aspect-video place-items-center text-sm text-zinc-600">
@@ -179,8 +198,11 @@ export function Player() {
           </span>
         </div>
       )}
-      {/* Log realtime di depan video: scrape, uji stream, pemuatan video. */}
-      <LogOverlay />
+      {/* Log realtime di depan video: pemuatan stream + video oleh player. */}
+      <LogPanel
+        className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-end p-2"
+        panelClassName="pointer-events-auto w-[min(460px,88%)] rounded border border-border"
+      />
     </div>
   )
 }

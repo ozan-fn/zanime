@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
-import { LogOverlay } from './LogOverlay'
+import { LogPanel } from './LogPanel'
 import { clearLogs, log } from '@/lib/logs'
 
 afterEach(() => {
@@ -8,12 +8,12 @@ afterEach(() => {
   clearLogs()
 })
 
-describe('LogOverlay', () => {
+describe('LogPanel', () => {
   it('menampilkan baris dengan badge status per level', () => {
     log.info('uji Premium X…', 'a')
     log.ok('Premium X siap diputar', 'a')
     log.err('Premium Y gagal', 'b')
-    render(<LogOverlay />)
+    render(<LogPanel />)
 
     // Baris ber-id sama sudah berganti jadi OK, bukan menumpuk.
     expect(screen.queryByText('uji Premium X…')).toBeNull()
@@ -25,13 +25,13 @@ describe('LogOverlay', () => {
 
   it('menampilkan info "[sedang]" untuk baris berjalan', () => {
     log.info('resolve Premium X…', 'srv:X:resolve')
-    render(<LogOverlay />)
+    render(<LogPanel />)
     expect(screen.getByText('[sedang]')).toBeTruthy()
     expect(screen.getByText('resolve Premium X…')).toBeTruthy()
   })
 
   it('kosong → pesan placeholder', () => {
-    render(<LogOverlay />)
+    render(<LogPanel />)
     expect(screen.getByText('belum ada aktivitas…')).toBeTruthy()
   })
 })

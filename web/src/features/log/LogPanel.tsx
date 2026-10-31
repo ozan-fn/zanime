@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { clearLogs, useLogs, type Level } from '@/lib/logs'
 
-/* Panel log realtime di depan player (absolute, z-30): lihat tiap tahap
- * scrape, uji stream 128 KiB, dan event pemuatan video. Satu langkah tampil
- * "[sedang…]" lalu berubah "[OK]"/"[GAGAL]" (baris ber-id sama). */
+/* Panel log realtime dari satu store (lib/logs), dipakai di dua tempat:
+ *   - dalam dialog pencarian (daftar stream di-scrape & diuji), dan
+ *   - di depan video (stream/video dimuat player).
+ * Satu langkah tampil "[sedang…]" lalu berubah "[OK]"/"[GAGAL]" (baris ber-id
+ * sama digantikan di tempat, bukan menumpuk). */
 
 const BADGE: Record<Level, { tag: string; cls: string }> = {
   info: { tag: 'sedang', cls: 'text-amber-300' },
@@ -11,7 +13,18 @@ const BADGE: Record<Level, { tag: string; cls: string }> = {
   err: { tag: 'GAGAL', cls: 'text-rose-400' },
 }
 
-export function LogOverlay() {
+export function LogPanel({
+  className = '',
+  panelClassName = 'rounded border border-border',
+  maxHeight = 'max-h-44',
+}: {
+  /** Kelas pembungkus (menentukan posisi: overlay di player / strip di dialog). */
+  className?: string
+  /** Kelas panelnya (lebar, sudut, border). */
+  panelClassName?: string
+  /** Tinggi maksimum daftar baris. */
+  maxHeight?: string
+}) {
   const entries = useLogs()
   const [open, setOpen] = useState(true)
   const boxRef = useRef<HTMLDivElement | null>(null)
@@ -23,8 +36,8 @@ export function LogOverlay() {
   }, [entries])
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-end p-2">
-      <div className="pointer-events-auto w-[min(460px,88%)] overflow-hidden rounded border border-border bg-black/85 backdrop-blur">
+    <div className={className}>
+      <div className={`overflow-hidden bg-black/85 backdrop-blur ${panelClassName}`}>
         <div className="flex items-center gap-2 border-b border-border px-2 py-1 text-[10px] text-zinc-400">
           <span className="font-semibold uppercase tracking-wide text-zinc-300">Log</span>
           <span className="text-zinc-600">{entries.length}</span>
@@ -38,7 +51,7 @@ export function LogOverlay() {
           </button>
         </div>
         {open && (
-          <div ref={boxRef} className="max-h-44 overflow-y-auto px-2 py-1 font-mono text-[10px] leading-[1.5]">
+          <div ref={boxRef} className={`${maxHeight} overflow-y-auto px-2 py-1 font-mono text-[10px] leading-[1.5]`}>
             {entries.length === 0 ? (
               <div className="py-2 text-zinc-600">belum ada aktivitas…</div>
             ) : (

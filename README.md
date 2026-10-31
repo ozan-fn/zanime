@@ -159,7 +159,7 @@ Buka `http://127.0.0.1:8080`:
 | Pilih episode | `GET /api/streams?tab=tv&id=&s=&e=` | daftar `(server, kualitas)` dari embedmaster |
 | Klik satu baris stream | `play(src)` | player memuat `/s/<slug>`; subtitle stream itu didaftarkan otomatis |
 | Subtitle | — | track didaftarkan lewat API MoviPlayer (`source({video, subtitles})`), track pertama langsung aktif |
-| Panel **Log** | `ws /api/logs` | log realtime (scrape, uji 128 KiB, pemuatan video) tampil sebagai overlay di depan player |
+| Panel **Log** | `ws /api/logs` | log realtime (scrape + uji 128 KiB saat daftar stream dimuat, pemuatan video) tampil di dalam dialog dan di depan player |
 
 Player: [MoviPlayer](https://moviplayer.com) (`movi-player`) merender lewat
 canvas + WASM demuxer-nya sendiri. Karena itu subtitle **tidak** dipasang
@@ -173,10 +173,17 @@ CDN subtitle (scrapemaster) mengirim `MM:SS.mmm` — track ter-fetch 200 OK tapi
 0 cue, sehingga tidak ada subtitle tampil. Proxy karena itu menormalkan
 timestamp tiap baris cue (`normalizeVTT`) sebelum body diteruskan.
 
+Atribut pemain sengaja minimal: `bindav` dibiarkan default (menyatu), supaya
+stall audio+video berhenti bersama lalu lanjut bersama — opt-out
+`bindav="false"` membuat gambar beku jalan sendiri tanpa pemulihan, terutama
+setelah pindah tab/window dan kembali.
+
 ## Log realtime
 
-Panel log di depan player menampilkan jalannya scrape dan pemuatan video.
-Semuanya satu arah (server → browser) lewat websocket:
+Panel log realtime menampilkan jalannya scrape dan pemuatan video, di dua
+tempat dari satu store yang sama: **di dalam dialog pencarian** (saat daftar
+stream di-scrape & diuji 128 KiB) dan **di depan video** (saat stream/video
+dimuat player). Semuanya satu arah (server → browser) lewat websocket:
 
 - `internal/logbus` = `Hub` fan-out: tiap baris (`{id,at,level,text}`)
   disiarkan non-blocking ke semua klien; klien yang lambat dilewati, bukan
@@ -189,6 +196,15 @@ Semuanya satu arah (server → browser) lewat websocket:
 - Sisi browser (`web/src/lib/logs.ts`) menerima lewat `ws /api/logs` dan
   menambah baris lokal dari player (event media: `loadstart`, `canplay`,
   `qualitychange`, `waiting`, `error`, …). Ring buffer 400 baris.
+
+Menulis ke log dari dalam render/effect React berbahaya: pemain berlangganan
+store itu, jadi satu baris baru memicu render, yang mencatat baris lagi —
+React berhenti dengan "Maximum update depth exceeded" dan main thread habis
+(video terlihat membeku). Dua penjaga: `push` tidak menyiarkan ulang baris
+ber-`id` sama yang isinya tidak berubah, dan callback pemain
+(`onReady`/`onQoe`/`onErrorDisplay`) di-memo dengan `useCallback` supaya wrapper
+React tidak memasang ulang listener tiap render. Test regresinya
+`web/src/lib/logs.loop.test.tsx`.
 
 ## Endpoint
 
@@ -254,7 +270,7 @@ Cakupan sekarang:
 | `internal/logbus` | fan-out ke banyak pelanggan, replay riwayat, cancel idempoten, pelanggan lambat tidak memblok, batas riwayat |
 | `internal/resolve` | register/load/idempoten, kolisi, hint kotor, guard `Load`, persist antar-pool, file rusak, prune + jadwal tidy, ekstensi media pada slug |
 | `main` | kontrak `/api/search` & `/api/meta` (ok/400), `/api/streams` → slug, `streamProxy` (rewrite playlist master+child, `URI=` tag, `Referer`, HEAD tanpa body, 404, 502, baris log), websocket `/api/logs` (riwayat + live), SPA fallback |
-| `web` (vitest) | dialog pencarian (hasil, movie→stream per kualitas, tv→episode→streams, error), provider play/stop/status, `setPlayerSource`/`selectFirstSub`, store log (`push`/id sama/ring buffer), panel `LogOverlay` |
+| `web` (vitest) | dialog pencarian (hasil, movie→stream per kualitas, tv→episode→streams, error), provider play/stop/status, `setPlayerSource`/`selectFirstSub`, store log (`push`/id sama/ring buffer/anti-loop render), panel `LogPanel` |
 
 Live test (jaringan sungguhan, ~10 s):
 

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Search, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { log } from '@/lib/logs'
+import { LogPanel } from '@/features/log/LogPanel'
 import { Sq } from '@/features/text/Sq'
 import { useApp } from '@/features/app/AppProvider'
 import type { Episode, Item, Meta, Server, Sub } from '@/lib/types'
@@ -271,6 +272,13 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
               </div>
             ) : <Empty>Streams kosong.</Empty>}
         </div>
+
+        {/* Log realtime tahap scrape + uji stream (server → websocket). */}
+        <LogPanel
+          className="shrink-0 border-t border-border"
+          panelClassName="w-full"
+          maxHeight="max-h-28"
+        />
       </div>
     </div>
   )

@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppProvider } from '@/features/app/AppProvider'
+import { clearLogs } from '@/lib/logs'
 import { SearchDialog } from './SearchDialog'
 import type { Item, Meta, Server } from '@/lib/types'
 
@@ -58,6 +59,7 @@ function stubFetch(search: Item[], metaJSON: Meta = meta(), servers: Server[] = 
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  clearLogs()
 })
 
 describe('SearchDialog', () => {
