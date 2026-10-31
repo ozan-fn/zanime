@@ -1,198 +1,214 @@
 package em
 
 import (
-	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
-	"time"
 )
 
-// argvOf menyusun argv pipeline persis seperti Streams() melakukannya.
-func argvOf(id string, tv *TVEpisode) []string {
-	argv := []string{"-e", bunFreshScript}
-	if tv != nil {
-		argv = append(argv, id, "tv", fmt.Sprintf("%d-%d", tv.Season, tv.Episode))
-	} else {
-		argv = append(argv, id)
-	}
-	return argv
-}
+const testPK = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 
-// TestStreamsParsesRows: output pipeline (baris JSON per server + baris
-// done) di-parse jadi daftar Server; server tanpa data diberi Err, yang
-// bisa diputar menulis kamus type hls/mp4 dan qual/subs.
-func TestStreamsParsesRows(t *testing.T) {
-	t.Chdir(t.TempDir())
-	rows := []string{
-		`{"server":"Premium WMovies","data":{"ok":true,"kind":"direct","url":"https://h/a.mp4","type":"progressive","quality":"FULL HD","qualities":[{"label":"480p","url":"https://h/480.mp4"}],"subtitles":[{"label":"Indonesia","lang":"id","url":"https://sub/id.vtt"}]}}`,
-		`{"server":"Premium Nepu","data":{"ok":true,"url":"https://h/b.m3u8","type":"hls","quality":"1080p"}}`,
-		`{"server":"Premium VidStore","data":null,"err":"badge atob"}`,
-		`{"done":true,"resolved":2,"total":3,"meta":{}}`,
-	}
-	called := false
-	c := New()
-	c.Run = func(_ context.Context, argv []string) ([]byte, string, error) {
-		called = true
-		want := argvOf("557", nil)
-		if fmt.Sprint(argv) != fmt.Sprint(want) {
-			t.Fatalf("argv = %v, want %v", argv, want)
-		}
-		return []byte(strings.Join(rows, "\n")), "", nil
-	}
-
-	servers, err := c.Streams(context.Background(), "movie", "557", nil)
+// credScript membalik obfuscation skrip kredensial halaman player:
+// payload JSON → XOR (base + key[i%len] + i) → base64 → skrip.
+func credScript(t *testing.T, cfg credCfg) string {
+	t.Helper()
+	buf, err := json.Marshal(cfg)
 	if err != nil {
-		t.Fatalf("Streams: %v", err)
+		t.Fatal(err)
 	}
-	if !called {
-		t.Fatal("pipeline tidak dikenakan hit")
+	payload := "window.__EM_PLAYER__ = " + string(buf) + ";"
+	key := []int{7, 200, 13, 99, 4, 255, 61, 3}
+	raw := make([]byte, len(payload))
+	for i := range payload {
+		raw[i] = payload[i] ^ byte((59+key[i%len(key)]+i)&0xff)
 	}
-	if len(servers) != 3 {
-		t.Fatalf("malah %d server rewrite: %d", len(servers), len(servers))
+	parts := make([]string, len(key))
+	for i, k := range key {
+		parts[i] = strconv.Itoa(k)
 	}
-	if servers[0].Type != "mp4" || servers[0].URL != "https://h/a.mp4" {
-		t.Fatalf("server 0 salah: %+v", servers[0])
-	}
-	if len(servers[0].Qualities) != 1 || servers[0].Qualities[0].Label != "480p" {
-		t.Fatalf("qualities salah: %+v", servers[0].Qualities)
-	}
-	if len(servers[0].Subs) != 1 || servers[0].Subs[0].Lang != "id" {
-		t.Fatalf("subs salah: %+v", servers[0].Subs)
-	}
-	if servers[1].Type != "hls" {
-		t.Fatalf("server 1 type %q, want hls", servers[1].Type)
-	}
-	if servers[2].Err == "" || servers[2].URL != "" {
-		t.Fatalf("server 2 harus gagal: %+v", servers[2])
-	}
+	return `<script>var _a="` + base64.StdEncoding.EncodeToString(raw) +
+		`",_b=[` + strings.Join(parts, ",") + `],_c=59;(0,eval)(decodeURIComponent(escape(atob(_a))));</script>`
 }
 
-// TestStreamsTVArgs: untuk tv, season-episode dipeg di argv.
-func TestStreamsTVArgs(t *testing.T) {
-	t.Chdir(t.TempDir())
-	var got []string
-	c := New()
-	c.Run = func(_ context.Context, argv []string) ([]byte, string, error) {
-		got = argv
-		return []byte(`{"server":"A","data":{"ok":true,"url":"https://h/a.mp4","type":"progressive"}}` + "\n" +
-			`{"done":true,"resolved":1,"total":1,"meta":{}}` + "\n"), "", nil
-	}
-	if _, err := c.Streams(context.Background(), "tv", "283938", &TVEpisode{Season: 1, Episode: 4}); err != nil {
-		t.Fatalf("Streams: %v", err)
-	}
-	if !strings.Contains(fmt.Sprint(got), "tv") || !strings.Contains(fmt.Sprint(got), "1-4") {
-		t.Fatalf("argv tv salah: %v", got)
-	}
-}
-
-// TestStreamsErrorFromFatal: bun kelainan -> pesan error memuat FATAL dari
-// stderr, error relacionarsi 500-able (BadGateway) via prefix pipeline scrape.
-func TestStreamsErrorFromFatal(t *testing.T) {
-	t.Chdir(t.TempDir())
-	c := New()
-	c.Run = func(context.Context, []string) ([]byte, string, error) {
-		return nil, "FATAL no obfuscated credential script", errors.New("exit status 1")
-	}
-	_, err := c.Streams(context.Background(), "movie", "1434581", nil)
-	if err == nil {
-		t.Fatal("harus gagal")
-	}
-	if !strings.Contains(err.Error(), "no obfuscated credential script") {
-		t.Fatalf("pesan error tidak membawa FATAL: %v", err)
-	}
-}
-
-// TestStreamsAllServersDead: belum ada satu server pun yang mencapai play
-// URL -> error, dan hasilnya tidak di-cache.
-func TestStreamsAllServersDead(t *testing.T) {
-	t.Chdir(t.TempDir())
-	c := New()
-	c.Run = func(context.Context, []string) ([]byte, string, error) {
-		return []byte(`{"server":"A","data":null,"err":"x"}` + "\n"), "", nil
-	}
-	if _, err := c.Streams(context.Background(), "movie", "557", nil); err == nil || !strings.Contains(err.Error(), "tidak ada server yang bisa diputar") {
-		t.Fatalf("error salah: %v", err)
-	}
-	if _, ok := readCache("movie-557"); ok {
-		t.Fatal("cache diisi padahal gagal")
-	}
-}
-
-// TestStreamsCacheRoundtrip: cache diisi bridge trip, expire (TTL) di-stok
-// lewat waktu "time.Past", dan lain-lain bila ttl lewat + TTL panjang.
-func TestStreamsCacheRoundtrip(t *testing.T) {
-	t.Chdir(t.TempDir())
-	want := []Server{{Name: "A", Type: "mp4", URL: "https://h/a.mp4"}}
-	id := New()
-	id.Run = func(context.Context, []string) ([]byte, string, error) { return nil, "", errors.New("boot") }
-
-	key := "movie-557"
-	writeCache(key, want)
-	got, ok := readCache(key)
-	if !ok || len(got) != 1 || got[0].Name != "A" {
-		t.Fatalf("cache baca salah: ok=%v %+v", ok, got)
-	}
-
-	// Expire: mundurkan mtime lewat cacheTTL, alias tidak fresh.
-	path := cachePath(key)
-	future := time.Now().Add(-cacheTTL - time.Minute)
-	if err := os.Chtimes(path, future, future); err != nil {
-		t.Fatalf("Chtimes: %v", err)
-	}
-	if _, ok := readCache(key); ok {
-		t.Fatal("cache matakan tidak expire")
-	}
-}
-
-// TestStreamsContextCanceled: ctx selesai -> langsung balik, tanpa run
-// pipeline.
-func TestStreamsContextCanceled(t *testing.T) {
-	t.Chdir(t.TempDir())
-	c := New()
-	c.Run = func(context.Context, []string) ([]byte, string, error) {
-		t.Fatal("pipeline tidak boleh jalan saat ctx sudah dead")
-		return nil, "", nil
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := c.Streams(ctx, "movie", "557", nil); !errors.Is(err, context.Canceled) {
-		t.Fatalf("error = %v, want context.Canceled", err)
-	}
-}
-
-// TestCacheJSONDecodable round-trip hanya via pkg json yang putih: kecocokan
-// struct -> file -> struct persis.
-func TestCacheJSONDecodable(t *testing.T) {
-	t.Chdir(t.TempDir())
-	want := []Server{{Name: "B", Type: "hls", Quality: "1080p",
-		Qualities: []Quality{{Label: "480p", URL: "u"}}, Subs: []Sub{{Lang: "id", URL: "v"}}}}
-	writeCache("t/1", want)
-	raw, err := os.ReadFile(cachePath("t/1"))
+// encrypt membalik decrypt: keystream SHA256(key‖nonce‖counter) di-XOR ke
+// plaintext, hasilnya nonce16‖ct dalam base64url.
+func encrypt(plain, pk string) (string, error) {
+	key, err := hex.DecodeString(pk)
 	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
+		return "", err
 	}
-	var got []Server
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("Unmarshal: %v (%s)", err, raw)
-	}
-	if got[0].Subs[0].Lang != "id" || got[0].Qualities[0].URL != "u" {
-		t.Fatalf("field salah: %+v", got)
-	}
-	if want := filepath.Join(cacheDir); !strings.HasPrefix(cachePath("t/1"), want) {
-		t.Fatalf("cache lewat dir: %s", cachePath("t/1"))
-	}
-}
-
-// TestTypeOf: pemetaan tipe follower klien.
-func TestTypeOf(t *testing.T) {
-	for got, want := range map[string]string{"hls": "hls", "m3u8": "hls", "progressive": "mp4", "": "mp4"} {
-		if have := typeOf(got); have != want {
-			t.Fatalf("typeOf(%q) = %q, want %q", got, have, want)
+	nonce := []byte("0123456789abcdef")
+	out := make([]byte, len(plain))
+	for i := 0; i*32 < len(plain); i++ {
+		var ctr [4]byte
+		ctr[0], ctr[1], ctr[2], ctr[3] = byte(i>>24), byte(i>>16), byte(i>>8), byte(i)
+		h := sha256.New()
+		h.Write(key)
+		h.Write(nonce)
+		h.Write(ctr[:])
+		block := h.Sum(nil)
+		for j := 0; j < 32 && i*32+j < len(plain); j++ {
+			out[i*32+j] = plain[i*32+j] ^ block[j]
 		}
 	}
+	return base64.RawURLEncoding.EncodeToString(append(append([]byte{}, nonce...), out...)), nil
 }
+
+// site meniru embedmaster: gerbang welcome, halaman player ber-kredensial,
+// feed NDJSON, dan resolve.php terenkripsi.
+type site struct {
+	mu       sync.Mutex
+	gateHits int
+	posts    int
+	feedHits int
+	resolves []string
+	headers  http.Header
+	episodes string // diisi test: daftar episode untuk halaman tv
+	plain    func(src string) (string, bool)
+	feeds    []feedRow
+	srv      *httptest.Server
+
+	// Rendezvous untuk test paralelisme: resolve masuk menandai `entered`
+	// lalu menunggu `release` ditutup (kalau keduanya non-nil).
+	entered     chan struct{}
+	release     chan struct{}
+	inFlight    int
+	maxInFlight int
+}
+
+func newSite(t *testing.T) *site {
+	t.Helper()
+	s := &site{feeds: []feedRow{{Type: "server", SourceName: "Premium A", SourceURL: "https://src/a"}}}
+	s.plain = func(string) (string, bool) { return "", false }
+	mux := http.NewServeMux()
+	mux.HandleFunc("/feed", func(w http.ResponseWriter, _ *http.Request) {
+		s.mu.Lock()
+		s.feedHits++
+		rows := append([]feedRow{}, s.feeds...)
+		s.mu.Unlock()
+		for _, row := range rows {
+			b, _ := json.Marshal(row)
+			_, _ = w.Write(append(b, '\n'))
+		}
+	})
+	mux.HandleFunc("/resolve.php", func(w http.ResponseWriter, r *http.Request) {
+		src := strings.TrimPrefix(r.URL.RawQuery, "src=")
+		s.mu.Lock()
+		s.resolves = append(s.resolves, src)
+		s.headers = r.Header.Clone()
+		s.inFlight++
+		if s.inFlight > s.maxInFlight {
+			s.maxInFlight = s.inFlight
+		}
+		entered, release := s.entered, s.release
+		s.mu.Unlock()
+		defer func() { s.mu.Lock(); s.inFlight--; s.mu.Unlock() }()
+		if entered != nil {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			if release != nil {
+				<-release
+			}
+		}
+		plain, ok := s.plain(src)
+		if !ok {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		blob, err := encrypt(plain, testPK)
+		if err != nil {
+			t.Errorf("encrypt: %v", err)
+		}
+		_, _ = w.Write([]byte(blob))
+	})
+	// Halaman episode terpilih (dilakukan setelah tv memilih episode).
+	mux.HandleFunc("/play/", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.gateHits++
+		s.mu.Unlock()
+		_, _ = w.Write([]byte(s.playerHTML(t, false)))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		isTV := strings.HasPrefix(r.URL.Path, "/tv/")
+		// Gerbang: tanpa cookie → halaman welcome (tanpa kredensial).
+		if _, err := r.Cookie("g"); err != nil {
+			s.mu.Lock()
+			s.gateHits++
+			s.mu.Unlock()
+			http.SetCookie(w, &http.Cookie{Name: "g", Value: "1", Path: "/"})
+			_, _ = w.Write([]byte("<html>welcome gate v2/assets</html>"))
+			return
+		}
+		if r.Method == http.MethodPost {
+			s.mu.Lock()
+			s.posts++
+			s.mu.Unlock()
+			if r.FormValue("tr") == "" {
+				t.Errorf("POST gerbang tanpa tr=: %v", r.Form)
+			}
+			if r.Header.Get("Origin") == "" {
+				t.Errorf("POST gerbang tanpa Origin")
+			}
+		}
+		_, _ = w.Write([]byte(s.playerHTML(t, isTV)))
+	})
+	s.srv = httptest.NewServer(mux)
+	t.Cleanup(s.srv.Close)
+	return s
+}
+
+// playerHTML: halaman player lengkap (kredensial + opsional daftar episode).
+func (s *site) playerHTML(t *testing.T, withEpisodes bool) string {
+	t.Helper()
+	eps := ""
+	if withEpisodes {
+		eps = s.episodes
+	}
+	return `<html>v2/assets` + eps + credScript(t, credCfg{
+		Ticket:      "ticket-abc",
+		PK:          testPK,
+		ScrapeToken: "-tok",
+		FeedURL:     "/feed?",
+		ResolveURL:  "/resolve.php",
+	}) + `</html>`
+}
+
+// episodesJSON menyusun __EM_EPISODES__ dengan dua episode di server palsu.
+func (s *site) episodesJSON() string {
+	return `<script>window.__EM_EPISODES__ = {"showTitle":"Frieren","seasons":[{"season":1,` +
+		`"episodes":[{"episode":1,"title":"End","url":"` + s.srv.URL + `/play/1/1"},` +
+		`{"episode":2,"title":"Magic","url":"` + s.srv.URL + `/play/1/2"}]}]};</script>`
+}
+
+func newClient(s *site) *Client {
+	c := New()
+	c.Base = s.srv.URL
+	return c
+}
+
+func (s *site) counts() (gate, posts, feed int, resolves []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gateHits, s.posts, s.feedHits, append([]string{}, s.resolves...)
+}
+
+// setFeeds mengganti baris feed yang disajikan server palsu.
+func (s *site) setFeeds(rows ...feedRow) {
+	s.mu.Lock()
+	s.feeds = rows
+	s.mu.Unlock()
+}
+
+// b64 dan base64Raw dipakai test untuk membangun/memeriksa blob.
+func b64(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
+
+func base64Raw(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }

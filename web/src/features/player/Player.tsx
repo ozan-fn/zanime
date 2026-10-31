@@ -3,7 +3,7 @@ import { MoviPlayer, type MoviElement } from 'movi-player/react'
 import { fmtDur } from '@/lib/fmt'
 import { Sq } from '@/features/text/Sq'
 import { useApp } from '@/features/app/AppProvider'
-import { ctl, resetPlayback, setPlayerSrc } from './ctl'
+import { attachSubs, ctl, resetPlayback, setPlayerSrc } from './ctl'
 
 /* Wrapper movi-player: src pasang imperatif; subtitle (track VTT dari
  * embedmaster) didaftarkan ke elemen saat stream terpilih punya subs.
@@ -28,19 +28,18 @@ export function Player() {
     setPlayerSrc(el as any as HTMLElement, current)
     void el.load?.()
 
-    // Track subtitle: VTT di-proxy agar tidak ditolak CORS host video.
-    const video = el.querySelector?.('video') as HTMLVideoElement | null
-    if (video) {
-      video.querySelectorAll('track[data-em]').forEach((t) => t.remove())
-      for (const [i, s] of (playing?.subs || []).entries()) {
-        const tr = document.createElement('track')
-        tr.setAttribute('data-em', String(i))
-        tr.kind = 'subtitles'
-        tr.label = s.label || s.lang
-        tr.srclang = s.lang
-        tr.src = `/fetch?url=${encodeURIComponent(s.url)}`
-        video.appendChild(tr)
-      }
+    // Track subtitle: didaftarkan lewat API player (bukan <track> anak).
+    // `el.player` baru ada setelah loadeddata → tunggu sebentar (maks ~6 s).
+    const subs = playing?.subs || []
+    let timer: number | undefined
+    let tries = 0
+    const mountSubs = () => {
+      if (attachSubs(ref.current, subs) || ++tries > 24) return
+      timer = window.setTimeout(mountSubs, 250)
+    }
+    if (subs.length) mountSubs()
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, playing])

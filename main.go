@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 
 	"zanime/internal/config"
 	"zanime/internal/em"
+	"zanime/internal/resolve"
 	"zanime/internal/tmdb"
 )
 
@@ -28,10 +30,22 @@ var webFiles embed.FS
 
 // proxyClient streams remote media through RAM — no overall timeout, playback
 // lasts as long as the player keeps reading.
+//
+// Transport di-tune untuk segmen HLS yang banyak dan sering paralel: HTTP/2
+// diaktifkan (DialContext kustom mematikannya kalau ForceAttemptHTTP2 tidak
+// diset) supaya banyak segmen di-multiplex lewat satu koneksi, dan batas idle
+// per host dinaikkan supaya tidak membuka TLS handshake baru tiap segmen.
 var proxyClient = &http.Client{
 	Transport: &http.Transport{
-		DialContext:         (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		Proxy:               http.ProxyFromEnvironment,
+		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:   true,
+		MaxIdleConns:        256,
+		MaxIdleConnsPerHost: 64,
+		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
+		// Media tidak perlu dikompresi; hindari negosiasi gzip di jalur panas.
+		DisableCompression: true,
 	},
 }
 
@@ -47,7 +61,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("embedded web files: %v", err)
 	}
-	srv := &server{web: webRoot, tmdb: tmdb.New(), em: em.New()}
+	res := resolve.New()
+	res.Tidy() // buang slug lama warisan run sebelumnya (./tmp/resolve rapi)
+	srv := &server{web: webRoot, tmdb: tmdb.New(), em: em.New(), res: res}
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -63,8 +79,8 @@ func main() {
 	r.GET("/api/search", srv.apiSearch)
 	r.GET("/api/meta/:tab/:id", srv.apiMeta)
 	r.GET("/api/streams", srv.apiStreams)
-	r.GET("/fetch", srv.fetchProxy)
-	r.HEAD("/fetch", srv.fetchProxy)
+	r.GET("/s/:slug", srv.streamProxy)
+	r.HEAD("/s/:slug", srv.streamProxy)
 
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
@@ -76,10 +92,16 @@ func main() {
 	}
 }
 
+// streamer adalah irisan em.Client yang dipakai server (mudah di-stub test).
+type streamer interface {
+	Streams(ctx context.Context, tab, id string, tv *em.TVEpisode) ([]em.Server, error)
+}
+
 type server struct {
 	web  fs.FS
 	tmdb *tmdb.Client
-	em   *em.Client
+	em   streamer
+	res  *resolve.Pool
 }
 
 // SPA fallback: path GET yang tak dikenal dapat index.html (React Router
@@ -87,7 +109,7 @@ type server struct {
 // itu tetap JSON 404 supaya error di sisi client mudah dibedakan.
 func (s *server) spaFallback(c *gin.Context) {
 	p := c.Request.URL.Path
-	if strings.Contains(p, "/api/") || strings.Contains(p, "/fetch") {
+	if strings.Contains(p, "/api/") || p == "/healthz" || strings.HasPrefix(p, "/s/") {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
@@ -162,7 +184,7 @@ func (s *server) apiMeta(c *gin.Context) {
 }
 
 // apiStreams: daftar stream hasil scraping embedmaster untuk satu TMDB id
-// (movie) atau satu episode tv. Semua fetch/dekripsi terjadi di dalam bun.
+// (movie) atau satu episode tv. Fetch/dekripsi terjadi di Go (internal/em).
 func (s *server) apiStreams(c *gin.Context) {
 	tab := c.Query("tab")
 	id := strings.TrimSpace(c.Query("id"))
@@ -185,6 +207,27 @@ func (s *server) apiStreams(c *gin.Context) {
 		s.fail(c, err)
 		return
 	}
+	// Semua URL didaftarkan ke pool slug; player/subtitle hanya melihat
+	// /s/<slug> pendek, tidak ada URL ter-encode panjang di network tab.
+	for i := range res {
+		srv := &res[i]
+		hint := strings.ToLower(srv.Name)
+		if srv.URL != "" {
+			srv.URL = "/s/" + s.res.Register(srv.URL, hint)
+		}
+		for j := range srv.Qualities {
+			q := &srv.Qualities[j]
+			if q.URL != "" {
+				q.URL = "/s/" + s.res.Register(q.URL, hint+"-"+q.Label)
+			}
+		}
+		for j := range srv.Subs {
+			sb := &srv.Subs[j]
+			if sb.URL != "" {
+				sb.URL = "/s/" + s.res.Register(sb.URL, hint+"-sub-"+sb.Lang)
+			}
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"id": id, "tab": tab, "servers": res})
 }
 
@@ -196,15 +239,20 @@ func (s *server) fail(c *gin.Context, err error) {
 	c.JSON(status, gin.H{"error": err.Error()})
 }
 
-// fetchProxy menyalurkan satu URL media lewat RAM (tanpa disk), tetap
-// meneruskan Range supaya player bisa seek. Playlist teks (m3u8) ditulis
-// ulang: setiap URI (playlist turun / segmen / URI= di tag) dibungkus
-// /fetch?url=<abs>, karena player tidak bisa meminta playlist turunan
-// langsung ke host video tanpa Referer.
-func (s *server) fetchProxy(c *gin.Context) {
-	target, err := url.Parse(c.Query("url"))
+// streamProxy menyalurkan satu URL media terdaftar lewat RAM (tanpa disk),
+// tetap meneruskan Range supaya player bisa seek. Playlist teks (m3u8)
+// ditulis ulang: setiap URI (playlist turun / segmen / URI= di tag)
+// didaftarkan jadi slug /s/<slug>, karena player tidak bisa meminta
+// playlist turunan langsung ke host video tanpa Referer.
+func (s *server) streamProxy(c *gin.Context) {
+	raw, ok := s.res.Load(c.Param("slug"))
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "slug tidak ada"})
+		return
+	}
+	target, err := url.Parse(raw)
 	if err != nil || (target.Scheme != "http" && target.Scheme != "https") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "URL tidak valid"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "slug tidak ada"})
 		return
 	}
 
@@ -238,8 +286,28 @@ func (s *server) fetchProxy(c *gin.Context) {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
-		c.Header("Cache-Control", "no-store")
-		c.Data(http.StatusOK, "application/vnd.apple.mpegurl", []byte(rewritePlaylist(target, string(body))))
+		// VOD (ada #EXT-X-ENDLIST) tidak berubah → biarkan browser meng-cache;
+		// playlist live tetap no-store. Master playlist bisa 1+ MB, jadi
+		// meng-cache menghindari fetch ulang besar tiap player membacanya.
+		if strings.Contains(string(body), "#EXT-X-ENDLIST") {
+			c.Header("Cache-Control", "public, max-age=600")
+		} else {
+			c.Header("Cache-Control", "no-store")
+		}
+		c.Data(http.StatusOK, "application/vnd.apple.mpegurl", []byte(s.rewritePlaylist(target, string(body))))
+		return
+	}
+
+	// Subtitle: parser movi-player hanya mengenali timestamp HH:MM:SS.mmm,
+	// padahal banyak CDN subtitle mengirim MM:SS.mmm (atau jam satu digit),
+	// sehingga track kosong (0 cue) walau URL-nya sehat. Normalisasi di sini.
+	if isSubtitle(res.Header.Get("Content-Type"), target.Path) {
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.Data(http.StatusOK, "text/vtt; charset=utf-8", []byte(normalizeVTT(string(body))))
 		return
 	}
 
@@ -258,10 +326,64 @@ func isPlaylist(ct, p string) bool {
 	return strings.Contains(ct, "mpegurl") || strings.HasSuffix(p, ".m3u8")
 }
 
-// rewritePlaylist menulis ulang satu playlist m3u8 ke /fetch. Baris yang bukan
-// komentar dan bukan tag (#) adalah URI; URI=\"...\" di dalam tag
+// isSubtitle: track teks VTT/SRT (host subtitle mengirim text/vtt, kadang
+// extension .vtt/.srt tanpa content-type yang jelas).
+func isSubtitle(ct, p string) bool {
+	ct = strings.ToLower(ct)
+	return strings.Contains(ct, "text/vtt") || strings.Contains(ct, "/vtt") ||
+		strings.Contains(ct, "x-subrip") || strings.Contains(ct, "/srt") ||
+		strings.HasSuffix(p, ".vtt") || strings.HasSuffix(p, ".srt")
+}
+
+var (
+	// Timestamp berjam (jam boleh satu digit): 1:23:45.000.
+	vttFullTS = regexp.MustCompile(`(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})`)
+	// Timestamp tanpa jam: 01:18.579; awalan wajib bukan digit/kolon supaya
+	// ekor timestamp berjam tidak ikut tertangkap.
+	vttShortTS = regexp.MustCompile(`(^|[^\d:])(\d{1,2}):(\d{2})[.,](\d{1,3})`)
+)
+
+// normalizeVTT memaksa semua timestamp pada baris cue jadi HH:MM:SS.mmm —
+// bentuk yang dikenali parser movi-player. Baris non-cue dibiarkan apa adanya.
+func normalizeVTT(body string) string {
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if !strings.Contains(line, "-->") {
+			continue
+		}
+		line = vttFullTS.ReplaceAllStringFunc(line, func(m string) string {
+			g := vttFullTS.FindStringSubmatch(m)
+			return pad2(g[1]) + ":" + g[2] + ":" + g[3] + "." + padMillis(g[4])
+		})
+		line = vttShortTS.ReplaceAllStringFunc(line, func(m string) string {
+			g := vttShortTS.FindStringSubmatch(m)
+			return g[1] + "00:" + pad2(g[2]) + ":" + g[3] + "." + padMillis(g[4])
+		})
+		lines[i] = line
+	}
+	return strings.Join(lines, "\n")
+}
+
+func pad2(s string) string {
+	if len(s) == 1 {
+		return "0" + s
+	}
+	return s
+}
+
+// padMillis memadankan milidetik ke 3 digit dari kanan: ".5" = 500 ms (bukan
+// 5 ms), karena itu pecahan detik.
+func padMillis(s string) string {
+	for len(s) < 3 {
+		s += "0"
+	}
+	return s
+}
+
+// rewritePlaylist menulis ulang satu playlist m3u8 ke slug pool. Baris yang
+// bukan komentar dan bukan tag (#) adalah URI; URI=\"...\" di dalam tag
 // (#EXT-X-KEY, #EXT-X-MEDIA) juga ditulis ulang.
-func rewritePlaylist(base *url.URL, body string) string {
+func (s *server) rewritePlaylist(base *url.URL, body string) string {
 	lines := strings.Split(body, "\n")
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -270,12 +392,12 @@ func rewritePlaylist(base *url.URL, body string) string {
 				rest := trimmed[idx+len("URI=\""):]
 				if end := strings.Index(rest, "\""); end > 0 {
 					abs := resolveRef(base, rest[:end])
-					lines[i] = trimmed[:idx] + "URI=\"" + "/fetch?url=" + url.QueryEscape(abs) + "\"" + rest[end+1:]
+					lines[i] = trimmed[:idx] + "URI=\"" + "/s/" + s.res.RegisterTemp(abs) + "\"" + rest[end+1:]
 				}
 			}
 			continue
 		}
-		lines[i] = "/fetch?url=" + url.QueryEscape(resolveRef(base, trimmed))
+		lines[i] = "/s/" + s.res.RegisterTemp(resolveRef(base, trimmed))
 	}
 	return strings.Join(lines, "\n")
 }

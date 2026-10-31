@@ -1,16 +1,16 @@
 import { useState } from 'react'
 import { Search, X } from 'lucide-react'
-import { api, proxied } from '@/lib/api'
+import { api } from '@/lib/api'
 import { Sq } from '@/features/text/Sq'
 import { useApp } from '@/features/app/AppProvider'
-import type { Episode, Item, Meta, Server } from '@/lib/types'
+import type { Episode, Item, Meta, Server, Sub } from '@/lib/types'
 
 /* Dialog pencarian: semuanya lewat backend.
  *   - Tab Movie / TV menentukan tipe katalog.
  *   - Series: chip S0..S5 lalu daftar episode; movie langsung ke streams.
  *   - Streams: satu baris per (server, kualitas) hasil scraping embedmaster.
- *     Klik = putar lewat proxy /fetch (host video tidak menerima koneksi
- *     langsung tanpa Referer mereka). */
+ *     Klik = putar lewat slug /s/<slug> milik backend (media + m3u8 + subtitle
+ *     semua di-proxy server, host video butuh Referer mereka). */
 
 type Tab = 'movie' | 'tv'
 type View = 'results' | 'episodes' | 'streams'
@@ -20,7 +20,7 @@ type StreamRow = {
   name: string
   type: string
   quality: string
-  subs: number
+  subs: Sub[]
   url: string
   title: string
 }
@@ -34,7 +34,10 @@ const flt = (servers: Server[]): StreamRow[] =>
   servers.flatMap((s) => {
     if (s.err || !s.url) return []
   const mk = (url: string, q: string): StreamRow => ({
-    name: s.name, type: s.type, quality: q, subs: s.subs?.length || 0, url, title: s.name,
+    name: s.name, type: s.type, quality: q,
+    // URL subtitle sudah slug /s/… dari backend.
+    subs: (s.subs || []).map((x) => ({ label: x.label, lang: x.lang, url: x.url })),
+    url, title: s.name,
   })
   return s.qualities && s.qualities.length
     ? s.qualities.map((q) => mk(q.url, q.label))
@@ -91,7 +94,7 @@ function StreamRowView({ s, onPick }: { s: StreamRow; onPick: () => void }) {
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11px]">
         <span className="font-medium text-zinc-300">{s.name}</span>
         <span className="font-medium text-zinc-100">{s.quality || s.type.toUpperCase()}</span>
-        {s.subs > 0 && <span className="text-zinc-500">{s.subs} subtitle</span>}
+        {s.subs.length > 0 && <span className="text-zinc-500">{s.subs.length} subtitle</span>}
       </div>
       <p className="mt-1 text-[12px] tracking-wide text-zinc-500">{s.type === 'hls' ? 'HLS' : 'MP4'} · klik untuk putar</p>
     </button>
@@ -166,9 +169,11 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
 
   function pickStream(s: StreamRow) {
     play({
-      src: proxied(s.url),
+      // Backend sudah memberi slug pendek /s/<slug> (auto proxy + subtitle).
+      src: s.url,
       title: meta?.name || s.name,
       sub: [s.quality || s.type, s.name].filter(Boolean).join(' · '),
+      subs: s.subs,
     })
     onClose()
     setStatus(`Memutar ${s.quality || s.type} dari ${s.name}.`, 'ok')

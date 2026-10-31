@@ -5,7 +5,7 @@ GO ?= go
 # dijalankan).
 LDFLAGS := -s -w
 
-.PHONY: build run vet test clean
+.PHONY: build run vet test test-live clean
 
 # Build frontend (Vite → web/dist) dulu, baru binary Go yang meng-embed
 # web/dist. Di-strip lalu dikompres upx kalau tersedia; kalau upx tidak ada,
@@ -26,7 +26,12 @@ vet:
 	$(GO) vet ./...
 
 test:
-	$(GO) test -race ./... -count=1 -timeout 15s
+	$(GO) test -short -race ./... -count=1 -timeout 15s
+
+# Live test menembak embedmaster.link sungguhan (~10 dtk), jadi dijalankan
+# terpisah dari make test yang timeoutnya ketat.
+test-live:
+	$(GO) test -race ./internal/em -run TestLiveEmbedmaster -count=1 -timeout 120s -v
 
 clean:
 	rm -f $(BINARY) $(BINARY).exe
