@@ -1,13 +1,38 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { MoviPlayer, type MoviElement } from 'movi-player/react'
 import { fmtDur } from '@/lib/fmt'
+import { log } from '@/lib/logs'
 import { Sq } from '@/features/text/Sq'
 import { useApp } from '@/features/app/AppProvider'
-import { attachSubs, ctl, resetPlayback, setPlayerSrc } from './ctl'
+import { ctl, resetPlayback, selectFirstSub, setPlayerSource, setPlayerSrc } from './ctl'
+import { LogOverlay } from './LogOverlay'
 
 /* Wrapper movi-player: src pasang imperatif; subtitle (track VTT dari
- * embedmaster) didaftarkan ke elemen saat stream terpilih punya subs.
+ * embedmaster) didaftarkan lewat API source() saat stream dipasang.
  * Stream macet (Timeout) di-retry melanjutkan posisi terakhir. */
+
+// Event elemen yang dicatat ke panel log saat video dimuat (memuat manifest,
+// track, buffering, error codec). Ringkas: satu nama event = satu baris log.
+const MEDIA_EVENTS = [
+  'loadstart', 'loadedmetadata', 'loadeddata', 'canplay', 'canplaythrough',
+  'playing', 'waiting', 'stalled', 'seeking', 'seeked', 'durationchange',
+  'encrypted', 'waitingforkey', 'qualitychange', 'trackschange',
+  'subtitletrackchange', 'nativefallback', 'smoothwarning',
+] as const
+
+// detailText merangkum CustomEvent.detail jadi cuplikan pendek untuk log.
+function detailText(e: Event): string {
+  const d = (e as CustomEvent).detail
+  if (d == null) return ''
+  if (typeof d !== 'object') return ` · ${String(d)}`
+  try {
+    const s = JSON.stringify(d)
+    return s && s !== '{}' ? ` · ${s.slice(0, 100)}` : ''
+  } catch {
+    return ''
+  }
+}
+
 export function Player() {
   const { status, playing } = useApp()
   const ref = useRef<MoviElement | null>(null)
@@ -25,16 +50,23 @@ export function Player() {
       ctl.wanted = current
     }
     if (!current) return
-    setPlayerSrc(el as any as HTMLElement, current)
+
+    const subs = playing?.subs || []
+    const before = (el as any).player
+    log.info(`pasang sumber · ${playing?.sub ?? current}`, 'player:src')
+    try {
+      setPlayerSource(el as any as HTMLElement, current, subs)
+      log.ok(`sumber terpasang · ${subs.length} subtitle` + (subs.length ? '' : ' · menunggu player…'), 'player:src')
+    } catch (err) {
+      log.err(`gagal memasang sumber · ${(err as Error).message}`, 'player:src')
+    }
     void el.load?.()
 
-    // Track subtitle: didaftarkan lewat API player (bukan <track> anak).
-    // `el.player` baru ada setelah loadeddata → tunggu sebentar (maks ~6 s).
-    const subs = playing?.subs || []
+    // Aktifkan track pertama setelah player hasil load baru siap (maks ~6 s).
     let timer: number | undefined
     let tries = 0
     const mountSubs = () => {
-      if (attachSubs(ref.current, subs) || ++tries > 24) return
+      if (selectFirstSub(ref.current, subs, before) || ++tries > 24) return
       timer = window.setTimeout(mountSubs, 250)
     }
     if (subs.length) mountSubs()
@@ -44,9 +76,24 @@ export function Player() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, playing])
 
+  /* Catat event media (loading manifest/segment, buffering, kualitas) ke log.
+   * Satu id per nama event supaya event berulang (waiting/playing) memperbarui
+   * baris yang sama, bukan menumpuk. */
+  useEffect(() => {
+    const el = ref.current as any
+    if (!el) return
+    const offs = MEDIA_EVENTS.map((name) => {
+      const fn = (e: Event) => log.info(name + detailText(e), `player:evt:${name}`)
+      el.addEventListener(name, fn)
+      return () => el.removeEventListener(name, fn)
+    })
+    return () => offs.forEach((off) => off())
+  }, [current])
+
   // 'playing' → lepas startat (seek awal sudah terjadi).
   const handlePlay = useCallback(() => {
     const el = ref.current
+    log.ok('pemutaran mulai', 'player:play')
     if (!ctl.resumeStartAt || !el) return
     ctl.resumeStartAt = 0
     el.removeAttribute?.('startat')
@@ -59,14 +106,21 @@ export function Player() {
     const message = (detail as { message?: string } | undefined)?.message
     if (!message) return
     const el = ref.current as any
-    if (!/Timeout/.test(message) || !el?.getAttribute('src')) return
+    if (!/Timeout/.test(message) || !el?.getAttribute('src')) {
+      log.err(`player error · ${message}`, 'player:err')
+      return
+    }
     const now = Date.now()
     if (now - ctl.lastRetry > 60_000) ctl.retries = 0
-    if (ctl.retries >= 3) return
+    if (ctl.retries >= 3) {
+      log.err(`retry habis · ${message}`, 'player:err')
+      return
+    }
     ctl.retries++
     ctl.lastRetry = now
     const at = Math.max(0, Math.floor(el.currentTime || 0))
     ctl.resumeStartAt = at > 1 ? at : 0
+    log.info(`timeout · muat ulang dari ${at}s (percobaan ${ctl.retries}/3)`, 'player:err')
     if (ctl.resumeStartAt) el.setAttribute?.('startat', String(at))
     setTimeout(() => {
       const el2 = ref.current
@@ -78,7 +132,7 @@ export function Player() {
   }, [])
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-black">
+    <div className="relative overflow-hidden rounded-xl border border-border bg-black">
       {playing ? (
         <MoviPlayer
           ref={ref}
@@ -93,8 +147,12 @@ export function Player() {
           showtitle
           persist="loop muted volume speed ambient stablevolume hdr aspect audiolang subtitlelang"
           persistkey="zanime"
+          onReady={() => log.info('elemen player siap', 'player:ready')}
+          onQoe={(e) => log.info(`qoe · ${JSON.stringify(e).slice(0, 120)}`, 'player:qoe')}
           onPlay={handlePlay}
           onError={handleError}
+          onErrorDisplay={(info) =>
+            log.err(`error layar · ${info.message || info.title || 'tidak diketahui'}`, 'player:errdisplay')}
         />
       ) : (
         <div className="grid aspect-video place-items-center text-sm text-zinc-600">
@@ -121,6 +179,8 @@ export function Player() {
           </span>
         </div>
       )}
+      {/* Log realtime di depan video: scrape, uji stream, pemuatan video. */}
+      <LogOverlay />
     </div>
   )
 }

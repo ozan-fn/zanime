@@ -7,13 +7,17 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 
 	"zanime/internal/em"
+	"zanime/internal/logbus"
 	"zanime/internal/resolve"
 	"zanime/internal/tmdb"
 )
@@ -349,6 +353,46 @@ func TestStreamProxySubtitle(t *testing.T) {
 	}
 }
 
+// vttCueRe adalah pola cue yang dipakai parser movi-player: wajib
+// HH:MM:SS.mmm di kedua sisi "-->" (bukan MM:SS.mmm). Semua subtitle yang
+// dikirim server harus lolos pola ini, sama seperti track yang sudah sehat
+// (mis. WMovies), supaya tidak jadi track kosong.
+var vttCueRe = regexp.MustCompile(`\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[.,]\d{3}`)
+
+// TestStreamProxySubtitleUniform: VTT dari tiap host (MovieJoy MM:SS.mmm,
+// WMovies HH:MM:SS.mmm + nomor cue) dikirim dengan bentuk timestamp yang SAMA
+// setelah lewat proxy, dan tiap cue bisa diparse parser movi-player.
+func TestStreamProxySubtitleUniform(t *testing.T) {
+	bodies := map[string]string{
+		"moviejoy": "WEBVTT\n\n01:18.579 --> 01:21.206\n<i>Hi. My name is Peter Parker.</i>\n\n01:23.250 --> 01:26.294\nYou don't remember me,\nbut I have \"",
+		"wmovies":  "WEBVTT\n\n1\n00:01:18.622 --> 00:01:21.250\nHi. My name is Peter Parker.\n\n2\n00:01:23.293 --> 00:01:26.255\nYou don't remember me",
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+		_, _ = w.Write([]byte(bodies[strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), ".vtt")]))
+	}))
+	defer upstream.Close()
+	t.Chdir(t.TempDir())
+	gin.SetMode(gin.TestMode)
+	srv := &server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New()}
+	r := gin.New()
+	r.GET("/s/:slug", srv.streamProxy)
+
+	for name := range bodies {
+		res := httptest.NewRecorder()
+		r.ServeHTTP(res, httptest.NewRequest("GET", "/s/"+srv.res.Register(upstream.URL+"/"+name+".vtt", name), nil))
+		got := res.Body.String()
+		cues := vttCueRe.FindAllString(got, -1)
+		if len(cues) != 2 {
+			t.Fatalf("%s: cue terparse = %d, want 2 (%q)", name, len(cues), got)
+		}
+		// Tidak boleh ada timestamp 2-bagian yang tersisa (MM:SS.mmm).
+		if regexp.MustCompile(`(^|[^\d:])\d{1,2}:\d{2}[.,]\d{3}\s*-->`).MatchString(got) {
+			t.Fatalf("%s: masih ada timestamp MM:SS.mmm: %q", name, got)
+		}
+	}
+}
+
 // TestSPAFallback: path tidak dikenal → index.html; path /api/… dan /s/… tak
 // dikenal → JSON 404 (bukan index) supaya client bisa bedakan error.
 func TestSPAFallback(t *testing.T) {
@@ -369,5 +413,92 @@ func TestSPAFallback(t *testing.T) {
 		if res.Code != http.StatusNotFound || !strings.Contains(res.Body.String(), "not found") {
 			t.Fatalf("%s: %d %s", p, res.Code, res.Body.String())
 		}
+	}
+}
+
+// drainLog membaca semua event yang sudah ada di kanal (non-blocking).
+func drainLog(ch <-chan logbus.Event) string {
+	var b strings.Builder
+	for {
+		select {
+		case ev := <-ch:
+			b.WriteString(ev.Level + " " + ev.Text + "\n")
+		default:
+			return b.String()
+		}
+	}
+}
+
+// TestStreamProxyLogs: tiap permintaan proxy menulis satu baris log (host,
+// jumlah rendition/segmen, VOD) ke hub — dasar panel log di UI.
+func TestStreamProxyLogs(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nchild.m3u8\n#EXTINF:6,\nseg1.ts\n#EXT-X-ENDLIST\n"))
+	}))
+	defer upstream.Close()
+	t.Chdir(t.TempDir())
+	gin.SetMode(gin.TestMode)
+	logs := logbus.New()
+	ch, cancel := logs.Subscribe()
+	defer cancel()
+	srv := &server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New(), logs: logs}
+	r := gin.New()
+	r.GET("/s/:slug", srv.streamProxy)
+
+	res := httptest.NewRecorder()
+	r.ServeHTTP(res, httptest.NewRequest("GET", "/s/"+srv.res.Register(upstream.URL+"/master.m3u8", "master"), nil))
+
+	got := drainLog(ch)
+	for _, want := range []string{"playlist", "1 rendition", "1 segmen", "VOD"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log proxy tanpa %q: %q", want, got)
+		}
+	}
+}
+
+// TestAPILogsWebSocket: klien websocket menerima riwayat lalu baris baru.
+func TestAPILogsWebSocket(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logs := logbus.New()
+	srv := &server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New(), logs: logs}
+	r := gin.New()
+	r.GET("/api/logs", srv.apiLogs)
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	// Ditulis sebelum klien menyambung: harus dikirim sebagai riwayat.
+	logs.Emit(logbus.Event{ID: "srv:X:verify", Level: logbus.LevelInfo, Text: "uji X…"})
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(ts.URL, "http")+"/api/logs", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Tunggu handler benar-benar berlangganan sebelum Emit berikutnya.
+	deadline := time.Now().Add(2 * time.Second)
+	for logs.Subscribers() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if logs.Subscribers() == 0 {
+		t.Fatal("handler websocket tidak berlangganan")
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var got logbus.Event
+	if err := conn.ReadJSON(&got); err != nil {
+		t.Fatalf("baca riwayat: %v", err)
+	}
+	if got.Text != "uji X…" || got.Level != logbus.LevelInfo {
+		t.Fatalf("riwayat = %+v", got)
+	}
+
+	logs.OK("live")
+	if err := conn.ReadJSON(&got); err != nil {
+		t.Fatalf("baca live: %v", err)
+	}
+	if got.Text != "live" || got.Level != logbus.LevelOK {
+		t.Fatalf("live = %+v", got)
 	}
 }

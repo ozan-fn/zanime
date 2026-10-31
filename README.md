@@ -19,6 +19,9 @@ internal/tmdb/                 klien Cinemeta (cari + meta/episode), cache ./tmp
 internal/em/                   scraping embedmaster: gerbang → kredensial → feed → resolve
 internal/em/crypto.go          kripto: obfuscation kredensial + dekripsi resolve.php
 internal/em/scrape.go          HTTP: cookie jar, gerbang welcome, feed NDJSON, resolve
+internal/em/verify.go          verifikasi URL stream: probe 128 KiB, sniff HLS/MP4 vs halaman embed
+internal/em/log.go             Logger pipeline (baris log per tahap scrape)
+internal/logbus/               hub log realtime: fan-out websocket + riwayat
 internal/resolve/              pool slug: /s/<slug> → URL media, peta di ./tmp/resolve
 internal/config/               loader .env (PORT)
 ```
@@ -68,11 +71,12 @@ Urutan tetap setiap kali sebuah judul dipilih:
 | 1 | Cari judul | browser → server | tab Movie/TV menentukan tipe katalog; hasil hanya id `tt…` yang dipakai | `GET /api/search?q=&tab=` |
 | 2 | Pilih judul | browser → server | metadata + daftar episode (tv) dari Cinemeta; `moviedb_id` diambil dari sini | `GET /api/meta/:tab/:id` |
 | 3 | Scrape server | server → embedmaster | halaman embed → gerbang welcome (`POST tr=`) → skrip kredensial obfuscated → feed NDJSON `/api/sources` | `internal/em` |
-| 4 | Resolve | server → embedmaster | tiap server ditanyakan ke `resolve.php` membawa `X-EM-Ticket`; blob base64url didekripsi (nonce16 + SHA256-XOR) | `internal/em/crypto.go` |
-| 5 | Slug | server | setiap URL (server, tiap kualitas, tiap subtitle) didaftarkan ke `/s/<slug>`; peta JSON di `./tmp/resolve` | `internal/resolve` |
+| 4 | Resolve + verifikasi | server → embedmaster, lalu host video | tiap server ditanyakan ke `resolve.php` membawa `X-EM-Ticket`; blob base64url didekripsi (nonce16 + SHA256-XOR), lalu URL-nya diuji (128 KiB) untuk membuang halaman embed | `internal/em/crypto.go`, `internal/em/verify.go` |
+| 5 | Slug | server | setiap URL (server, tiap kualitas, tiap subtitle) didaftarkan ke `/s/<slug>` (+ ekstensi media); peta JSON di `./tmp/resolve` | `internal/resolve` |
 | 6 | Putar | browser → server | player meminta `/s/<slug>`; server meneruskan `Range`/`HEAD` dan memasang `Referer` host video | `GET/HEAD /s/:slug` |
 | 7 | HLS | browser → server | playlist `.m3u8` ditulis ulang di server: setiap URI (playlist turun, segmen, `URI="…"` di tag) jadi `/s/<slug>` juga | `internal/em` + `main.go` |
-| 8 | Subtitle | browser → server | track VTT lewat slug; proxy menormalkan timestamp ke `HH:MM:SS.mmm`, lalu didaftarkan ke MoviPlayer lewat API-nya | `main.go` + `SearchDialog` → `Player` |
+| 8 | Subtitle | browser → server | track VTT lewat slug; proxy menormalkan timestamp ke `HH:MM:SS.mmm`, lalu didaftarkan ke MoviPlayer lewat `source({subtitles})` | `main.go` + `SearchDialog` → `Player` |
+| 9 | Log | server → browser | tiap tahap (scrape, uji 128 KiB, playlist/subtitle/segmen, event player) dikirim sebagai baris `{id,at,level,text}` | `ws /api/logs` (`internal/logbus` + `web/src/lib/logs.ts`) |
 
 ### Kenapa lewat server
 
@@ -85,6 +89,11 @@ Urutan tetap setiap kali sebuah judul dipilih:
 - Playlist harus ditulis ulang di server supaya playlist turunan dan segmen
   ikut lewat proxy yang sama (kalau tidak, hls.js menembak host video langsung
   dan ditolak).
+- Slug menyertakan ekstensi media (`.m3u8`, `.mp4`, `.vtt`): movi-player
+  memilih jalur adaptif (Shaka/MSE) — menu kualitas + track DASH/HLS — hanya
+  bila `src`-nya mengandung `.m3u8`/`.mpd`. Tanpa itu HLS diperlakukan sebagai
+  file tunggal, jadi menu resolusi hilang. Kalau URL-nya tanpa ekstensi,
+  ekstensi diambil dari hasil verifikasi (lihat "Verifikasi stream").
 
 ### Performa proxy
 
@@ -123,6 +132,21 @@ resolve server. Resolve dijalankan lewat **worker pool** (`parallel`, 6 worker):
 seperti feed (indeks dijaga). Hasilnya di-cache 15 menit, jadi pencarian judul
 yang sama berikutnya instan.
 
+### Verifikasi stream
+
+Tidak semua server yang muncul di feed bisa diputar: sebagian resolve-nya cuma
+halaman embed HTML (mis. `/e/<id>`, `/embed/<id>`) yang tidak pernah mengalirkan
+media. Setiap URL yang berhasil di-resolve diuji di `internal/em/verify.go`:
+
+- URL berpola halaman embed (`embedURLRe`) ditolak tanpa HTTP.
+- Selain itu, ambil **128 KiB** pertama dengan `Referer` halaman player (sama
+  seperti proxy), lalu sniff isinya: `#EXTM3U` → HLS, byte MP4 (`ftyp`) →
+  mp4, `text/html`/JSON → ditolak. Body diperiksa lebih dulu karena sebagian
+  host salah mengirim `Content-Type` untuk playlist m3u8 yang sah.
+- Jenis hasil verifikasi menimpa tebakan resolve (mis. server "mp4" yang
+  ternyata playlist → jadi `hls`, slug-nya pun dapat `.m3u8`).
+- Server yang gagal diuji ditandai `err` dan tidak ditampilkan UI.
+
 ## UI
 
 Buka `http://127.0.0.1:8080`:
@@ -134,18 +158,37 @@ Buka `http://127.0.0.1:8080`:
 | Pilih season/episode | `GET /api/meta/tv/:id` | daftar episode dari metadata |
 | Pilih episode | `GET /api/streams?tab=tv&id=&s=&e=` | daftar `(server, kualitas)` dari embedmaster |
 | Klik satu baris stream | `play(src)` | player memuat `/s/<slug>`; subtitle stream itu didaftarkan otomatis |
-| Subtitle | — | track ditambahkan lewat API MoviPlayer (`addSubtitleTrack`), track pertama langsung aktif |
+| Subtitle | — | track didaftarkan lewat API MoviPlayer (`source({video, subtitles})`), track pertama langsung aktif |
+| Panel **Log** | `ws /api/logs` | log realtime (scrape, uji 128 KiB, pemuatan video) tampil sebagai overlay di depan player |
 
 Player: [MoviPlayer](https://moviplayer.com) (`movi-player`) merender lewat
 canvas + WASM demuxer-nya sendiri. Karena itu subtitle **tidak** dipasang
-sebagai `<track>` anak (diabaikan saat `src` terpasang), melainkan lewat
-`player.addSubtitleTrack({url, lang, label, format:"vtt"})` setelah
-`el.player` siap.
+sebagai `<track>` anak (diabaikan saat `src` terpasang), melainkan didaftarkan
+lewat `el.source({video:{src}, subtitles:[{src,lang,label,format:"vtt"}]})`
+(daftar subtitle disimpan elemen sebelum `src` dipasang, jadi track langsung
+ikut termuat tanpa balapan dengan `el.player`).
 
 Parser VTT di MoviPlayer hanya mengenali timestamp `HH:MM:SS.mmm`, sedangkan
 CDN subtitle (scrapemaster) mengirim `MM:SS.mmm` — track ter-fetch 200 OK tapi
 0 cue, sehingga tidak ada subtitle tampil. Proxy karena itu menormalkan
 timestamp tiap baris cue (`normalizeVTT`) sebelum body diteruskan.
+
+## Log realtime
+
+Panel log di depan player menampilkan jalannya scrape dan pemuatan video.
+Semuanya satu arah (server → browser) lewat websocket:
+
+- `internal/logbus` = `Hub` fan-out: tiap baris (`{id,at,level,text}`)
+  disiarkan non-blocking ke semua klien; klien yang lambat dilewati, bukan
+  diblok. Riwayat 200 baris terakhir ikut dikirim ke klien baru (reload tetap
+  punya konteks).
+- `internal/em` menulis baris per tahap (halaman → gerbang → kredensial → feed
+  → resolve → uji) lewat `Logger`; `streamProxy` menulis tiap permintaan
+  playlist/subtitle/segmen. `id` sama = baris yang sama, jadi UI menampilkan
+  `[sedang…]` lalu baris itu berubah jadi `[OK]`/`[GAGAL]`.
+- Sisi browser (`web/src/lib/logs.ts`) menerima lewat `ws /api/logs` dan
+  menambah baris lokal dari player (event media: `loadstart`, `canplay`,
+  `qualitychange`, `waiting`, `error`, …). Ring buffer 400 baris.
 
 ## Endpoint
 
@@ -157,6 +200,7 @@ timestamp tiap baris cue (`normalizeVTT`) sebelum body diteruskan.
 | `GET /api/meta/:tab/:id` | detail judul (`id` harus `tt…`); tv menyertakan `episodes[]` |
 | `GET /api/streams?tab=&id=&s=&e=` | pecahkan stream: `{id,tab,servers:[{name,type,quality,qualities,subs,url,err}]}`; `url`/`qualities[].url`/`subs[].url` sudah `/s/<slug>`; tv wajib `s`/`e` |
 | `GET/HEAD /s/:slug` | proxy media: teruskan `Range`/`Content-Range`/`Accept-Ranges`, `Referer` host video, dan tulis ulang playlist m3u8; 404 bila slug tidak ada, 502 bila upstream gagal |
+| `GET /api/logs` (websocket) | siarkan log realtime `{id,at,level,text}`; riwayat terakhir dikirim saat menyambung |
 | `GET /healthz` | `ok` |
 
 Contoh:
@@ -183,8 +227,8 @@ Semua cache ada di `./tmp` dan boleh dihapus kapan saja:
 | `tmp/resolve/` | peta `slug → URL` untuk stream/kualitas/subtitle (satu file `<slug>.json`) | 6 jam, dipangkas berkala | `internal/resolve` |
 
 - Slug dibentuk dari nama server/kualitas/lang yang mudah dibaca
-  (`premium-wmovies`); bila bentrok, ditambah hash pendek. Slug yang tidak ada →
-  404.
+  (`premium-wmovies.m3u8`); ekstensi media disertakan (dari URL atau hasil
+  verifikasi), bila bentrok ditambah hash pendek. Slug yang tidak ada → 404.
 - Segmen dan playlist turunan (`seg-<hash>`) hanya di memori — jumlahnya ribuan
   per judul dan tidak perlu lintas restart; entri memori dipangkas setelah TTL
   yang sama.
@@ -206,10 +250,11 @@ Cakupan sekarang:
 | Paket | Yang diuji |
 |-------|-----------|
 | `internal/tmdb` | pencarian (filter `tt…`, `releaseInfo`→year), meta movie/tv (`moviedb_id` angka/string via `FlexString`), TTL cache hit/expired, upstream 5xx |
-| `internal/em` | pipeline penuh di atas `httptest` (gerbang cookie → POST `tr=` → kredensial → feed → resolve), pemilihan episode tv, episode hilang, semua server gagal, cache hit/expired, ctx batal, HTTP 5xx, pola kredensial rusak, dekripsi (vektor asli + roundtrip + error) |
-| `internal/resolve` | register/load/idempoten, kolisi, hint kotor, guard `Load`, persist antar-pool, file rusak, prune + jadwal tidy |
-| `main` | kontrak `/api/search` & `/api/meta` (ok/400), `/api/streams` → slug, `streamProxy` (rewrite playlist master+child, `URI=` tag, `Referer`, HEAD tanpa body, 404, 502), SPA fallback |
-| `web` (vitest) | dialog pencarian (hasil, movie→stream per kualitas, tv→episode→streams, error), provider play/stop/status, `attachSubs` |
+| `internal/em` | pipeline penuh di atas `httptest` (gerbang cookie → POST `tr=` → kredensial → feed → resolve), pemilihan episode tv, episode hilang, semua server gagal, cache hit/expired, ctx batal, HTTP 5xx, pola kredensial rusak, dekripsi (vektor asli + roundtrip + error), verifikasi stream (sniff jenis, tolak halaman embed), baris log per tahap |
+| `internal/logbus` | fan-out ke banyak pelanggan, replay riwayat, cancel idempoten, pelanggan lambat tidak memblok, batas riwayat |
+| `internal/resolve` | register/load/idempoten, kolisi, hint kotor, guard `Load`, persist antar-pool, file rusak, prune + jadwal tidy, ekstensi media pada slug |
+| `main` | kontrak `/api/search` & `/api/meta` (ok/400), `/api/streams` → slug, `streamProxy` (rewrite playlist master+child, `URI=` tag, `Referer`, HEAD tanpa body, 404, 502, baris log), websocket `/api/logs` (riwayat + live), SPA fallback |
+| `web` (vitest) | dialog pencarian (hasil, movie→stream per kualitas, tv→episode→streams, error), provider play/stop/status, `setPlayerSource`/`selectFirstSub`, store log (`push`/id sama/ring buffer), panel `LogOverlay` |
 
 Live test (jaringan sungguhan, ~10 s):
 
@@ -217,8 +262,9 @@ Live test (jaringan sungguhan, ~10 s):
 make test-live           # go test -race ./internal/em -run TestLiveEmbedmaster -timeout 120s
 ```
 
-`TestLiveEmbedmaster` menembak embedmaster.link dari pipeline Go dan
-memastikan ada server yang bisa diputar.
+`TestLiveEmbedmaster` menembak embedmaster.link dari pipeline Go memakai
+"Spider-Man: Brand New Day" (tmdb `969681`), lalu memastikan setiap server yang
+punya URL lolos verifikasi (server embed sudah disaring).
 
 ## Batasan
 
@@ -237,6 +283,10 @@ memastikan ada server yang bisa diputar.
   Slug segmen hanya in-memory, jadi browser harus membaca ulang playlist induk
   setelah server restart (stream yang sedang jalan akan putus).
 - Subtitle yang tersedia adalah apa yang dikirim server (biasanya VTT), bukan
-  hasil ekstraksi dari file video.
+  hasil ekstraksi dari file video. Master playlist embedmaster tidak memuat
+  rendition `TYPE=SUBTITLES`, jadi track subtitle didaftarkan terpisah lewat
+  API `source({subtitles})` (bukan dari manifest), dan waktunya dinormalkan
+  server-side ke `HH:MM:SS.mmm` (`normalizeVTT`) karena parser movi-player
+  mensyaratkan itu.
 - Token pada URL media tetap bisa dilihat server video lain; yang dihilangkan
   dari browser hanya URL panjang dan ter-encode.

@@ -137,6 +137,26 @@ func newSite(t *testing.T) *site {
 		s.mu.Unlock()
 		_, _ = w.Write([]byte(s.playerHTML(t, false)))
 	})
+	// URL media ter-resolve: dipakai verifikasi stream. Ekstensi .m3u8 →
+	// playlist; selain itu byte MP4 (kotak ftyp). Path /media/html/ → halaman
+	// embed (bukan media) untuk menguji penyaringan.
+	mux.HandleFunc("/media/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, ".m3u8"):
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-ENDLIST\nseg1.ts\n"))
+		case strings.Contains(r.URL.Path, "/media/html/"):
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("<!DOCTYPE html><html><body>embed</body></html>"))
+		case strings.Contains(r.URL.Path, "/media/mislabeled"):
+			// Playlist sah tapi Content-Type-nya text/html (seperti cdn embedmaster).
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=4000\nchild.m3u8\n"))
+		default:
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write(append([]byte{0, 0, 0, 0x18}, []byte("ftypmp42")...))
+		}
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		isTV := strings.HasPrefix(r.URL.Path, "/tv/")
 		// Gerbang: tanpa cookie → halaman welcome (tanpa kredensial).
@@ -207,6 +227,9 @@ func (s *site) setFeeds(rows ...feedRow) {
 	s.feeds = rows
 	s.mu.Unlock()
 }
+
+// media adalah URL media di server palsu (bisa diverifikasi verifyStream).
+func (s *site) media(name string) string { return s.srv.URL + "/media/" + name }
 
 // b64 dan base64Raw dipakai test untuk membangun/memeriksa blob.
 func b64(b []byte) string { return base64.StdEncoding.EncodeToString(b) }

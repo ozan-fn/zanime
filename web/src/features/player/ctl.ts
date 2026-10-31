@@ -1,5 +1,6 @@
 /* Kontrol player di luar React: elemen movi-player diakses imperatif. */
 import type { Sub } from '@/lib/types'
+import { log } from '@/lib/logs'
 
 export const ctl = {
   el: null as any,
@@ -16,6 +17,31 @@ export function setPlayerSrc(el: any, url: string) {
   el.src = url
 }
 
+// Pasang sumber + track subtitle sekaligus lewat API source(). Elemen
+// menyimpan daftar subtitle SEBELUM `src` dipasang, jadi player yang baru
+// dibuat langsung memuat daftar itu — tidak ada balapan dengan `el.player`
+// yang baru ada setelah load. movi-player menggambar subtitle sendiri lewat
+// canvas/WASM, jadi <track> anak tidak dipakai.
+export function setPlayerSource(el: any, url: string, subs?: Sub[]) {
+  if (Object.prototype.hasOwnProperty.call(el, 'src')) delete el.src
+  // Elemen yang belum ter-upgrade belum punya source(); jatuh ke src biasa.
+  if (typeof el.source !== 'function') {
+    el.src = url
+    return
+  }
+  el.source({
+    video: { src: url },
+    subtitles: (subs || [])
+      .filter((s) => s.url)
+      .map((s) => ({
+        src: s.url,
+        lang: s.lang,
+        label: s.label || s.lang,
+        format: 'vtt',
+      })),
+  })
+}
+
 // Buang playback sekarang; mount berikutnya memuat ulang src baru.
 export function resetPlayback() {
   ctl.wanted = ''
@@ -27,19 +53,19 @@ export function resetPlayback() {
   }
 }
 
-// Subtitle embedmaster didaftarkan lewat API player: movi-player menggambar
-// sendiri lewat canvas/WASM, jadi <track> anak elemen diabaikan begitu `src`
-// terpasang dan tidak ada <video> untuk ditempeli. `el.player` baru ada
-// setelah loadeddata — pemanggil menunggu sampai helper ini balas true.
-export function attachSubs(el: any, subs?: Sub[]): boolean {
+// Nyalakan track pertama begitu player hasil load baru siap, tapi hanya bila
+// belum ada subtitle aktif (mis. pilihan tersimpan dari `persist` sudah
+// dipegang player). `before` = instance player lama, supaya kita tidak
+// menyeleksi di player yang sudah akan dibuang. Mengembalikan true bila sudah
+// selesai (dipilih atau memang tidak perlu).
+export function selectFirstSub(el: any, subs: Sub[] | undefined, before?: unknown): boolean {
   const player = el?.player
-  if (!player || !subs?.length) return false
-  for (const s of subs) {
-    player.addSubtitleTrack({ url: s.url, lang: s.lang, label: s.label || s.lang, format: 'vtt' })
+  if (!player || player === before || !subs?.length) return false
+  const langs = player.getSubtitleLangs?.() || []
+  if (!langs.length) return false
+  if (!langs.some((t: { active?: boolean }) => t.active)) {
+    void el.selectSubtitleLang?.(subs[0].lang)
+    log.ok(`subtitle aktif · ${subs[0].label || subs[0].lang}`, 'player:sub')
   }
-  el.updateSubtitleTrackMenu?.()
-  el.refreshOpenContextMenu?.()
-  // Track pertama langsung diaktifkan (baris stream sudah menulis ada N subtitle).
-  void el.selectSubtitleLang?.(subs[0].lang)
   return true
 }

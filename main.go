@@ -18,9 +18,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 
 	"zanime/internal/config"
 	"zanime/internal/em"
+	"zanime/internal/logbus"
 	"zanime/internal/resolve"
 	"zanime/internal/tmdb"
 )
@@ -63,7 +65,10 @@ func main() {
 	}
 	res := resolve.New()
 	res.Tidy() // buang slug lama warisan run sebelumnya (./tmp/resolve rapi)
-	srv := &server{web: webRoot, tmdb: tmdb.New(), em: em.New(), res: res}
+	logs := logbus.New()
+	emc := em.New()
+	emc.SetLogger(hubLogger{hub: logs})
+	srv := &server{web: webRoot, tmdb: tmdb.New(), em: emc, res: res, logs: logs}
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -79,6 +84,7 @@ func main() {
 	r.GET("/api/search", srv.apiSearch)
 	r.GET("/api/meta/:tab/:id", srv.apiMeta)
 	r.GET("/api/streams", srv.apiStreams)
+	r.GET("/api/logs", srv.apiLogs) // websocket: log realtime ke UI
 	r.GET("/s/:slug", srv.streamProxy)
 	r.HEAD("/s/:slug", srv.streamProxy)
 
@@ -102,6 +108,49 @@ type server struct {
 	tmdb *tmdb.Client
 	em   streamer
 	res  *resolve.Pool
+	logs *logbus.Hub
+}
+
+// upgrader WebSocket: aplikasi lokal satu-origin, jadi semua Origin diterima
+// (dev Vite juga boleh menyambung lewat proxy).
+var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+
+// hubLogger menjembatani em.Logger (baris pipeline scrape) ke logbus.
+type hubLogger struct{ hub *logbus.Hub }
+
+func (l hubLogger) Log(id, level, msg string) {
+	l.hub.Emit(logbus.Event{ID: id, Level: level, Text: msg})
+}
+
+// apiLogs menyiarkan log realtime ke browser lewat websocket: riwayat terakhir
+// dulu, lalu baris baru. Dipakai panel log di depan player.
+func (s *server) apiLogs(c *gin.Context) {
+	if s.logs == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "log tidak aktif"})
+		return
+	}
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return // Upgrade sudah menulis respons HTTP.
+	}
+	defer func() { _ = conn.Close() }()
+
+	ch, cancel := s.logs.Subscribe()
+	defer cancel()
+	// Pembaca: mendeteksi klien putus (close/ping) supaya langganan dilepas.
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				cancel()
+				return
+			}
+		}
+	}()
+	for ev := range ch {
+		if err := conn.WriteJSON(ev); err != nil {
+			return
+		}
+	}
 }
 
 // SPA fallback: path GET yang tak dikenal dapat index.html (React Router
@@ -209,11 +258,14 @@ func (s *server) apiStreams(c *gin.Context) {
 	}
 	// Semua URL didaftarkan ke pool slug; player/subtitle hanya melihat
 	// /s/<slug> pendek, tidak ada URL ter-encode panjang di network tab.
+	// Ekstensi slug mengikuti jenis hasil verifikasi (hls→.m3u8) supaya player
+	// memilih jalur adaptif walau URL stream tanpa ekstensi.
 	for i := range res {
 		srv := &res[i]
 		hint := strings.ToLower(srv.Name)
+		kind := resolve.ExtForKind(srv.Type)
 		if srv.URL != "" {
-			srv.URL = "/s/" + s.res.Register(srv.URL, hint)
+			srv.URL = "/s/" + s.res.RegisterKind(srv.URL, hint, kind)
 		}
 		for j := range srv.Qualities {
 			q := &srv.Qualities[j]
@@ -228,6 +280,13 @@ func (s *server) apiStreams(c *gin.Context) {
 			}
 		}
 	}
+	playable := 0
+	for i := range res {
+		if res[i].URL != "" {
+			playable++
+		}
+	}
+	s.logs.OKf("daftar stream: %d dari %d server bisa diputar", playable, len(res))
 	c.JSON(http.StatusOK, gin.H{"id": id, "tab": tab, "servers": res})
 }
 
@@ -255,6 +314,7 @@ func (s *server) streamProxy(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "slug tidak ada"})
 		return
 	}
+	px := "px:" + c.Param("slug")
 
 	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, target.String(), nil)
 	if err != nil {
@@ -271,11 +331,13 @@ func (s *server) streamProxy(c *gin.Context) {
 
 	res, err := proxyClient.Do(req)
 	if err != nil {
+		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelErr, Text: fmt.Sprintf("%s · tidak terhubung: %v", target.Host, err)})
 		c.JSON(http.StatusBadGateway, gin.H{"error": "gagal menghubungi upstream: " + err.Error()})
 		return
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode < 200 || res.StatusCode >= 400 {
+		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelErr, Text: fmt.Sprintf("%s · upstream HTTP %s", target.Host, res.Status)})
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("upstream HTTP %s", res.Status)})
 		return
 	}
@@ -286,10 +348,13 @@ func (s *server) streamProxy(c *gin.Context) {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
+		renditions, segments, vod := playlistStats(string(body))
+		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelOK, Text: fmt.Sprintf(
+			"playlist %s · %d rendition · %d segmen · %s", target.Host, renditions, segments, vodLabel(vod))})
 		// VOD (ada #EXT-X-ENDLIST) tidak berubah → biarkan browser meng-cache;
 		// playlist live tetap no-store. Master playlist bisa 1+ MB, jadi
 		// meng-cache menghindari fetch ulang besar tiap player membacanya.
-		if strings.Contains(string(body), "#EXT-X-ENDLIST") {
+		if vod {
 			c.Header("Cache-Control", "public, max-age=600")
 		} else {
 			c.Header("Cache-Control", "no-store")
@@ -307,7 +372,10 @@ func (s *server) streamProxy(c *gin.Context) {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
-		c.Data(http.StatusOK, "text/vtt; charset=utf-8", []byte(normalizeVTT(string(body))))
+		out := normalizeVTT(string(body))
+		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelOK, Text: fmt.Sprintf(
+			"subtitle VTT · %s · %d cue", target.Host, strings.Count(out, "-->"))})
+		c.Data(http.StatusOK, "text/vtt; charset=utf-8", []byte(out))
 		return
 	}
 
@@ -316,10 +384,47 @@ func (s *server) streamProxy(c *gin.Context) {
 			c.Header(h, v)
 		}
 	}
+	s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelOK, Text: fmt.Sprintf(
+		"media %s · HTTP %s · %s", target.Host, res.Status, sizeLabel(res.Header.Get("Content-Length")))})
 	c.Status(res.StatusCode)
 	if c.Request.Method != http.MethodHead {
 		_, _ = io.Copy(c.Writer, res.Body)
 	}
+}
+
+// playlistStats menghitung rendition (master), segmen (#EXTINF), dan apakah
+// playlist sudah tuntas (VOD) — untuk baris log.
+func playlistStats(body string) (renditions, segments int, vod bool) {
+	for _, line := range strings.Split(body, "\n") {
+		switch {
+		case strings.HasPrefix(line, "#EXT-X-STREAM-INF"):
+			renditions++
+		case strings.HasPrefix(line, "#EXTINF"):
+			segments++
+		case strings.Contains(line, "#EXT-X-ENDLIST"):
+			vod = true
+		}
+	}
+	return
+}
+
+func vodLabel(vod bool) string {
+	if vod {
+		return "VOD"
+	}
+	return "live"
+}
+
+// sizeLabel merapikan Content-Length untuk teks log.
+func sizeLabel(n string) string {
+	v, err := strconv.ParseInt(n, 10, 64)
+	if err != nil || v <= 0 {
+		return "ukuran tidak disebut"
+	}
+	if v >= 1<<20 {
+		return fmt.Sprintf("%.1f MB", float64(v)/(1<<20))
+	}
+	return fmt.Sprintf("%.0f KB", float64(v)/1024)
 }
 
 func isPlaylist(ct, p string) bool {

@@ -14,8 +14,8 @@ func TestRegisterLoadRoundtrip(t *testing.T) {
 	t.Chdir(t.TempDir())
 	p := New()
 	slug := p.Register("https://host/a.mp4", "Film Keren 1080p")
-	if slug != "film-keren-1080p" {
-		t.Fatalf("slug = %q, want film-keren-1080p", slug)
+	if slug != "film-keren-1080p.mp4" {
+		t.Fatalf("slug = %q, want film-keren-1080p.mp4", slug)
 	}
 	entries, _ := filepath.Glob(filepath.Join(dir, "*.json"))
 	if len(entries) != 1 {
@@ -30,6 +30,25 @@ func TestRegisterLoadRoundtrip(t *testing.T) {
 	entries, _ = filepath.Glob(filepath.Join(dir, "*.json"))
 	if len(entries) != 1 {
 		t.Fatalf("register ulang bikin file baru: %v", entries)
+	}
+}
+
+// TestSlugKeepsMediaExtension: slug menyertakan ekstensi media dari URL, karena
+// player memilih jalur adaptif HLS/DASH hanya bila src-nya berakhiran .m3u8/.mpd.
+// URL tanpa ekstensi tidak ditambahi apa pun.
+func TestSlugKeepsMediaExtension(t *testing.T) {
+	t.Chdir(t.TempDir())
+	p := New()
+	cases := map[string]string{
+		"https://host/a.m3u8":        "stream.m3u8",
+		"https://host/x/y.mp4":       "stream.mp4",
+		"https://host/sub.vtt?tok=1": "stream.vtt",
+		"https://host/noext":         "stream",
+	}
+	for raw, want := range cases {
+		if got := p.Register(raw, "stream"); got != want {
+			t.Fatalf("Register(%q) = %q, want %q", raw, got, want)
+		}
 	}
 }
 

@@ -65,10 +65,11 @@ type Server struct {
 type Client struct {
 	Base string
 	http *http.Client
+	log  Logger
 }
 
 func New() *Client {
-	return &Client{Base: defaultBase, http: newHTTP()}
+	return &Client{Base: defaultBase, http: newHTTP(), log: nopLogger{}}
 }
 
 // Streams mengembalikan daftar server stream untuk movie atau satu episode
@@ -80,6 +81,7 @@ func (c *Client) Streams(ctx context.Context, tab, id string, tv *TVEpisode) ([]
 		cacheKey += fmt.Sprintf("-%d-%d", tv.Season, tv.Episode)
 	}
 	if servers, ok := readCache(cacheKey); ok {
+		c.logf("cache", LogOK, "cache segar · %d server (TTL 15 menit)", len(servers))
 		return servers, nil
 	}
 	select {
@@ -89,23 +91,27 @@ func (c *Client) Streams(ctx context.Context, tab, id string, tv *TVEpisode) ([]
 	}
 
 	// Sesi sendiri per permintaan (cookie gerbang tidak boleh bocor antar judul).
-	client := &Client{Base: c.Base, http: newHTTP()}
+	client := &Client{Base: c.Base, http: newHTTP(), log: c.log}
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scrapeSecs*time.Second)
 	defer cancel()
 
+	c.logf("scrape", LogInfo, "mulai scrape %s %s", tab, id)
 	servers, err := client.scrape(runCtx, tab, id, tv)
 	if err != nil {
+		c.logf("scrape", LogErr, "scrape gagal: %v", err)
 		return nil, fmt.Errorf("pipeline scrape: %w", err)
 	}
-	playable := false
+	playable := 0
 	for _, s := range servers {
 		if s.URL != "" {
-			playable = true
+			playable++
 		}
 	}
-	if !playable {
+	if playable == 0 {
+		c.logf("scrape", LogErr, "tidak ada server yang bisa diputar (id %s)", id)
 		return nil, fmt.Errorf("tidak ada server yang bisa diputar (id %s)", id)
 	}
+	c.logf("scrape", LogOK, "%d dari %d server bisa diputar", playable, len(servers))
 	writeCache(cacheKey, servers)
 	return servers, nil
 }
@@ -121,38 +127,65 @@ func (c *Client) scrape(ctx context.Context, tab, id string, tv *TVEpisode) ([]S
 		// yang membawa daftar server.
 		ep, err := episodeURL(html, tv.Season, tv.Episode)
 		if err != nil {
+			c.logf("page", LogErr, "daftar episode tv: %v", err)
 			return nil, err
 		}
+		c.logf("page", LogInfo, "pilih episode S%dE%d", tv.Season, tv.Episode)
 		if playerURL, html, err = c.playerPage(ctx, ep); err != nil {
 			return nil, err
 		}
 	}
+	c.logf("creds", LogInfo, "ekstrak kredensial pemain…")
 	cfg, err := creds(html)
 	if err != nil {
+		c.logf("creds", LogErr, "kredensial: %v", err)
 		return nil, err
 	}
+	c.logf("creds", LogOK, "kredensial terdekode (ticket + pk + scrape token)")
 	rows, err := c.feed(ctx, cfg, playerURL)
 	if err != nil {
+		c.logf("feed", LogErr, "feed: %v", err)
 		return nil, err
 	}
+	c.logf("feed", LogOK, "feed: %d server (resolve %d paralel)", len(rows), resolveWorkers)
 
 	// Resolve tiap server lewat worker pool (dibatasi resolveWorkers supaya
 	// tidak membanjiri embedmaster): berurutan 15 server bisa ~6 dtk, paralel
 	// ~1 dtk. Indeks dijaga supaya urutan server di UI tetap sama seperti feed.
+	// Tiap URL yang berhasil di-resolve langsung diverifikasi (probe 128 KiB ke
+	// host video) supaya server yang cuma halaman embed / tidak bisa diputar
+	// tidak ikut ditampilkan.
 	servers := make([]Server, len(rows))
 	parallel(len(rows), resolveWorkers, func(i int) {
 		row := rows[i]
+		sid := "srv:" + row.SourceName
 		s := Server{Name: row.SourceName}
-		switch data := c.resolve(ctx, cfg, playerURL, row); {
-		case data.OK:
-			s.Type = typeOf(data.Type)
-			s.Quality = data.Quality
-			s.Qualities = data.Qualities
-			s.Subs = data.Subtitles
-			s.URL = data.URL
-		default:
+		c.logf(sid+":resolve", LogInfo, "resolve %s…", row.SourceName)
+		data := c.resolve(ctx, cfg, playerURL, row)
+		if !data.OK {
+			c.logf(sid+":resolve", LogErr, "%s: resolve gagal", row.SourceName)
 			s.Err = "server gagal resolve"
+			servers[i] = s
+			return
 		}
+		c.logf(sid+":resolve", LogOK, "%s: resolve → %s", row.SourceName, orDefault(data.Type, "?"))
+		// verifyStream menulis baris ujinya sendiri (info → ok/err).
+		kind, ok := c.verifyStream(ctx, sid+":verify", data.URL)
+		if !ok {
+			c.logf(sid+":ready", LogErr, "%s disembunyikan: stream tidak bisa diputar", row.SourceName)
+			s.Err = "stream tidak bisa diputar"
+			servers[i] = s
+			return
+		}
+		// Jenis dari verifikasi menimpa tebakan resolve (mis. server "mp4" yang
+		// ternyata playlist → hls).
+		s.Type = kind
+		s.Quality = data.Quality
+		s.Qualities = data.Qualities
+		s.Subs = data.Subtitles
+		s.URL = data.URL
+		c.logf(sid+":ready", LogOK, "%s siap diputar · %s · %d kualitas · %d subtitle",
+			row.SourceName, kind, len(data.Qualities), len(data.Subtitles))
 		servers[i] = s
 	})
 
@@ -197,6 +230,14 @@ func typeOf(t string) string {
 		return "hls"
 	}
 	return "mp4"
+}
+
+// orDefault mengembalikan s bila tidak kosong, else def (untuk teks log).
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 // ---- cache ./tmp/em ----

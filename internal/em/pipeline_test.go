@@ -28,8 +28,8 @@ func TestStreamsMovieHappyPath(t *testing.T) {
 	)
 	s.plain = func(src string) (string, bool) {
 		if src == "https://src/one" {
-			return `{"ok":true,"kind":"direct","url":"https://h/a.mp4","type":"progressive",
-				"quality":"FULL HD","qualities":[{"label":"480p","url":"https://h/480.mp4"}],
+			return `{"ok":true,"kind":"direct","url":"` + s.media("a.mp4") + `","type":"progressive",
+				"quality":"FULL HD","qualities":[{"label":"480p","url":"` + s.media("480.mp4") + `"}],
 				"subtitles":[{"label":"Indonesia","lang":"id","url":"https://s/id.vtt"}]}`, true
 		}
 		return "", false
@@ -43,7 +43,7 @@ func TestStreamsMovieHappyPath(t *testing.T) {
 		t.Fatalf("server = %d, want 2", len(servers))
 	}
 	got := servers[0]
-	if got.Name != "Premium WMovies" || got.Type != "mp4" || got.URL != "https://h/a.mp4" || got.Quality != "FULL HD" {
+	if got.Name != "Premium WMovies" || got.Type != "mp4" || got.URL != s.media("a.mp4") || got.Quality != "FULL HD" {
 		t.Fatalf("server 0 salah: %+v", got)
 	}
 	if len(got.Qualities) != 1 || got.Qualities[0].Label != "480p" {
@@ -90,14 +90,14 @@ func TestStreamsTVPicksEpisode(t *testing.T) {
 	s := newSite(t)
 	s.episodes = s.episodesJSON()
 	s.plain = func(string) (string, bool) {
-		return `{"ok":true,"kind":"direct","url":"https://h/tv.m3u8","type":"hls"}`, true
+		return `{"ok":true,"kind":"direct","url":"` + s.media("tv.m3u8") + `","type":"hls"}`, true
 	}
 
 	servers, err := newClient(s).Streams(t.Context(), "tv", "209867", &TVEpisode{Season: 1, Episode: 2})
 	if err != nil {
 		t.Fatalf("Streams: %v", err)
 	}
-	if servers[0].Type != "hls" || servers[0].URL != "https://h/tv.m3u8" {
+	if servers[0].Type != "hls" || servers[0].URL != s.media("tv.m3u8") {
 		t.Fatalf("server tv salah: %+v", servers[0])
 	}
 }
@@ -133,7 +133,7 @@ func TestStreamsCacheRoundtrip(t *testing.T) {
 	t.Chdir(t.TempDir())
 	s := newSite(t)
 	s.plain = func(string) (string, bool) {
-		return `{"ok":true,"kind":"direct","url":"https://h/a.mp4","type":"progressive"}`, true
+		return `{"ok":true,"kind":"direct","url":"` + s.media("a.mp4") + `","type":"progressive"}`, true
 	}
 	c := newClient(s)
 	if _, err := c.Streams(t.Context(), "movie", "557", nil); err != nil {
@@ -346,7 +346,7 @@ func TestResolveRunsInParallel(t *testing.T) {
 	}
 	s.setFeeds(rows...)
 	s.plain = func(string) (string, bool) {
-		return `{"ok":true,"url":"https://h/a.mp4","type":"progressive"}`, true
+		return `{"ok":true,"url":"` + s.media("a.mp4") + `","type":"progressive"}`, true
 	}
 
 	done := make(chan struct{})
@@ -390,7 +390,7 @@ func TestResolveRetriesThenFails(t *testing.T) {
 		feedRow{Type: "server", SourceName: "B", SourceURL: "https://src/b"})
 	s.plain = func(src string) (string, bool) {
 		if src == "https://src/b" {
-			return `{"ok":true,"url":"https://h/b.mp4","type":"progressive"}`, true
+			return `{"ok":true,"url":"` + s.media("b.mp4") + `","type":"progressive"}`, true
 		}
 		return "", false
 	}

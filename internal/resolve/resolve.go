@@ -12,6 +12,7 @@ import (
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -52,8 +53,15 @@ type entry struct {
 // ditulis agar server restart masih bisa memutar slug lama. hint membentuk slug
 // yang terbaca manusia; bila bentrok (dalam proses ini) ditambah hash pendek.
 func (p *Pool) Register(rawURL, hint string) string {
+	return p.RegisterKind(rawURL, hint, "")
+}
+
+// RegisterKind seperti Register, tapi ekstensi slug dipaksa `kind` (mis.
+// ".m3u8") untuk stream yang hasil verifikasinya HLS walau URL-nya tanpa
+// ekstensi. kind kosong = pakai ekstensi dari URL.
+func (p *Pool) RegisterKind(rawURL, hint, kind string) string {
 	p.mu.Lock()
-	slug := p.assignLocked(rawURL, hint)
+	slug := p.assignLocked(rawURL, hint, kind)
 	p.mu.Unlock()
 	p.persist(slug, rawURL)
 	p.tidyIfDue()
@@ -65,18 +73,24 @@ func (p *Pool) Register(rawURL, hint string) string {
 // diturunkan langsung dari URL (stabil antar permintaan, jadi playlist hasil
 // rewrite bisa di-cache browser tanpa slug bergeser).
 func (p *Pool) RegisterTemp(rawURL string) string {
-	slug := "seg-" + short(rawURL)
+	slug := "seg-" + short(rawURL) + extOf(rawURL)
 	p.mu.Lock()
 	p.urls[slug] = &item{url: rawURL, at: time.Now()}
 	p.mu.Unlock()
 	return slug
 }
 
-// assignLocked menyimpan URL di bawah slug; pemanggil memegang p.mu.
-func (p *Pool) assignLocked(rawURL, hint string) string {
-	slug := p.slug(hint)
+// assignLocked menyimpan URL di bawah slug; pemanggil memegang p.mu. Ekstensi
+// media ditambahkan ke slug supaya player mengenali jenis sumbernya; `kind`
+// (bila tidak kosong) menimpa ekstensi hasil URL.
+func (p *Pool) assignLocked(rawURL, hint, kind string) string {
+	ext := kind
+	if ext == "" {
+		ext = extOf(rawURL)
+	}
+	slug := p.slug(hint) + ext
 	if existing, ok := p.urls[slug]; ok && existing.url != rawURL {
-		slug += "-" + short(rawURL)
+		slug = p.slug(hint) + "-" + short(rawURL) + ext
 	}
 	p.urls[slug] = &item{url: rawURL, at: time.Now()}
 	return slug
@@ -184,10 +198,36 @@ func (p *Pool) pruneLocked() {
 	}
 }
 
+// ExtForKind memberi ekstensi slug untuk jenis media hasil verifikasi
+// (internal/em), supaya player memilih jalur adaptif HLS/DASH yang benar
+// walau URL-nya sendiri tanpa ekstensi.
+func ExtForKind(kind string) string {
+	switch kind {
+	case "hls":
+		return ".m3u8"
+	case "mp4":
+		return ".mp4"
+	}
+	return ""
+}
+
 var (
 	reSlugSpace = regexp.MustCompile(`[^a-z0-9]+`)
 	reSlugDash  = regexp.MustCompile(`^-+|-+$`)
+	reExt       = regexp.MustCompile(`\.[a-z0-9]{1,5}$`)
 )
+
+// extOf mengambil ekstensi media dari path URL (".m3u8", ".mp4", ".vtt"), ""
+// bila tidak ada. Slug menyertakannya karena player (movi-player) memilih jalur
+// adaptif — menu kualitas + track subtitle manifest — hanya bila src-nya
+// mengandung ".m3u8"/".mpd"; tanpa itu HLS diperlakukan sebagai file tunggal.
+func extOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return reExt.FindString(strings.ToLower(u.Path))
+}
 
 // slug teks hint jadi kecil, alnum-dash, max 48 kokoh; kosong → seg-<hash>.
 func (p *Pool) slug(hint string) string {

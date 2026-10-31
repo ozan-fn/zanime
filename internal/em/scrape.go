@@ -72,8 +72,10 @@ func (c *Client) embedURL(tab, id string, tv *TVEpisode) string {
 // playerPage menembus welcome gate Cloudflare dan mengembalikan URL akhir
 // halaman player beserta HTML-nya.
 func (c *Client) playerPage(ctx context.Context, embed string) (string, string, error) {
+	c.logf("page", LogInfo, "GET halaman embed %s", embed)
 	res, err := c.get(ctx, embed, map[string]string{"Referer": embedReferer})
 	if err != nil {
+		c.logf("page", LogErr, "halaman embed gagal: %v", err)
 		return "", "", err
 	}
 	html, err := readHTML(res)
@@ -84,12 +86,14 @@ func (c *Client) playerPage(ctx context.Context, embed string) (string, string, 
 	// Gerbang welcome: halaman belum memuat config obfuscated; POST tr= untuk
 	// menukar cookie menjadi halaman player sesungguhnya.
 	if !strings.Contains(html, "atob(") || !strings.Contains(html, "v2/assets") {
+		c.logf("page", LogInfo, "gerbang welcome · POST tr=")
 		form := url.Values{"tr": {embedReferer}}
 		res, err = c.postForm(ctx, playerURL, form, map[string]string{
 			"Origin":  originOf(embed),
 			"Referer": embedReferer,
 		})
 		if err != nil {
+			c.logf("page", LogErr, "gerbang welcome gagal: %v", err)
 			return "", "", err
 		}
 		if html, err = readHTML(res); err != nil {
@@ -97,6 +101,7 @@ func (c *Client) playerPage(ctx context.Context, embed string) (string, string, 
 		}
 		playerURL = res.Request.URL.String()
 	}
+	c.logf("page", LogOK, "halaman player siap (%s)", playerURL)
 	return playerURL, html, nil
 }
 

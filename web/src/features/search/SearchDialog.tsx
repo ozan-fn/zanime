@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Search, X } from 'lucide-react'
 import { api } from '@/lib/api'
+import { log } from '@/lib/logs'
 import { Sq } from '@/features/text/Sq'
 import { useApp } from '@/features/app/AppProvider'
 import type { Episode, Item, Meta, Server, Sub } from '@/lib/types'
@@ -118,10 +119,13 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
     setError(''); setResults([]); setRows([]); setMeta(null); setView('results')
     if (!query.trim()) return
     setBusy('Mencari…')
+    log.info(`cari "${query}" (${useTab})`, 'dlg:search')
     try {
       const body = await api<{ results: Item[] }>(`/api/search?tab=${useTab}&q=${encodeURIComponent(query)}`)
       setResults(body.results || [])
+      log.ok(`hasil: ${(body.results || []).length} judul`, 'dlg:search')
     } catch (err) {
+      log.err(`cari gagal · ${(err as Error).message}`, 'dlg:search')
       setError((err as Error).message)
     } finally {
       setBusy('')
@@ -131,10 +135,12 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
   // Pilih judul: detail meta (untuk tv: daftar episode; movie: langsung streams).
   async function openTitle(item: Item) {
     setError(''); setBusy('Memuat detail…')
+    log.info(`buka detail ${item.name}`, 'dlg:meta')
     try {
       const m = await api<Meta>(`/api/meta/${tab}/${item.id}`)
       if (!m.tmdb) throw new Error('Judul ini tidak punya id TMDB.')
       setMeta(m)
+      log.ok(`meta ok · tmdb ${m.tmdb}`, 'dlg:meta')
       if (tab === 'movie') await loadStreams(m, null)
       else {
         const seasons = [...new Set((m.episodes || []).map((e) => e.season))].sort((a, b) => a - b)
@@ -143,6 +149,7 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
         setView('episodes')
       }
     } catch (err) {
+      log.err(`detail gagal · ${(err as Error).message}`, 'dlg:meta')
       setError((err as Error).message)
     } finally {
       setBusy('')
@@ -152,6 +159,8 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
   // Scrapping embedmaster untuk movie atau satu episode tv.
   async function loadStreams(m: Meta, ep: Episode | null) {
     setBusy('Mencari stream…'); setRows([])
+    const what = ep ? `${m.name} S${ep.season}E${ep.episode}` : m.name
+    log.info(`mencari stream · ${what}`, 'dlg:streams')
     try {
       let url = `/api/streams?tab=${tab}&id=${encodeURIComponent(m.tmdb)}`
       if (ep) url += `&s=${ep.season}&e=${ep.episode}`
@@ -159,8 +168,14 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
       const list = flt(body.servers || [])
       setRows(list)
       setView('streams')
-      if (!list.length) setError('Tidak ada server stream yang bisa diputar.')
+      if (!list.length) {
+        log.err('tidak ada server stream yang bisa diputar', 'dlg:streams')
+        setError('Tidak ada server stream yang bisa diputar.')
+      } else {
+        log.ok(`${list.length} pilihan stream bisa diputar`, 'dlg:streams')
+      }
     } catch (err) {
+      log.err(`stream gagal · ${(err as Error).message}`, 'dlg:streams')
       setError((err as Error).message)
     } finally {
       setBusy('')
