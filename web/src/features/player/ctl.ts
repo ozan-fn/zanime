@@ -1,13 +1,10 @@
-/* Kontrol player di luar React: elemen movi-player diakses imperatif
- * (src/startat/currentTime), dan header (audio-rate) perlu menyentuh
- * playlist + posisi putar tanpa prop drilling ke Player. */
+/* Kontrol player di luar React: elemen movi-player diakses imperatif. */
 export const ctl = {
   el: null as any,
-  wanted: '', // src yang terakhir dipasang; dedupe antar push status
+  wanted: '', // src yang terakhir dipasang; dedupe antar mount
   resumeStartAt: 0, // posisi lanjutan (detik) untuk pemutaran ulang
   retries: 0,
   lastRetry: 0,
-  lastSelected: null as number | null, // file terpilih terakhir (ganti → reset)
 }
 
 // Elemen kustom: hapus shim property `src` milik modul sebelum menetapkan,
@@ -17,8 +14,7 @@ export function setPlayerSrc(el: any, url: string) {
   el.src = url
 }
 
-// Buang playback sekarang; siklus status berikutnya memuat ulang begitu
-// sesi HLS baru siap (dipakai saat ganti file / mulai torrent baru).
+// Buang playback sekarang; mount berikutnya memuat ulang src baru.
 export function resetPlayback() {
   ctl.wanted = ''
   ctl.resumeStartAt = 0
@@ -28,5 +24,3 @@ export function resetPlayback() {
     el.removeAttribute('src')
   }
 }
-
-

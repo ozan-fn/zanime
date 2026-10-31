@@ -1,92 +1,44 @@
-// Bentuk state yang dikirim server via /api/ws dan /api/state. Angka bisa
-// hilang per frame, jadi semua field opsional; akses pakai `|| 0` dsb.
-export type TorrentFile = {
-  index: number
+// Bentuk data dari backend (lihat internal/tmdb dan internal/em).
+export type Item = {
+  id: string
+  tmdb?: string
   name: string
-  path?: string
-  size?: number
-}
-
-export type SubtitleTrack = {
-  url: string
-  lang: string
-  name?: string
-  format?: string
-}
-
-export type MediaChapter = {
-  title: string
-  start: number
-  end?: number
-}
-
-export type MediaTrack = {
-  codec?: string
-  lang?: string
-  name?: string
-  width?: number
-  height?: number
-  fps?: number
-  channels?: number
-  sample_rate?: number
-  bit_depth?: number
-  default?: boolean
-  forced?: boolean
-}
-
-export type MediaInfo = {
-  title?: string
-  description?: string
-  rating?: string
-  genre?: string
-  date?: string
-  duration?: number
+  year?: string
+  type: string
   poster?: string
-  chapters?: MediaChapter[]
-  video?: MediaTrack[]
-  audio?: MediaTrack[]
-  subs?: MediaTrack[]
 }
 
-export type TorrentState = {
-  ready?: boolean
-  loading?: boolean
-  files?: TorrentFile[]
-  selected?: number
-  cache?: { used?: number; limit?: number; evictions?: number; dir?: string }
-  peers?: number
-  name?: string
-  info_hash?: string
-  length?: number
-  downloaded?: number
-  torrent?: {
-    pieces?: number
-    piece_length?: number
-    complete_pieces?: number
-    partial_pieces?: number
-    busy_pieces?: number
-    total_peers?: number
-    seeders?: number
-    half_open?: number
-    pending_peers?: number
-    chunks_useful?: number
-    chunks_wasted?: number
-    wire_in?: number
-    hashed?: number
-    wasted_bytes?: number
-    data_in?: number
-    ram_bytes?: number
-  }
-  net?: { from_peers?: number; to_client?: number }
-  media?: MediaInfo
-  hls?: {
-    index?: number
-    ready?: boolean
-    live?: boolean
-    error?: string
-    playlist?: string
-    subs?: SubtitleTrack[]
-  }
-  users?: { active?: number; tabs?: number }
-  server?: { uptime?: number; goroutines?: number; heap?: number; sys?: number }
+export type Episode = {
+  season: number
+  episode: number
+  title?: string
+  thumbnail?: string
+  released?: string
+}
+
+export type Meta = {
+  id: string
+  tmdb: string
+  name: string
+  year?: string
+  description?: string
+  runtime?: string
+  genres?: string[]
+  rating?: string
+  poster?: string
+  episodes?: Episode[]
+}
+
+export type Quality = { label: string; url: string }
+export type Sub = { label: string; lang: string; url: string }
+
+// Satu sumber stream ter-resolve (embedmaster).
+export type Server = {
+  name: string
+  type: string // mp4 | hls
+  quality?: string
+  qualities?: Quality[]
+  subs?: Sub[]
+  url?: string
+  err?: string
 }

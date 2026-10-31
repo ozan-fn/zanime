@@ -1,423 +1,81 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"io"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"os"
-	"path"
-	"path/filepath"
-	"slices"
-	"strings"
 	"testing"
-	"time"
 
-	"github.com/anacrolix/torrent"
-	"github.com/anacrolix/torrent/bencode"
-	"github.com/anacrolix/torrent/metainfo"
 	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
 
-	"github.com/gravity-zero/mkvgo/matroska"
-	"github.com/gravity-zero/mkvgo/mkv"
-	"github.com/gravity-zero/mkvgo/mkv/writer"
-
-	"zanime/internal/diskcache"
-	mediameta "zanime/internal/media"
+	"zanime/internal/tmdb"
 )
 
-// TestWSStatePayload memastikan frame /api/ws memuat semua field yang dibaca
-// UI: files, selected, cache, peers/net, loading.
-func TestWSStatePayload(t *testing.T) {
-	cache, err := diskcache.New(t.TempDir(), 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := torrent.NewDefaultClientConfig()
-	cfg.DataDir = t.TempDir()
-	cfg.DefaultStorage = cache
-	cfg.NoDHT = true
-	cfg.DisableTrackers = true
-	cfg.DisablePEX = true
-	cfg.NoDefaultPortForwarding = true
-	cfg.ListenPort = 0
-	cl, err := torrent.NewClient(cfg)
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	defer cl.Close()
-
-	srv := newServer(cl, cache, nil, 0)
+// TestAPISearchWrappedShape mengunci kontrak /api/search: respons harus objek
+// {"results": [...]}, bukan array polos — frontend membaca body.results, dan
+// bug dulu (array polos) membuat UI selalu tampil "Masukkan query lalu tekan
+// Cari" padahal data sudah sampai.
+func TestAPISearchWrappedShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	r.GET("/api/ws", srv.apiWS)
-	ts := httptest.NewServer(r)
-	defer ts.Close()
-
-	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(ts.URL, "http")+"/api/ws", nil)
-	if err != nil {
-		t.Fatalf("dial ws: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, data, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("baca frame ws: %v", err)
-	}
-
-	var state map[string]any
-	if err := json.Unmarshal(data, &state); err != nil {
-		t.Fatalf("frame bukan JSON: %v", err)
-	}
-	for _, key := range []string{"ready", "loading", "files", "selected", "cache", "net", "users", "server"} {
-		if _, ok := state[key]; !ok {
-			t.Fatalf("state tanpa %q: %v", key, state)
-		}
-	}
-	netCounters, _ := state["net"].(map[string]any)
-	for _, key := range []string{"from_peers", "to_client"} {
-		if _, ok := netCounters[key]; !ok {
-			t.Fatalf("state.net tanpa %q: %v", key, netCounters)
-		}
-	}
-	cacheInfo, _ := state["cache"].(map[string]any)
-	for _, key := range []string{"used", "limit", "evictions"} {
-		if _, ok := cacheInfo[key]; !ok {
-			t.Fatalf("state.cache tanpa %q: %v", key, cacheInfo)
-		}
-	}
-	srvInfo, _ := state["server"].(map[string]any)
-	for _, key := range []string{"uptime", "goroutines", "heap", "sys"} {
-		if _, ok := srvInfo[key]; !ok {
-			t.Fatalf("state.server tanpa %q: %v", key, srvInfo)
-		}
-	}
-	users, _ := state["users"].(map[string]any)
-	for _, key := range []string{"active", "tabs"} {
-		if _, ok := users[key]; !ok {
-			t.Fatalf("state.users tanpa %q: %v", key, users)
-		}
-	}
-}
-
-func TestVideoFilesSortedByName(t *testing.T) {
-	info := metainfo.Info{
-		Name:        "pack",
-		PieceLength: 1 << 20,
-		Pieces:      make([]byte, 20), // one piece; contents are never read
-		Files: []metainfo.FileInfo{
-			{Path: []string{"ep02.mkv"}, Length: 1},
-			{Path: []string{"ep10.mkv"}, Length: 1},
-			{Path: []string{"ep01.mkv"}, Length: 1},
-			{Path: []string{"notes.txt"}, Length: 1},
-		},
-	}
-	infoBytes, err := bencode.Marshal(info)
-	if err != nil {
-		t.Fatalf("encode info: %v", err)
-	}
-
-	cfg := torrent.NewDefaultClientConfig()
-	cfg.DataDir = t.TempDir()
-	cacheDir, err := diskcache.New(t.TempDir(), 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.DefaultStorage = cacheDir
-	cfg.NoDHT = true
-	cfg.DisableTrackers = true
-	cfg.DisablePEX = true
-	cfg.NoDefaultPortForwarding = true
-	cfg.ListenPort = 0
-	cl, err := torrent.NewClient(cfg)
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	defer cl.Close()
-
-	tor, _, err := cl.AddTorrentSpec(torrent.TorrentSpecFromMetaInfo(&metainfo.MetaInfo{InfoBytes: infoBytes}))
-	if err != nil {
-		t.Fatalf("AddTorrentSpec: %v", err)
-	}
-	<-tor.GotInfo()
-
-	var got []string
-	for _, f := range videoFiles(tor.Files()) {
-		got = append(got, path.Base(f.Path()))
-	}
-	want := []string{"ep01.mkv", "ep02.mkv", "ep10.mkv"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("videoFiles order = %v, want %v", got, want)
-	}
-}
-
-// writeFixture menulis Matroska kecil (H.264 + satu audio) supaya mkvgo bisa
-// menyusun playlist dan segmen sungguhan.
-func writeFixture(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "x.mkv")
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
-	c := &matroska.Container{Info: mkv.SegmentInfo{TimecodeScale: 1_000_000}}
-	w, h := uint32(320), uint32(240)
-	sr := 48000.0
-	ch := uint8(2)
-	tracks := []mkv.Track{
-		{ID: 1, Type: mkv.VideoTrack, Codec: "h264", Width: &w, Height: &h, CodecPrivate: []byte{1}},
-		{ID: 2, Type: mkv.AudioTrack, Codec: "aac", SampleRate: &sr, Channels: &ch,
-			Language: "jpn", CodecPrivate: []byte{0x11, 0x90}},
-	}
-	mw := writer.NewMKVWriter(f)
-	if err := mw.WriteStart(); err != nil {
-		t.Fatal(err)
-	}
-	if err := mw.WriteMetadata(c, tracks, 4000); err != nil {
-		t.Fatal(err)
-	}
-	for tc := int64(0); tc < 4000; tc += 500 {
-		var blocks []mkv.Block
-		if tc%1000 == 0 {
-			blocks = append(blocks, mkv.Block{TrackNumber: 1, Timecode: tc, Keyframe: true, Data: []byte("videoframe")})
-		}
-		blocks = append(blocks, mkv.Block{TrackNumber: 2, Timecode: tc, Keyframe: true, Data: []byte("a")})
-		if err := mw.WriteClusterWithCues(tc, 1_000_000, blocks); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := mw.Finalize(); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-// TestHLSFileServesSession memastikan route /hls mengirim master playlist dan
-// segmen yang dibuat mkvgo saat diminta, serta 404 untuk index/sesi lain.
-func TestHLSFileServesSession(t *testing.T) {
-	clip := writeFixture(t)
-	srv := newServer(nil, testCache(t), nil, 0)
-	t.Cleanup(srv.hls.Stop)
-
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, clip)
-	}))
-	defer upstream.Close()
-	srv.hls.Start(context.Background(), 0, upstream.URL+"/x.mkv")
-
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	r.GET("/hls/:index/*name", srv.hlsFile)
-	fetch := func(path string) *httptest.ResponseRecorder {
-		rec := httptest.NewRecorder()
-		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		return rec
-	}
-
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if rec := fetch("/hls/0/master.m3u8"); rec.Code == http.StatusOK {
-			if ct := rec.Header().Get("Content-Type"); ct != "application/vnd.apple.mpegurl" {
-				t.Fatalf("content-type playlist = %q", ct)
-			}
-			if !strings.Contains(rec.Body.String(), "playlist.m3u8") {
-				t.Fatalf("playlist = %q", rec.Body.String())
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("playlist tidak pernah tersedia")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	segment := fetch("/hls/0/seg00001.m4s")
-	if segment.Code != http.StatusOK || segment.Body.Len() == 0 {
-		t.Fatalf("segmen = %d %q", segment.Code, segment.Body.String())
-	}
-	if ct := segment.Header().Get("Content-Type"); ct != "video/iso.segment" {
-		t.Fatalf("content-type segmen = %q", ct)
-	}
-	if rec := fetch("/hls/1/master.m3u8"); rec.Code != http.StatusNotFound {
-		t.Fatalf("index lain = %d, want 404", rec.Code)
-	}
-}
-
-// TestAddonProxy memastikan katalog/meta/streams diambil server: host yang
-// diizinkan diteruskan apa adanya, host/skema lain ditolak.
-func TestAddonProxy(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/catalog/series/top/search=a.json" {
-			http.NotFound(w, r)
+		if r.URL.Path == "/catalog/movie/top/spiderman.json" ||
+			r.URL.Path == "/catalog/movie/top/search=spiderman.json" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"metas": []map[string]any{{
+					"id":          "tt0145487",
+					"name":        "Spider-Man",
+					"releaseInfo": "2002",
+					"poster":      "https://img/poster.jpg",
+				}},
+			})
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"metas":[{"id":"tt1","name":"Contoh"}]}`))
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer upstream.Close()
-	host := strings.TrimPrefix(upstream.URL, "http://")
-	addonHosts[host] = true
-	defer delete(addonHosts, host)
 
-	gin.SetMode(gin.TestMode)
-	srv := newServer(nil, testCache(t), nil, 0)
+	src := tmdb.New()
+	src.SetBase(upstream.URL)
+	srv := &server{tmdb: src}
 	r := gin.New()
-	r.GET("/api/addon", srv.addonProxy)
-	call := func(raw string) *httptest.ResponseRecorder {
-		rec := httptest.NewRecorder()
-		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/addon?url="+url.QueryEscape(raw), nil))
-		return rec
+	r.GET("/api/search", srv.apiSearch)
+
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/search?tab=movie&q=spiderman", nil)
+	r.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", res.Code, res.Body.String())
 	}
 
-	ok := call(upstream.URL + "/catalog/series/top/search=a.json")
-	if ok.Code != http.StatusOK || !strings.Contains(ok.Body.String(), `"tt1"`) {
-		t.Fatalf("addon diteruskan = %d %s", ok.Code, ok.Body.String())
+	var body struct {
+		Results []tmdb.Item `json:"results"`
 	}
-	if ct := ok.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
-		t.Fatalf("content-type = %q", ct)
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bukan objek {results}: %v (%s)", err, res.Body.String())
 	}
-	for _, raw := range []string{
-		"https://example.com/catalog/series/top/search=a.json",
-		"file:///etc/passwd",
-		upstream.URL + "/catalog/movie/top/search=b.json", // 404 dari addon
-	} {
-		if rec := call(raw); rec.Code != http.StatusBadRequest && rec.Code != http.StatusBadGateway {
-			t.Fatalf("%s = %d, want 400/502", raw, rec.Code)
-		}
+	if len(body.Results) == 0 {
+		t.Fatalf("results kosong: %s", res.Body.String())
+	}
+	got := body.Results[0]
+	if got.ID != "tt0145487" || got.Name != "Spider-Man" || got.Year != "2002" || got.Type != "movie" {
+		t.Fatalf("item tidak sesuai: %+v", got)
 	}
 }
 
-// TestCachedStateShared memastikan semua tab WS memakai satu snapshot 500 ms,
-// jadi jumlah tab tidak mengalikan kerja per frame.
-func TestCachedStateShared(t *testing.T) {
-	srv := newServer(nil, testCache(t), nil, 0)
-	srv.cachedState()
-	srv.addWSUser("u1")
-	if got := srv.cachedState()["users"].(gin.H)["active"]; got != 0 {
-		t.Fatalf("snapshot cache: active = %v, want 0 (masih snapshot lama)", got)
-	}
-	srv.stateMu.Lock()
-	srv.stateAt = time.Now().Add(-time.Second)
-	srv.stateMu.Unlock()
-	if got := srv.cachedState()["users"].(gin.H)["active"]; got != 1 {
-		t.Fatalf("state segar: active = %v, want 1", got)
-	}
-}
-
-// TestIndexHTMLBalanced menjaga markup embedded tetap valid: file harus punya
-// root React yang sama dengan yang di-bundle Vite (#root), jadi kegagalan
-// build frontend tidak diam-diam ter-embed.
-func TestIndexHTMLBalanced(t *testing.T) {
-	data, err := fs.ReadFile(webFiles, "web/dist/index.html")
-	if err != nil {
-		t.Fatalf("baca web/dist/index.html: %v (jalankan pnpm build di web/ dulu)", err)
-	}
-	html := string(data)
-	if !strings.Contains(html, `id="root"`) {
-		t.Fatalf("web/dist/index.html tidak mengandung <div id=\"root\">")
-	}
-	if got := strings.Count(html, "<div"); got != 1 {
-		t.Fatalf("jumlah div = %d, want 1 (hanya root React)", got)
-	}
-}
-
-// testCache gives each server test its own throwaway disk cache.
-func testCache(t *testing.T) *diskcache.Client {
-	t.Helper()
-	cache, err := diskcache.New(t.TempDir(), 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return cache
-}
-
-// TestStateAndCoverFromMedia memastikan metadata MKV yang sudah dipindai masuk
-// ke state sebagai media.poster, dan endpoint cover melayani byte gambar hanya
-// untuk index yang sedang aktif.
-func TestStateAndCoverFromMedia(t *testing.T) {
-	info := metainfo.Info{
-		Name:        "ep01.mkv",
-		PieceLength: 1 << 20,
-		Pieces:      make([]byte, 20),
-		Files:       []metainfo.FileInfo{{Path: []string{"ep01.mkv"}, Length: 1}},
-	}
-	infoBytes, err := bencode.Marshal(info)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := torrent.NewDefaultClientConfig()
-	cfg.DataDir = t.TempDir()
-	cfg.DefaultStorage = testCache(t)
-	cfg.NoDHT = true
-	cfg.DisableTrackers = true
-	cfg.DisablePEX = true
-	cfg.NoDefaultPortForwarding = true
-	cfg.ListenPort = 0
-	cl, err := torrent.NewClient(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cl.Close()
-	tor, _, err := cl.AddTorrentSpec(torrent.TorrentSpecFromMetaInfo(&metainfo.MetaInfo{InfoBytes: infoBytes}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	<-tor.GotInfo()
-
-	srv := newServer(cl, testCache(t), nil, 0)
-	srv.t = tor
-	srv.files = videoFiles(tor.Files())
-	srv.selected = 0
-	cover := []byte("\x89PNG\r\n\x1a\ncover")
-	srv.mediaMu.Lock()
-	srv.mediaInfo = mediameta.Info{
-		Title:       "Episode 1",
-		Description: "Sinopsis.",
-		Chapters:    []mediameta.Chapter{{Title: "Awal", Start: 0}},
-		Cover:       cover,
-		CoverMIME:   "image/png",
-	}
-	srv.mediaIndex, srv.mediaTorrent, srv.mediaReady = 0, tor, true
-	srv.mediaMu.Unlock()
-
-	state := srv.state()
-	m, ok := state["media"].(gin.H)
-	if !ok {
-		t.Fatalf("state tanpa media: %v", state)
-	}
-	if m["title"] != "Episode 1" || m["poster"] != "/cover/0" {
-		t.Fatalf("state.media = %v", m)
-	}
-
+// TestAPISearchBadRequest: parameter salah tetap 400 dengan pesan JSON.
+func TestAPISearchBadRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	srv := &server{tmdb: tmdb.New()}
 	r := gin.New()
-	r.GET("/cover/:index", srv.coverArt)
-	ts := httptest.NewServer(r)
-	defer ts.Close()
-
-	res, err := http.Get(ts.URL + "/cover/0")
-	if err != nil {
-		t.Fatal(err)
+	r.GET("/api/search", srv.apiSearch)
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/search?tab=lain&q=x", nil)
+	r.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400", res.Code)
 	}
-	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode != http.StatusOK || res.Header.Get("Content-Type") != "image/png" {
-		t.Fatalf("cover = %d %q", res.StatusCode, res.Header.Get("Content-Type"))
-	}
-	got, _ := io.ReadAll(res.Body)
-	if string(got) != string(cover) {
-		t.Fatalf("byte cover = %q", got)
-	}
-	if res, err = http.Get(ts.URL + "/cover/1"); err != nil {
-		t.Fatal(err)
-	} else {
-		defer func() { _ = res.Body.Close() }()
-		if res.StatusCode != http.StatusNotFound {
-			t.Fatalf("index lain = %d, want 404", res.StatusCode)
-		}
+	var body map[string]string
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil || body["error"] == "" {
+		t.Fatalf("harus error JSON: %v", res.Body.String())
 	}
 }

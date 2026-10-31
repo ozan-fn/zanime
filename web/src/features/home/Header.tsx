@@ -1,8 +1,6 @@
 import { Search } from 'lucide-react'
 
-/* Header: satu-satunya aksi server-side di sini adalah membuka dialog
- * pencarian. Tidak ada toggle transcode / bitrate audio: mkvgo murni
- * muxer, track sumber dipakai apa adanya. */
+/* Header: satu-satunya aksi adalah membuka dialog pencarian. */
 export function Header({ onOpenSearch }: { onOpenSearch: () => void }) {
   return (
     <div className="flex items-center gap-2">
