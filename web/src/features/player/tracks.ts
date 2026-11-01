@@ -56,6 +56,19 @@ export function shiftCues(cues: readonly Cue[], delay: number, base: WeakMap<obj
   }
 }
 
+/* uniqueLabel memberi nama track yang tidak bentrok dengan track lain. Track
+ * pilihan pengguna (subdl / file sendiri) sering bernama sama dengan track
+ * bawaan server (sama-sama "English"); tanpa pembeda, keduanya bisa tertukar
+ * di daftar subtitle player. Akhiran (2), (3), … dipakai bila masih sama. */
+export function uniqueLabel(label: string, taken: Iterable<string> = []): string {
+  const used = new Set(taken)
+  const base = label.trim() || 'Subtitle'
+  if (!used.has(base)) return base
+  let n = 2
+  while (used.has(`${base} (${n})`)) n++
+  return `${base} (${n})`
+}
+
 /* subTracks menyiapkan track subtitle untuk <Track>: URL wajib aman, lang
  * wajib ada (dipakai menu subtitle), duplikat lang dibuang, dan satu track
  * dipilih otomatis — Indonesia, fallback Inggris; tanpa keduanya tidak ada

@@ -18,7 +18,7 @@ import { Sq } from '@/features/text/Sq'
 import { useApp } from '@/features/app/AppProvider'
 import { LogPanel } from '@/features/log/LogPanel'
 import type { SubtitleMedia } from '@/features/subtitle/SubtitleCard'
-import { cueCount, shiftCues, subTracks, toVtt } from './tracks'
+import { cueCount, shiftCues, subTracks, toVtt, uniqueLabel } from './tracks'
 
 /* Pemutar: Vidstack Default Layout di atas <video> native, dengan HLS lewat
  * hls.js yang dibundel lokal (default Vidstack mengambilnya dari CDN, jadi
@@ -129,12 +129,17 @@ export function Player({
   }, [onSubtitle])
 
   // Subtitle sendiri menang: track otomatis dilepas dari default agar tidak
-  // rebutan dengan pilihan Indonesia/Inggris.
+  // rebutan dengan pilihan Indonesia/Inggris. Namanya dibuat unik karena
+  // subtitle subdl sering berlabel sama dengan track bawaan server.
   const auto = subTracks(playing?.subs)
+  const subLabel = uniqueLabel(
+    subtitle?.label || 'Subtitle',
+    auto.map((t) => t.label),
+  )
   const tracks = subtitle
     ? [
         ...auto.map((t) => ({ ...t, default: false })),
-        { src: subtitle.src, kind: 'subtitles' as const, label: subtitle.label, lang: 'und', default: true },
+        { src: subtitle.src, kind: 'subtitles' as const, label: subLabel, lang: 'und', default: true },
       ]
     : auto
 
@@ -150,18 +155,20 @@ export function Player({
 
   // Klik "pakai" (kartu subtitle atau file sendiri) = track langsung tampil.
   // Atribut `default` pada <Track> hanya berlaku saat elemen dipasang, jadi
-  // mode-nya diset eksplisit: track lokal (`und`) aktif, sisanya dimatikan.
-  useEffect(() => {
+  // mode-nya diset eksplisit. Track dicari lewat `src` yang diklik (bukan
+  // lewat label/lang), karena label bisa sama dengan track bawaan server.
+  const showSub = useCallback(() => {
     const p = player.current
     if (!p || !subtitle) return
     const list = p.textTracks
-    for (let i = 0; i < list.length; i++) {
-      const track = list[i]
-      if (!track) continue
-      const lang: string = track.language
-      track.mode = lang === 'und' ? 'showing' : 'disabled'
-    }
-  }, [subtitle, current])
+    const target = list.toArray().find((t) => t.src === subtitle.src)
+    if (!target) return
+    for (const track of list) track.mode = track === target ? 'showing' : 'disabled'
+  }, [subtitle])
+
+  useEffect(() => {
+    showSub()
+  }, [showSub, current])
 
   // Elemen player di-mount ulang saat ganti server, jadi track dan player-nya
   // baru: pasang ulang pendengar delay pada instance yang sekarang.
@@ -171,11 +178,14 @@ export function Player({
     const onAdd = () => {
       wireTracks()
       applyDelay()
+      // Track subtitle pengguna bisa terdaftar belakangan; pasang mode-nya
+      // begitu track itu muncul, bukan hanya saat `subtitle` berubah.
+      showSub()
     }
     tracks.addEventListener('add', onAdd)
     onAdd()
     return () => tracks.removeEventListener('add', onAdd)
-  }, [current, wireTracks, applyDelay])
+  }, [current, wireTracks, applyDelay, showSub])
 
   const bumpDelay = useCallback((step: number) => {
     setDelay((v) => Math.max(-DELAY_MAX, Math.min(DELAY_MAX, Math.round((v + step) * 10) / 10)))

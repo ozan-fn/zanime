@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cueCount, shiftCues, subTracks, toVtt } from './tracks'
+import { cueCount, shiftCues, subTracks, toVtt, uniqueLabel } from './tracks'
 
 describe('subTracks', () => {
   it('memetakan subtitle aman, track pertama default, label jatuh ke lang', () => {
@@ -79,6 +79,21 @@ describe('shiftCues', () => {
     const cues = [cue(10, 12)]
     shiftCues(cues, 1, new WeakMap())
     expect(cues).toEqual([cue(11, 13)])
+  })
+})
+
+describe('uniqueLabel', () => {
+  it('label yang belum dipakai dibiarkan, spasi dipangkas', () => {
+    expect(uniqueLabel(' Indonesia ', ['English'])).toBe('Indonesia')
+  })
+
+  it('label bentrok diberi akhiran angka sampai unik', () => {
+    expect(uniqueLabel('English', ['English'])).toBe('English (2)')
+    expect(uniqueLabel('English', ['English', 'English (2)'])).toBe('English (3)')
+  })
+
+  it('label kosong jatuh ke "Subtitle"', () => {
+    expect(uniqueLabel('', [])).toBe('Subtitle')
   })
 })
 
