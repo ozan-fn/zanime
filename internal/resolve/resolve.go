@@ -218,9 +218,9 @@ var (
 )
 
 // extOf mengambil ekstensi media dari path URL (".m3u8", ".mp4", ".vtt"), ""
-// bila tidak ada. Slug menyertakannya karena player (movi-player) memilih jalur
-// adaptif — menu kualitas + track subtitle manifest — hanya bila src-nya
-// mengandung ".m3u8"/".mpd"; tanpa itu HLS diperlakukan sebagai file tunggal.
+// bila tidak ada. Slug menyertakannya karena player memilih jalur adaptif —
+// menu kualitas + track subtitle manifest — hanya bila src-nya mengandung
+// ".m3u8"/".mpd"; tanpa itu HLS diperlakukan sebagai file tunggal.
 func extOf(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {

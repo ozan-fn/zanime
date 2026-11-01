@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { clearLogs, useLogs, type Level } from '@/lib/logs'
 
-/* Panel log realtime dari satu store (lib/logs), dipakai di dua tempat:
- *   - dalam dialog pencarian (daftar stream di-scrape & diuji), dan
- *   - di depan video (stream/video dimuat player).
+/* Panel log realtime dari satu store (lib/logs), dipasang di bawah player:
+ * baris scrape (daftar stream diuji) dan pemuatan video tampil di sini.
  * Satu langkah tampil "[sedang…]" lalu berubah "[OK]"/"[GAGAL]" (baris ber-id
  * sama digantikan di tempat, bukan menumpuk). */
 

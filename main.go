@@ -286,7 +286,7 @@ func (s *server) apiStreams(c *gin.Context) {
 			playable++
 		}
 	}
-	s.logs.OKf("daftar stream: %d dari %d server bisa diputar", playable, len(res))
+	s.logs.OKf("Daftar stream siap · %d dari %d server bisa diputar", playable, len(res))
 	c.JSON(http.StatusOK, gin.H{"id": id, "tab": tab, "servers": res})
 }
 
@@ -331,13 +331,13 @@ func (s *server) streamProxy(c *gin.Context) {
 
 	res, err := proxyClient.Do(req)
 	if err != nil {
-		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelErr, Text: fmt.Sprintf("%s · tidak terhubung: %v", target.Host, err)})
+		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelErr, Text: fmt.Sprintf("Media gagal dihubungi · %v", err)})
 		c.JSON(http.StatusBadGateway, gin.H{"error": "gagal menghubungi upstream: " + err.Error()})
 		return
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode < 200 || res.StatusCode >= 400 {
-		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelErr, Text: fmt.Sprintf("%s · upstream HTTP %s", target.Host, res.Status)})
+		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelErr, Text: fmt.Sprintf("Media ditolak server sumber · HTTP %s", res.Status)})
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("upstream HTTP %s", res.Status)})
 		return
 	}
@@ -350,7 +350,7 @@ func (s *server) streamProxy(c *gin.Context) {
 		}
 		renditions, segments, vod := playlistStats(string(body))
 		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelOK, Text: fmt.Sprintf(
-			"playlist %s · %d rendition · %d segmen · %s", target.Host, renditions, segments, vodLabel(vod))})
+			"Playlist HLS dibaca · %d rendition · %d segmen · %s", renditions, segments, vodLabel(vod))})
 		// VOD (ada #EXT-X-ENDLIST) tidak berubah → biarkan browser meng-cache;
 		// playlist live tetap no-store. Master playlist bisa 1+ MB, jadi
 		// meng-cache menghindari fetch ulang besar tiap player membacanya.
@@ -363,9 +363,9 @@ func (s *server) streamProxy(c *gin.Context) {
 		return
 	}
 
-	// Subtitle: parser movi-player hanya mengenali timestamp HH:MM:SS.mmm,
-	// padahal banyak CDN subtitle mengirim MM:SS.mmm (atau jam satu digit),
-	// sehingga track kosong (0 cue) walau URL-nya sehat. Normalisasi di sini.
+	// Subtitle: sebagian CDN mengirim MM:SS.mmm (atau jam satu digit) yang
+	// bukan VTT valid, sehingga track jadi kosong (0 cue) walau URL-nya sehat.
+	// Normalisasi timestamp di sini.
 	if isSubtitle(res.Header.Get("Content-Type"), target.Path) {
 		body, err := io.ReadAll(res.Body)
 		if err != nil {
@@ -374,7 +374,7 @@ func (s *server) streamProxy(c *gin.Context) {
 		}
 		out := normalizeVTT(string(body))
 		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelOK, Text: fmt.Sprintf(
-			"subtitle VTT · %s · %d cue", target.Host, strings.Count(out, "-->"))})
+			"Subtitle VTT siap · %d cue", strings.Count(out, "-->"))})
 		c.Data(http.StatusOK, "text/vtt; charset=utf-8", []byte(out))
 		return
 	}
@@ -385,7 +385,7 @@ func (s *server) streamProxy(c *gin.Context) {
 		}
 	}
 	s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelOK, Text: fmt.Sprintf(
-		"media %s · HTTP %s · %s", target.Host, res.Status, sizeLabel(res.Header.Get("Content-Length")))})
+		"Media terkirim · HTTP %s · %s", res.Status, sizeLabel(res.Header.Get("Content-Length")))})
 	c.Status(res.StatusCode)
 	if c.Request.Method != http.MethodHead {
 		_, _ = io.Copy(c.Writer, res.Body)
@@ -449,7 +449,7 @@ var (
 )
 
 // normalizeVTT memaksa semua timestamp pada baris cue jadi HH:MM:SS.mmm —
-// bentuk yang dikenali parser movi-player. Baris non-cue dibiarkan apa adanya.
+// bentuk VTT valid yang diterima semua parser. Baris non-cue dibiarkan apa adanya.
 func normalizeVTT(body string) string {
 	lines := strings.Split(body, "\n")
 	for i, line := range lines {

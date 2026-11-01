@@ -10,8 +10,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -95,7 +98,7 @@ func (c *Client) Streams(ctx context.Context, tab, id string, tv *TVEpisode) ([]
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scrapeSecs*time.Second)
 	defer cancel()
 
-	c.logf("scrape", LogInfo, "mulai scrape %s %s", tab, id)
+	c.logf("scrape", LogInfo, "Mulai mengambil daftar server…")
 	servers, err := client.scrape(runCtx, tab, id, tv)
 	if err != nil {
 		c.logf("scrape", LogErr, "scrape gagal: %v", err)
@@ -108,7 +111,7 @@ func (c *Client) Streams(ctx context.Context, tab, id string, tv *TVEpisode) ([]
 		}
 	}
 	if playable == 0 {
-		c.logf("scrape", LogErr, "tidak ada server yang bisa diputar (id %s)", id)
+		c.logf("scrape", LogErr, "Tidak ada server yang bisa diputar")
 		return nil, fmt.Errorf("tidak ada server yang bisa diputar (id %s)", id)
 	}
 	c.logf("scrape", LogOK, "%d dari %d server bisa diputar", playable, len(servers))
@@ -152,45 +155,37 @@ func (c *Client) scrape(ctx context.Context, tab, id string, tv *TVEpisode) ([]S
 	// Resolve tiap server lewat worker pool (dibatasi resolveWorkers supaya
 	// tidak membanjiri embedmaster): berurutan 15 server bisa ~6 dtk, paralel
 	// ~1 dtk. Indeks dijaga supaya urutan server di UI tetap sama seperti feed.
-	// Tiap URL yang berhasil di-resolve langsung diverifikasi (probe 128 KiB ke
-	// host video) supaya server yang cuma halaman embed / tidak bisa diputar
-	// tidak ikut ditampilkan.
+	// Hasil resolve langsung ditampilkan (tanpa probe 128 KiB); jenis stream
+	// ditebak dari jawaban resolve + ekstensi URL.
 	servers := make([]Server, len(rows))
 	parallel(len(rows), resolveWorkers, func(i int) {
 		row := rows[i]
-		sid := "srv:" + row.SourceName
+		sid := fmt.Sprintf("srv:%d", i+1)
 		s := Server{Name: row.SourceName}
-		c.logf(sid+":resolve", LogInfo, "resolve %s…", row.SourceName)
+		c.logf(sid+":resolve", LogInfo, "Menyiapkan server %d dari %d…", i+1, len(rows))
 		data := c.resolve(ctx, cfg, playerURL, row)
 		if !data.OK {
-			c.logf(sid+":resolve", LogErr, "%s: resolve gagal", row.SourceName)
+			c.logf(sid+":resolve", LogErr, "Server %d gagal disiapkan", i+1)
 			s.Err = "server gagal resolve"
 			servers[i] = s
 			return
 		}
-		c.logf(sid+":resolve", LogOK, "%s: resolve → %s", row.SourceName, orDefault(data.Type, "?"))
-		// verifyStream menulis baris ujinya sendiri (info → ok/err).
-		kind, ok := c.verifyStream(ctx, sid+":verify", data.URL)
-		if !ok {
-			c.logf(sid+":ready", LogErr, "%s disembunyikan: stream tidak bisa diputar", row.SourceName)
-			s.Err = "stream tidak bisa diputar"
-			servers[i] = s
-			return
-		}
-		// Jenis dari verifikasi menimpa tebakan resolve (mis. server "mp4" yang
-		// ternyata playlist → hls).
+		// Ekstensi URL lebih dipercaya daripada tebakan resolve (banyak server
+		// melaporkan "progressive" padahal URL-nya playlist).
+		kind := kindOf(data.Type, data.URL)
+		c.logf(sid+":resolve", LogOK, "Server %d siap · %s", i+1, strings.ToUpper(kind))
 		s.Type = kind
 		s.Quality = data.Quality
 		s.Qualities = data.Qualities
 		s.Subs = data.Subtitles
 		s.URL = data.URL
-		c.logf(sid+":ready", LogOK, "%s siap diputar · %s · %d kualitas · %d subtitle",
-			row.SourceName, kind, len(data.Qualities), len(data.Subtitles))
+		c.logf(sid+":ready", LogOK, "Server %d siap diputar · %s · %d kualitas · %d subtitle",
+			i+1, strings.ToUpper(kind), len(data.Qualities), len(data.Subtitles))
 		servers[i] = s
 	})
 
 	if len(servers) == 0 {
-		return nil, fmt.Errorf("embedmaster tidak mengembalikan server (id %s)", id)
+		return nil, fmt.Errorf("tidak ada server yang dikembalikan")
 	}
 	return servers, nil
 }
@@ -232,12 +227,18 @@ func typeOf(t string) string {
 	return "mp4"
 }
 
-// orDefault mengembalikan s bila tidak kosong, else def (untuk teks log).
-func orDefault(s, def string) string {
-	if s == "" {
-		return def
+// kindOf menentukan jenis stream dari jawaban resolve, jatuh ke ekstensi URL
+// (.m3u8/.mp4) bila jawabannya kosong atau tidak cocok.
+func kindOf(resolved, raw string) string {
+	if u, err := url.Parse(raw); err == nil {
+		switch strings.ToLower(path.Ext(u.Path)) {
+		case ".m3u8":
+			return "hls"
+		case ".mp4", ".mkv", ".webm":
+			return "mp4"
+		}
 	}
-	return s
+	return typeOf(resolved)
 }
 
 // ---- cache ./tmp/em ----

@@ -6,9 +6,8 @@ import (
 )
 
 // TestLiveEmbedmaster: pipeline Go sungguhan ke embedmaster.link memakai
-// "Spider-Man: Brand New Day" (tmdb 969681), lalu memastikan SEMUA server yang
-// dikembalikan bisa diputar (URL ada, tanpa Err) — server yang cuma halaman
-// embed / tidak lolos verifikasi 128 KiB sudah disaring di dalam scraper.
+// "Spider-Man: Brand New Day" (tmdb 969681), lalu memastikan ada server yang
+// resolve-nya berhasil (URL ada, tanpa Err).
 // Butuh jaringan; lewati dengan -short karena lambat.
 func TestLiveEmbedmaster(t *testing.T) {
 	if testing.Short() {

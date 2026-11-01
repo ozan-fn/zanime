@@ -1,6 +1,6 @@
 import { Search } from 'lucide-react'
 
-/* Header: satu-satunya aksi adalah membuka dialog pencarian. */
+/* Header: satu-satunya aksi adalah fokus ke input pencarian di sidebar kiri. */
 export function Header({ onOpenSearch }: { onOpenSearch: () => void }) {
   return (
     <div className="flex items-center gap-2">

@@ -353,15 +353,15 @@ func TestStreamProxySubtitle(t *testing.T) {
 	}
 }
 
-// vttCueRe adalah pola cue yang dipakai parser movi-player: wajib
-// HH:MM:SS.mmm di kedua sisi "-->" (bukan MM:SS.mmm). Semua subtitle yang
-// dikirim server harus lolos pola ini, sama seperti track yang sudah sehat
-// (mis. WMovies), supaya tidak jadi track kosong.
+// vttCueRe adalah pola cue VTT valid: HH:MM:SS.mmm di kedua sisi "-->"
+// (bukan MM:SS.mmm). Semua subtitle yang dikirim server harus lolos pola ini,
+// sama seperti track yang sudah sehat (mis. WMovies), supaya tidak jadi track
+// kosong.
 var vttCueRe = regexp.MustCompile(`\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[.,]\d{3}`)
 
 // TestStreamProxySubtitleUniform: VTT dari tiap host (MovieJoy MM:SS.mmm,
 // WMovies HH:MM:SS.mmm + nomor cue) dikirim dengan bentuk timestamp yang SAMA
-// setelah lewat proxy, dan tiap cue bisa diparse parser movi-player.
+// setelah lewat proxy, dan tiap cue valid untuk parser VTT mana pun.
 func TestStreamProxySubtitleUniform(t *testing.T) {
 	bodies := map[string]string{
 		"moviejoy": "WEBVTT\n\n01:18.579 --> 01:21.206\n<i>Hi. My name is Peter Parker.</i>\n\n01:23.250 --> 01:26.294\nYou don't remember me,\nbut I have \"",
@@ -429,8 +429,8 @@ func drainLog(ch <-chan logbus.Event) string {
 	}
 }
 
-// TestStreamProxyLogs: tiap permintaan proxy menulis satu baris log (host,
-// jumlah rendition/segmen, VOD) ke hub — dasar panel log di UI.
+// TestStreamProxyLogs: tiap permintaan proxy menulis satu baris log (jumlah
+// rendition/segmen, VOD) ke hub — dasar panel log di UI.
 func TestStreamProxyLogs(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
@@ -450,7 +450,7 @@ func TestStreamProxyLogs(t *testing.T) {
 	r.ServeHTTP(res, httptest.NewRequest("GET", "/s/"+srv.res.Register(upstream.URL+"/master.m3u8", "master"), nil))
 
 	got := drainLog(ch)
-	for _, want := range []string{"playlist", "1 rendition", "1 segmen", "VOD"} {
+	for _, want := range []string{"Playlist HLS", "1 rendition", "1 segmen", "VOD"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("log proxy tanpa %q: %q", want, got)
 		}

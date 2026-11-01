@@ -302,7 +302,7 @@ func TestFeedEmpty(t *testing.T) {
 	s.setFeeds(feedRow{Type: "subtitle", SourceName: "x"})
 	c := newClient(s)
 	cfg := credCfg{Ticket: "t", PK: testPK, ScrapeToken: "-x", FeedURL: "/feed", ResolveURL: "/resolve.php"}
-	if _, err := c.feed(t.Context(), cfg, s.srv.URL); err == nil || !strings.Contains(err.Error(), "feed embedmaster kosong") {
+	if _, err := c.feed(t.Context(), cfg, s.srv.URL); err == nil || !strings.Contains(err.Error(), "feed server kosong") {
 		t.Fatalf("error = %v", err)
 	}
 }

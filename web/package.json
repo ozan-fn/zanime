@@ -12,8 +12,9 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
+    "@vidstack/react": "^1.15.7",
+    "hls.js": "^1.7.4",
     "lucide-react": "^1.64.0",
-    "movi-player": "^0.4.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-router-dom": "^7.18.5",

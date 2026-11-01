@@ -137,9 +137,8 @@ func newSite(t *testing.T) *site {
 		s.mu.Unlock()
 		_, _ = w.Write([]byte(s.playerHTML(t, false)))
 	})
-	// URL media ter-resolve: dipakai verifikasi stream. Ekstensi .m3u8 →
-	// playlist; selain itu byte MP4 (kotak ftyp). Path /media/html/ → halaman
-	// embed (bukan media) untuk menguji penyaringan.
+	// URL media ter-resolve: ekstensi .m3u8 → playlist; selain itu byte MP4
+	// (kotak ftyp). Path /media/html/ → halaman embed.
 	mux.HandleFunc("/media/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, ".m3u8"):
@@ -228,7 +227,7 @@ func (s *site) setFeeds(rows ...feedRow) {
 	s.mu.Unlock()
 }
 
-// media adalah URL media di server palsu (bisa diverifikasi verifyStream).
+// media adalah URL media di server palsu.
 func (s *site) media(name string) string { return s.srv.URL + "/media/" + name }
 
 // b64 dan base64Raw dipakai test untuk membangun/memeriksa blob.

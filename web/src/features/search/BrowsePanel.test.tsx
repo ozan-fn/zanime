@@ -1,13 +1,13 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AppProvider } from '@/features/app/AppProvider'
 import { clearLogs } from '@/lib/logs'
-import { SearchDialog } from './SearchDialog'
+import { BrowsePanel } from './BrowsePanel'
 import type { Item, Meta, Server } from '@/lib/types'
 
 /* Kontrak alur pencarian: hasil dari /api/search baris yang tampil,
  * bukan "Masukkan query lalu tekan Cari" — padahal network sudah balas.
- * fetch di-stub; response mengikuti bentuk backend. */
+ * fetch di-stub; response mengikuti bentuk backend. Stream tidak lagi
+ * dirender di panel ini, jadi yang diperiksa: payload onStreams. */
 
 const item = (over: Partial<Item> = {}): Item => ({
   id: 'tt0145487',
@@ -37,11 +37,9 @@ const server = (over: Partial<Server> = {}): Server => ({
 })
 
 function mount() {
-  return render(
-    <AppProvider>
-      <SearchDialog open onClose={() => {}} />
-    </AppProvider>,
-  )
+  const onStreams = vi.fn()
+  render(<BrowsePanel onStreams={onStreams} />)
+  return onStreams
 }
 
 function stubFetch(search: Item[], metaJSON: Meta = meta(), servers: Server[] = [server()]) {
@@ -62,7 +60,7 @@ afterEach(() => {
   clearLogs()
 })
 
-describe('SearchDialog', () => {
+describe('BrowsePanel', () => {
   it('menampilkan hasil pencarian, bukan empty state, ketika /api/search balas data', async () => {
     vi.stubGlobal('fetch', stubFetch([item()]))
     mount()
@@ -76,16 +74,19 @@ describe('SearchDialog', () => {
     expect(screen.queryByText(/Masukkan query lalu tekan Cari/)).toBeNull()
   })
 
-  it('tab Movie: meta mengandung id TMDB langsung membuka daftar stream (per kualitas)', async () => {
+  it('tab Movie: meta mengandung id TMDB mengirim stream per kualitas ke sidebar server', async () => {
     vi.stubGlobal('fetch', stubFetch([item()]))
-    mount()
+    const onStreams = mount()
 
     fireEvent.change(screen.getByPlaceholderText(/Cari judul/), { target: { value: 'spiderman' } })
     fireEvent.click(screen.getByRole('button', { name: 'Cari' }))
     fireEvent.click((await screen.findAllByText('Spider-Man'))[0])
 
-    await waitFor(() => expect(screen.getByText(/1080p/)).toBeTruthy())
-    expect(screen.getAllByText(/Premium WMovies/).length).toBeGreaterThan(0)
+    await waitFor(() => expect(onStreams).toHaveBeenCalled())
+    const payload = onStreams.mock.calls.at(-1)![0]
+    expect(payload.title).toBe('Spider-Man')
+    expect(payload.rows.map((r: { quality: string }) => r.quality)).toEqual(['1080p', '480p'])
+    expect(payload.rows[0].subs).toEqual([{ label: 'Indonesia', lang: 'id', url: 'https://sub/id.vtt' }])
   })
 
   it('tab TV: meta membawa episode, lalu memilih episode menuju stream', async () => {
@@ -96,7 +97,7 @@ describe('SearchDialog', () => {
         { season: 1, episode: 2, title: 'Episode 2' },
       ] }),
     ))
-    mount()
+    const onStreams = mount()
 
     fireEvent.click(screen.getByRole('button', { name: 'TV' }))
     fireEvent.change(screen.getByPlaceholderText(/Cari judul/), { target: { value: 'frieren' } })
@@ -108,25 +109,65 @@ describe('SearchDialog', () => {
     fireEvent.click(screen.getByText(/The Journey to clients/))
 
     // Episode tv sudah minta stream per episode (?s=1&e=).
-    await waitFor(() => expect(screen.getAllByText(/Premium WMovies/).length).toBeGreaterThan(0))
+    await waitFor(() => expect(onStreams).toHaveBeenCalled())
+    expect(onStreams.mock.calls.at(-1)![0].title).toBe('Frieren S1E1')
     const fetched = vi.mocked(fetch).mock.calls.map(([u]) => String(u))
     expect(fetched.some((u) => u.includes('/api/streams?tab=tv&id=209867&s=1&e=1'))).toBe(true)
   })
 
-  it('server gagal resolve tidak tampil sebagai pilihan stream', async () => {
+  it('hanya server premium yang dikirim ke sidebar server', async () => {
     vi.stubGlobal('fetch', stubFetch([item()], meta(), [
       server(),
-      { name: 'Premium Nepu', type: 'hls', url: 'https://ok/h.m3u8' },
-      { name: 'Premium VidStore', type: 'mp4', err: 'server tidak resolve' },
+      { name: 'MixDrop', type: 'mp4', url: 'https://ok/x.mp4' },
+      { name: 'Nepu', type: 'hls', url: 'https://ok/y.m3u8' },
     ]))
-    mount()
+    const onStreams = mount()
 
     fireEvent.change(screen.getByPlaceholderText(/Cari judul/), { target: { value: 'spiderman' } })
     fireEvent.click(screen.getByRole('button', { name: 'Cari' }))
     fireEvent.click((await screen.findAllByText('Spider-Man'))[0])
 
-    await waitFor(() => expect(screen.getByText(/1080p/)).toBeTruthy())
-    expect(screen.queryAllByText(/VidStore/).length).toBe(0)
-    expect(screen.getAllByText(/Premium Nepu/).length).toBeGreaterThan(0)
+    await waitFor(() => expect(onStreams).toHaveBeenCalled())
+    const names = onStreams.mock.calls.at(-1)![0].rows.map((r: { name: string }) => r.name)
+    expect(new Set(names)).toEqual(new Set(['Premium WMovies']))
+  })
+
+  it('spam pencarian: respons lama tidak menimpa hasil terbaru', async () => {
+    const pending: Array<(r: Response) => void> = []
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((res) => pending.push(res))))
+    mount()
+
+    const input = screen.getByPlaceholderText(/Cari judul/)
+    fireEvent.change(input, { target: { value: 'lama' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cari' }))
+    fireEvent.change(input, { target: { value: 'baru' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cari' }))
+    await waitFor(() => expect(pending.length).toBe(2))
+
+    const respond = (body: unknown) =>
+      new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    pending[1](respond({ results: [item({ id: 'tt2', name: 'Baru' })] }))
+    await screen.findByText('Baru')
+
+    pending[0](respond({ results: [item({ id: 'tt1', name: 'Lama' })] }))
+    await waitFor(() => expect(screen.queryByText('Lama')).toBeNull())
+  })
+
+  it('server gagal resolve tidak ikut dikirim ke sidebar server', async () => {
+    vi.stubGlobal('fetch', stubFetch([item()], meta(), [
+      server(),
+      { name: 'Premium Nepu', type: 'hls', url: 'https://ok/h.m3u8' },
+      { name: 'Premium VidStore', type: 'mp4', err: 'server tidak resolve' },
+    ]))
+    const onStreams = mount()
+
+    fireEvent.change(screen.getByPlaceholderText(/Cari judul/), { target: { value: 'spiderman' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cari' }))
+    fireEvent.click((await screen.findAllByText('Spider-Man'))[0])
+
+    await waitFor(() => expect(onStreams).toHaveBeenCalled())
+    const names = onStreams.mock.calls.at(-1)![0].rows.map((r: { name: string }) => r.name)
+    expect(names).not.toContain('Premium VidStore')
+    expect(names).toContain('Premium Nepu')
   })
 })

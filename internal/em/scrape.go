@@ -72,7 +72,7 @@ func (c *Client) embedURL(tab, id string, tv *TVEpisode) string {
 // playerPage menembus welcome gate Cloudflare dan mengembalikan URL akhir
 // halaman player beserta HTML-nya.
 func (c *Client) playerPage(ctx context.Context, embed string) (string, string, error) {
-	c.logf("page", LogInfo, "GET halaman embed %s", embed)
+	c.logf("page", LogInfo, "Membuka halaman embed…")
 	res, err := c.get(ctx, embed, map[string]string{"Referer": embedReferer})
 	if err != nil {
 		c.logf("page", LogErr, "halaman embed gagal: %v", err)
@@ -101,7 +101,7 @@ func (c *Client) playerPage(ctx context.Context, embed string) (string, string, 
 		}
 		playerURL = res.Request.URL.String()
 	}
-	c.logf("page", LogOK, "halaman player siap (%s)", playerURL)
+	c.logf("page", LogOK, "Halaman player siap")
 	return playerURL, html, nil
 }
 
@@ -171,7 +171,7 @@ func (c *Client) feed(ctx context.Context, cfg credCfg, playerURL string) ([]fee
 		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("feed embedmaster kosong")
+		return nil, fmt.Errorf("feed server kosong")
 	}
 	return out, nil
 }
@@ -241,7 +241,7 @@ func (c *Client) do(ctx context.Context, method, endpoint string, body io.Reader
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 400 {
 		_ = res.Body.Close()
-		return nil, fmt.Errorf("embedmaster HTTP %s", res.Status)
+		return nil, fmt.Errorf("server sumber HTTP %s", res.Status)
 	}
 	return res, nil
 }
