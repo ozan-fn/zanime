@@ -62,7 +62,18 @@ function Note({ children }: { children: React.ReactNode }) {
 
 function Chip({ label, on, disabled, onClick }: { label: React.ReactNode; on?: boolean; disabled?: boolean; onClick: () => void }) {
   return (
-    <button type="button" disabled={disabled} onClick={onClick} className={`chip${on ? ' on' : ''}`}>{label}</button>
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={`inline-flex cursor-pointer select-none items-center gap-1 whitespace-nowrap rounded border px-2.5 py-1 text-xs leading-4 transition disabled:cursor-default disabled:opacity-40 ${
+        on
+          ? 'border-primary bg-primary font-medium text-primary-contrast'
+          : 'border-border bg-card text-zinc-400 hover:border-muted hover:text-zinc-200'
+      }`}
+    >
+      {label}
+    </button>
   )
 }
 

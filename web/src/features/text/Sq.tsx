@@ -21,9 +21,15 @@ export function Sq({ text, className = '' }: { text: string; className?: string 
     }
   }, [text])
 
+  // Marquee hanya saat hover (varian `group-hover` Tailwind sudah dibatasi
+  // `@media (hover: hover)`, jadi perangkat sentuh tidak beranimasi).
   return (
-    <span ref={outer} className={`sq ${className}`} title={text}>
-      <span ref={inner} className="sq-inner">{text}</span>
+    <span
+      ref={outer}
+      className={`group block min-w-0 overflow-hidden whitespace-nowrap text-ellipsis hover:text-clip ${className}`}
+      title={text}
+    >
+      <span ref={inner} className="inline-block whitespace-nowrap group-hover:animate-sq-slide">{text}</span>
     </span>
   )
 }

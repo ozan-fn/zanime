@@ -22,7 +22,7 @@ export function HomePage() {
   }
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-7xl flex-col px-3 py-2 sm:px-5 sm:py-4 lg:h-screen lg:min-h-0 lg:overflow-hidden lg:px-8 lg:py-6">
+    <div className="mx-auto flex min-h-screen max-w-8xl flex-col px-3 py-2 sm:px-5 sm:py-4 lg:h-screen lg:min-h-0 lg:overflow-hidden lg:px-8 lg:py-6">
       <header className="sticky top-0 z-20 -mx-3 flex shrink-0 items-center justify-between gap-3 border-b border-border/70 bg-[#09090b]/90 px-3 py-2 backdrop-blur sm:-mx-5 sm:px-5 lg:static lg:mx-0 lg:border-0 lg:bg-transparent lg:px-0 lg:py-0 lg:backdrop-blur-none">
         <div className="flex min-w-0 items-center gap-2.5">
           <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border bg-card text-zinc-200 sm:h-10 sm:w-10">
