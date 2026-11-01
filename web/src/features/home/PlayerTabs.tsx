@@ -14,12 +14,10 @@ type Tab = (typeof TABS)[number]
 export function PlayerTabs({
   streams,
   media,
-  auto,
   onUse,
 }: {
   streams: Streams | null
   media?: SubtitleMedia
-  auto?: boolean
   onUse: (src: string, label: string) => void
 }) {
   const [tab, setTab] = useState<Tab>('Server')
@@ -54,7 +52,7 @@ export function PlayerTabs({
           <ServerPanel streams={streams} />
         </div>
         <div className={tab === 'Subtitle' ? '' : 'hidden'}>
-          <SubtitleCard media={media} auto={auto} onUse={onUse} />
+          <SubtitleCard media={media} onUse={onUse} />
         </div>
         <div className={tab === 'Log' ? '' : 'hidden'}>
           <LogPanel className="rounded-lg border border-border" panelClassName="rounded-lg" maxHeight="max-h-64" />

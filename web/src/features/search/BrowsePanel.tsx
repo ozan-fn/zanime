@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { Search } from 'lucide-react'
 import { api } from '@/lib/api'
 import { log } from '@/lib/logs'
+import { useApp } from '@/features/app/AppProvider'
 import { Sq } from '@/features/text/Sq'
 import type { Episode, Item, Meta, Server, Sub } from '@/lib/types'
 
@@ -78,6 +79,7 @@ function Chip({ label, on, disabled, onClick }: { label: React.ReactNode; on?: b
 }
 
 export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) {
+  const { playing } = useApp()
   const [tab, setTab] = useState<Tab>('movie')
   const [q, setQ] = useState('')
   const [results, setResults] = useState<Item[]>([])
@@ -246,15 +248,27 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
               </div>
               <div className="mt-2 space-y-1.5">
                 {eps.length
-                  ? eps.map((v) => (
-                    <button key={`${v.season}:${v.episode}`} type="button" onClick={() => void loadStreams(meta!, v)}
-                      className="flex w-full items-center gap-2 rounded-lg border border-border bg-zinc-900 px-2 py-2 text-left transition hover:bg-zinc-800 sm:py-1.5">
-                      <span className="grid h-6 w-7 shrink-0 place-items-center rounded bg-zinc-800 text-[10px] font-semibold text-zinc-300">
-                        E{v.episode}
-                      </span>
-                      <Sq text={v.title || `Episode ${v.episode}`} className="min-w-0 flex-1 text-sm text-zinc-300 sm:text-xs" />
-                    </button>
-                  ))
+                  ? eps.map((v) => {
+                    // Tandai episode yang sedang diputar (judul + season + ep).
+                    const watched =
+                      playing?.media?.tab === 'tv' &&
+                      playing.media.id === meta?.id &&
+                      playing.media.season === v.season &&
+                      playing.media.episode === v.episode
+                    return (
+                      <button key={`${v.season}:${v.episode}`} type="button" onClick={() => void loadStreams(meta!, v)}
+                        aria-current={watched ? 'true' : undefined}
+                        className={`flex w-full items-center gap-2 rounded-lg border px-2 py-2 text-left transition sm:py-1.5 ${
+                          watched ? 'border-zinc-400 bg-zinc-800' : 'border-border bg-zinc-900 hover:bg-zinc-800'
+                        }`}>
+                        <span className="grid h-6 w-7 shrink-0 place-items-center rounded bg-zinc-800 text-[10px] font-semibold text-zinc-300">
+                          E{v.episode}
+                        </span>
+                        <Sq text={v.title || `Episode ${v.episode}`} className="min-w-0 flex-1 text-sm text-zinc-300 sm:text-xs" />
+                        {watched && <span className="shrink-0 text-[10px] text-emerald-400">diputar</span>}
+                      </button>
+                    )
+                  })
                   : <Note>Season kosong.</Note>}
               </div>
             </div>

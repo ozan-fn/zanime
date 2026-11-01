@@ -7,11 +7,15 @@ type StatusKind = 'info' | 'ok' | 'error'
 export type StatusMessage = { text: string; kind: StatusKind } | null
 
 // Playing: stream yang sedang diputar (src = URL siap src player).
+// `server` + `media` dipakai ServerPanel untuk melanjutkan server yang sama
+// saat pindah episode pada seri yang sama.
 export type Playing = {
   src: string
   title?: string
   sub?: string
   subs?: Sub[]
+  server?: string
+  media?: { tab: 'movie' | 'tv'; id: string; season?: number; episode?: number }
 }
 
 type AppContextValue = {

@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { Clapperboard } from 'lucide-react'
 import { useApp } from '@/features/app/AppProvider'
 import { Player, type PlayerSubtitle } from '@/features/player/Player'
-import { subTracks } from '@/features/player/tracks'
 import { SubtitleCard } from '@/features/subtitle/SubtitleCard'
 import { PlayerTabs } from '@/features/home/PlayerTabs'
 import { ServerPanel } from '@/features/player/ServerPanel'
@@ -39,9 +38,10 @@ export function HomePage() {
   const desktop = useDesktop()
   const [streams, setStreams] = useState<Streams | null>(null)
   const [subtitle, setSubtitle] = useState<PlayerSubtitle | null>(null)
+  // Cermin status collapse kartu kanan, supaya tinggi kolom ikut menyesuaikan.
+  const [serverOpen, setServerOpen] = useState(true)
+  const [subOpen, setSubOpen] = useState(true)
   const { playing } = useApp()
-  // Server tanpa track pilihan → kartu subtitle boleh memasang otomatis.
-  const needSub = !subtitle && !subTracks(playing?.subs).some((t) => t.default)
   const focusSearch = () => {
     const el = document.getElementById('search-q')
     el?.focus()
@@ -76,7 +76,7 @@ export function HomePage() {
         </button>
       </header>
 
-      <main className="mt-3 flex min-h-0 flex-1 flex-col gap-3 sm:mt-4 md:grid md:grid-cols-[17rem_minmax(0,1fr)] md:items-start md:gap-3 lg:grid-cols-[18rem_minmax(0,1fr)_16rem] lg:items-stretch lg:gap-5">
+      <main className="mt-3 flex min-h-0 flex-1 flex-col gap-3 sm:mt-4 md:grid md:grid-cols-[17rem_minmax(0,1fr)] md:items-start md:gap-3 lg:grid-cols-[18rem_minmax(0,1fr)_16rem] lg:grid-rows-[minmax(0,1fr)] lg:gap-5">
         <div className="order-3 min-w-0 md:order-1 md:min-h-0 lg:h-full">
           <BrowsePanel onStreams={setStreams} />
         </div>
@@ -92,7 +92,6 @@ export function HomePage() {
             <PlayerTabs
               streams={streams}
               media={streams?.media}
-              auto={needSub}
               onUse={(src, label) => setSubtitle({ src, label })}
             />
           )}
@@ -108,12 +107,24 @@ export function HomePage() {
         </div>
 
         {desktop && (
-          <div className="order-3 min-w-0 lg:min-h-0 lg:overflow-y-auto">
-            <ServerPanel streams={streams} />
-            <div className="mt-3">
+          // Server 40% atas, subtitle 60% bawah saat keduanya terbuka; kartu
+          // yang di-collapse menyusut dan sisanya mengambil ruangnya.
+          <div className="order-3 flex min-w-0 flex-col gap-3 lg:h-full lg:min-h-0">
+            <div
+              className={
+                !serverOpen
+                  ? 'lg:flex-none'
+                  : subOpen
+                    ? 'lg:min-h-0 lg:basis-2/5 lg:flex-none'
+                    : 'lg:min-h-0 lg:flex-1'
+              }
+            >
+              <ServerPanel streams={streams} onOpenChange={setServerOpen} />
+            </div>
+            <div className={subOpen ? 'lg:min-h-0 lg:flex-1' : 'lg:flex-none'}>
               <SubtitleCard
                 media={streams?.media}
-                auto={needSub}
+                onOpenChange={setSubOpen}
                 onUse={(src, label) => setSubtitle({ src, label })}
               />
             </div>

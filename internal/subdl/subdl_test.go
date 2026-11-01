@@ -145,9 +145,10 @@ func TestRelevant(t *testing.T) {
 	}
 }
 
-// TestSearchFresh: satu pencarian = autocomplete + halaman judul (tv: + halaman
-// musim) baru; pencarian kedua tidak memakai hasil lama.
-func TestSearchFresh(t *testing.T) {
+// TestSearchCache: pencarian pertama menembak upstream, pencarian kedua memakai
+// cache ./tmp/subdl; SearchFresh (tombol cari ulang) menembak ulang.
+func TestSearchCache(t *testing.T) {
+	t.Chdir(t.TempDir())
 	var auto, pages int32
 	var paths []string
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -178,19 +179,28 @@ func TestSearchFresh(t *testing.T) {
 			t.Fatalf("subs = %d, want 3", len(subs))
 		}
 	}
-	if got := atomic.LoadInt32(&auto); got != 2 {
-		t.Fatalf("autocomplete dipanggil %d kali, want 2 (fresh tiap cari)", got)
+	if got := atomic.LoadInt32(&auto); got != 1 {
+		t.Fatalf("autocomplete dipanggil %d kali, want 1 (hasil kedua dari cache)", got)
 	}
-	if got := atomic.LoadInt32(&pages); got != 4 {
-		t.Fatalf("halaman diambil %d kali, want 4 (judul+musim tiap cari)", got)
+	if got := atomic.LoadInt32(&pages); got != 2 {
+		t.Fatalf("halaman diambil %d kali, want 2 (judul+musim, sekali saja)", got)
 	}
 	if !strings.Contains(strings.Join(paths, " "), "/subtitle/sd1667204/frieren-beyond-journeys-end/second-season") {
 		t.Fatalf("halaman musim 2 tidak diambil: %v", paths)
+	}
+
+	// Cari ulang = lewati cache.
+	if _, err := c.SearchFresh(context.Background(), "tv", "Frieren: Beyond Journey's End", "2023", 2, 2); err != nil {
+		t.Fatalf("SearchFresh: %v", err)
+	}
+	if got := atomic.LoadInt32(&auto); got != 2 {
+		t.Fatalf("SearchFresh tidak menembak upstream: autocomplete %d kali", got)
 	}
 }
 
 // TestSearchError: upstream gagal / judul tak ada → error, bukan daftar kosong.
 func TestSearchError(t *testing.T) {
+	t.Chdir(t.TempDir())
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/auto" {
 			_, _ = w.Write([]byte(`{"results":[]}`))

@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -388,30 +387,21 @@ func TestStreamProxyPassthrough(t *testing.T) {
 	}
 }
 
-// TestNormalizeVTT: timestamp tanpa jam (format CDN subtitle) diberi 00:,
-// jam satu digit dipad, milidetik pendek dipad, dan bentuk yang sudah benar
-// tidak diubah ganda. Baris non-cue tidak disentuh.
-func TestNormalizeVTT(t *testing.T) {
-	in := "WEBVTT\n\n01:18.579 --> 01:21.206\n<i>Hi.</i>\n\n\n1:23:45.5 --> 1:23:47.25\nbaris lain\n\n00:00:01.000 --> 00:00:02.000\nsudah benar\n"
-	want := "WEBVTT\n\n00:01:18.579 --> 00:01:21.206\n<i>Hi.</i>\n\n\n01:23:45.500 --> 01:23:47.250\nbaris lain\n\n00:00:01.000 --> 00:00:02.000\nsudah benar\n"
-	if got := normalizeVTT(in); got != want {
-		t.Fatalf("normalizeVTT =\n%q\nwant\n%q", got, want)
-	}
-}
-
-// TestStreamProxySubtitle: VTT dari CDN (timestamp MM:SS.mmm) normalisasi lewat
-// proxy → 00:MM:SS.mmm, dan extension .vtt tanpa content-type ikut dikenali.
+// TestStreamProxySubtitle: subtitle dari CDN diteruskan apa adanya (timestamp
+// tidak dinormalisasi/digeser), dan extension .vtt tanpa content-type tetap
+// dikenali sebagai subtitle.
 func TestStreamProxySubtitle(t *testing.T) {
+	const raw = "WEBVTT\n\n01:18.579 --> 01:21.206\n<i>Hi.</i>\n"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Referer") != "https://embdmstrplayer.com/" {
 			t.Errorf("Referer subtitle salah: %v", r.Header)
 		}
 		if strings.HasSuffix(r.URL.Path, "/plain.vtt") {
-			_, _ = w.Write([]byte("WEBVTT\n\n01:18.579 --> 01:21.206\nhi\n"))
+			_, _ = w.Write([]byte(raw))
 			return
 		}
 		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
-		_, _ = w.Write([]byte("WEBVTT\n\n01:18.579 --> 01:21.206\n<i>Hi.</i>\n"))
+		_, _ = w.Write([]byte(raw))
 	}))
 	defer upstream.Close()
 	t.Chdir(t.TempDir())
@@ -422,58 +412,18 @@ func TestStreamProxySubtitle(t *testing.T) {
 
 	res := httptest.NewRecorder()
 	r.ServeHTTP(res, httptest.NewRequest("GET", "/s/"+srv.res.Register(upstream.URL+"/sub.vtt", "sub"), nil))
-	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), "00:01:18.579 --> 00:01:21.206") {
-		t.Fatalf("subtitle tidak dinormalisasi: %d %q", res.Code, res.Body.String())
+	if res.Code != http.StatusOK || res.Body.String() != raw {
+		t.Fatalf("subtitle harus apa adanya: %d %q", res.Code, res.Body.String())
 	}
 	if !strings.Contains(res.Header().Get("Content-Type"), "text/vtt") {
 		t.Fatalf("content-type subtitle: %q", res.Header().Get("Content-Type"))
 	}
 
-	// Extension .vtt tanpa content-type tetap dikenali dan dinormalisasi.
+	// Extension .vtt tanpa content-type tetap dikenali dan diteruskan apa adanya.
 	res = httptest.NewRecorder()
 	r.ServeHTTP(res, httptest.NewRequest("GET", "/s/"+srv.res.Register(upstream.URL+"/plain.vtt", "plain"), nil))
-	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), "00:01:18.579") {
+	if res.Code != http.StatusOK || res.Body.String() != raw {
 		t.Fatalf(".vtt tanpa content-type: %d %q", res.Code, res.Body.String())
-	}
-}
-
-// vttCueRe adalah pola cue VTT valid: HH:MM:SS.mmm di kedua sisi "-->"
-// (bukan MM:SS.mmm). Semua subtitle yang dikirim server harus lolos pola ini,
-// sama seperti track yang sudah sehat (mis. WMovies), supaya tidak jadi track
-// kosong.
-var vttCueRe = regexp.MustCompile(`\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[.,]\d{3}`)
-
-// TestStreamProxySubtitleUniform: VTT dari tiap host (MovieJoy MM:SS.mmm,
-// WMovies HH:MM:SS.mmm + nomor cue) dikirim dengan bentuk timestamp yang SAMA
-// setelah lewat proxy, dan tiap cue valid untuk parser VTT mana pun.
-func TestStreamProxySubtitleUniform(t *testing.T) {
-	bodies := map[string]string{
-		"moviejoy": "WEBVTT\n\n01:18.579 --> 01:21.206\n<i>Hi. My name is Peter Parker.</i>\n\n01:23.250 --> 01:26.294\nYou don't remember me,\nbut I have \"",
-		"wmovies":  "WEBVTT\n\n1\n00:01:18.622 --> 00:01:21.250\nHi. My name is Peter Parker.\n\n2\n00:01:23.293 --> 00:01:26.255\nYou don't remember me",
-	}
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
-		_, _ = w.Write([]byte(bodies[strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), ".vtt")]))
-	}))
-	defer upstream.Close()
-	t.Chdir(t.TempDir())
-	gin.SetMode(gin.TestMode)
-	srv := &server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New()}
-	r := gin.New()
-	r.GET("/s/:slug", srv.streamProxy)
-
-	for name := range bodies {
-		res := httptest.NewRecorder()
-		r.ServeHTTP(res, httptest.NewRequest("GET", "/s/"+srv.res.Register(upstream.URL+"/"+name+".vtt", name), nil))
-		got := res.Body.String()
-		cues := vttCueRe.FindAllString(got, -1)
-		if len(cues) != 2 {
-			t.Fatalf("%s: cue terparse = %d, want 2 (%q)", name, len(cues), got)
-		}
-		// Tidak boleh ada timestamp 2-bagian yang tersisa (MM:SS.mmm).
-		if regexp.MustCompile(`(^|[^\d:])\d{1,2}:\d{2}[.,]\d{3}\s*-->`).MatchString(got) {
-			t.Fatalf("%s: masih ada timestamp MM:SS.mmm: %q", name, got)
-		}
 	}
 }
 

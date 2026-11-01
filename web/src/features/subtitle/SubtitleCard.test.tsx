@@ -72,26 +72,20 @@ describe('SubtitleCard', () => {
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.length).toBe(2))
     const last = vi.mocked(fetch).mock.calls.at(-1)!
     expect(String(last[0])).toContain('/api/subtitles?tab=movie&id=tt22248376')
+    expect(String(last[0])).toContain('&refresh=1')
     expect(String(last[0])).not.toContain('&s=')
   })
 
-  it('auto: memasang subtitle Indonesia tanpa klik saat belum ada track aktif', async () => {
-    vi.stubGlobal('fetch', stubFetch())
-    const onUse = vi.fn()
-    render(<SubtitleCard media={media} auto onUse={onUse} />)
-
-    await waitFor(() =>
-      expect(onUse).toHaveBeenCalledWith('/api/subtitles/file?u=sub-indonesian.zip', 'Indonesian'),
-    )
-  })
-
-  it('tanpa auto tidak memasang apa pun sampai diklik', async () => {
+  it('tidak memasang subtitle subdl otomatis; hanya saat diklik', async () => {
     vi.stubGlobal('fetch', stubFetch())
     const onUse = vi.fn()
     render(<SubtitleCard media={media} onUse={onUse} />)
 
     await screen.findByText(/S02E01/)
     expect(onUse).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: /Pakai subtitle Paket Indonesia/ }))
+    expect(onUse).toHaveBeenCalledTimes(1)
   })
 
   it('bisa di-collapse dan dibuka lagi tanpa mencari ulang', async () => {

@@ -1,20 +1,39 @@
-import { useEffect, useState } from 'react'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronDown, ChevronUp } from 'lucide-react'
 import { useApp } from '@/features/app/AppProvider'
 import { Sq } from '@/features/text/Sq'
 import type { Streams } from '@/features/search/BrowsePanel'
 
 /* Sidebar kanan: pilihan server/kualitas untuk judul yang sedang dibuka.
- * Hanya panel ini yang bisa di-collapse; rail sempit tetap menyisakan tombol. */
+ * Collapse sama dengan kartu subtitle: header tetap terlihat, isinya disembunyikan. */
 
-export function ServerPanel({ streams }: { streams: Streams | null }) {
+export function ServerPanel({
+  streams,
+  onOpenChange,
+}: {
+  streams: Streams | null
+  /** Diberitahu setiap kali panel dibuka/ditutup (dipakai layout desktop). */
+  onOpenChange?: (open: boolean) => void
+}) {
   const { play, setStatus, playing } = useApp()
   const [open, setOpen] = useState(true)
+  // Server terakhir yang diputar; dipakai untuk melanjutkan episode berikutnya.
+  const lastPlayed = useRef<{ id: string; season?: number; episode?: number; server: string } | null>(null)
+
+  function toggle() {
+    setOpen((v) => {
+      onOpenChange?.(!v)
+      return !v
+    })
+  }
 
   // Daftar server baru selesai di-scrape → panel terbuka sendiri.
   useEffect(() => {
-    if (streams?.rows.length) setOpen(true)
-  }, [streams])
+    if (streams?.rows.length) {
+      setOpen(true)
+      onOpenChange?.(true)
+    }
+  }, [streams, onOpenChange])
 
   function pick(s: Streams['rows'][number]) {
     if (!streams || playing?.src === s.url) return
@@ -24,32 +43,55 @@ export function ServerPanel({ streams }: { streams: Streams | null }) {
       title: streams.title,
       sub: [s.quality || s.type, s.name].filter(Boolean).join(' · '),
       subs: s.subs,
+      server: s.name,
+      media: {
+        tab: streams.media?.tab ?? 'movie',
+        id: streams.media?.id ?? '',
+        season: streams.media?.season,
+        episode: streams.media?.episode,
+      },
     })
+    if (streams.media) {
+      lastPlayed.current = {
+        id: streams.media.id,
+        season: streams.media.season,
+        episode: streams.media.episode,
+        server: s.name,
+      }
+    }
     setStatus(`Memutar ${s.quality || s.type} dari ${s.name}.`, 'ok')
   }
 
-  if (!open) {
-    return (
-      <aside className="flex shrink-0 items-start justify-center rounded-lg border border-border bg-card p-1.5 sm:rounded-xl lg:w-11">
-        <button type="button" aria-label="Buka daftar server" onClick={() => setOpen(true)}
-          className="grid h-8 w-8 place-items-center rounded-lg border border-border text-zinc-400 transition hover:bg-zinc-800 hover:text-white sm:h-7 sm:w-7">
-          <ChevronLeft className="h-4 w-4" />
-        </button>
-      </aside>
-    )
-  }
+  // Ganti episode pada seri yang sama → lanjutkan otomatis di server yang sama.
+  // Selain itu (judul/season lain, movie, episode yang sama) tidak auto-play.
+  useEffect(() => {
+    const m = streams?.media
+    const prev = lastPlayed.current
+    if (!m || m.tab !== 'tv' || !prev || prev.id !== m.id) return
+    if (prev.season === m.season && prev.episode === m.episode) return
+    const row = streams?.rows.find((r) => r.name === prev.server)
+    if (row) pick(row)
+    // pick stabil secara perilaku; cukup dipicu saat daftar stream berganti.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streams])
 
   return (
-    <aside className="flex min-h-0 flex-col gap-1.5 rounded-lg border border-border bg-card p-2.5 sm:rounded-xl sm:p-3 lg:h-full lg:w-60 lg:shrink-0">
-      <div className="flex items-center justify-between gap-2">
+    <aside className={`flex min-h-0 flex-col gap-1.5 rounded-lg border border-border bg-card p-2.5 sm:rounded-xl sm:p-3 ${open ? 'lg:h-full lg:min-h-0' : ''}`}>
+      <div className="flex items-center gap-2">
         <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">Server</span>
-        {/* Collapse hanya berguna di desktop; di ponsel daftar selalu tampil. */}
-        <button type="button" aria-label="Tutup daftar server" onClick={() => setOpen(false)}
-          className="hidden h-8 w-8 place-items-center rounded border border-border text-zinc-500 transition hover:bg-zinc-800 hover:text-white lg:grid">
-          <ChevronRight className="h-3.5 w-3.5" />
+        <span className="text-[10px] text-zinc-600">{streams?.rows.length ?? 0}</span>
+        <button
+          type="button"
+          aria-label={open ? 'Tutup daftar server' : 'Buka daftar server'}
+          onClick={toggle}
+          className="ml-auto grid h-7 w-7 place-items-center rounded text-zinc-400 transition hover:bg-zinc-800 hover:text-white sm:h-6 sm:w-6"
+        >
+          {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
         </button>
       </div>
 
+      {open && (
+      <>
       <Sq text={streams?.title || ''} className="text-xs text-zinc-400" />
 
       {/* Ponsel/tablet: kartu server satu baris bisa digeser; desktop: kolom. */}
@@ -79,6 +121,8 @@ export function ServerPanel({ streams }: { streams: Streams | null }) {
         )}
         </div>
       </div>
+      </>
+      )}
     </aside>
   )
 }

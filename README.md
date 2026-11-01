@@ -74,7 +74,7 @@ Urutan tetap setiap kali sebuah judul dipilih:
 | 5 | Slug | server | setiap URL (server, tiap kualitas, tiap subtitle) didaftarkan ke `/s/<slug>` (+ ekstensi media); peta JSON di `./tmp/resolve` | `internal/resolve` |
 | 6 | Putar | browser → server | player meminta `/s/<slug>`; server meneruskan `Range`/`HEAD` dan memasang `Referer` host video | `GET/HEAD /s/:slug` |
 | 7 | HLS | browser → server | playlist `.m3u8` ditulis ulang di server: setiap URI (playlist turun, segmen, `URI="…"` di tag) jadi `/s/<slug>` juga | `internal/em` + `main.go` |
-| 8 | Subtitle | browser → server | track VTT lewat slug; proxy menormalkan timestamp ke `HH:MM:SS.mmm`, lalu dipasang sebagai `<Track>` di player | `main.go` + `SearchDialog` → `Player` |
+| 8 | Subtitle | browser → server | track VTT lewat slug, body diteruskan apa adanya (timestamp tidak diubah), lalu dipasang sebagai `<Track>` di player | `main.go` + `SearchDialog` → `Player` |
 | 9 | Log | server → browser | tiap tahap (scrape, resolve, playlist/subtitle/segmen, event player) dikirim sebagai baris `{id,at,level,text}` | `ws /api/logs` (`internal/logbus` + `web/src/lib/logs.ts`) |
 
 ### Kenapa lewat server
@@ -134,14 +134,17 @@ tidak membuka CORS, dan zip harus di-extract jadi VTT):
 | Cari judul | `api3.subdl.com/auto?query=` | autocomplete; hasil `movie`/`tv` dipilih yang namanya cocok (tanpa tanda baca) + tahun sebagai penentu |
 | Halaman subtitle | `subdl.com/subtitle/<sd-id>/<slug>[/<n>-season]` | tv: slug musim dibaca dari daftar season di halaman, lalu baris `data-row` disaring ke episode itu + pack yang mencakupnya |
 | Saring | — | hanya **Indonesian** + **English**, urut Indonesian dulu; nama rilis wajib cocok regex kata terpanjang dari judul (`Frieren: Beyond Journey's End` → `/frieren/i`), jadi baris `JudasEps1-Eps14` dsb. dibuang |
-| Pasang | `/api/subtitles/file?u=<slug>` | zip diunduh, `.srt`/`.vtt` pertama diambil, header `WEBVTT` + `normalizeVTT` |
+| Pasang | `/api/subtitles/file?u=<slug>` | zip diunduh, `.srt`/`.vtt` pertama diambil, header `WEBVTT` ditambahkan untuk SRT (timestamp tidak digeser/normalisasi) — baru dipakai setelah user klik **pakai** |
 
-- **Fresh**: tidak ada cache. Tiap pencarian = autocomplete + halaman
-  judul/musim baru, jadi tautan zip yang dipakai selalu hasil resolve terbaru;
-  file zip-nya sendiri tidak disimpan.
-- **Otomatis (on the fly)**: kartu subtitle memasang Indonesia → Inggris tanpa
-  klik selama player belum punya track pilihan; subtitle dari server maupun
-  unggahan pengguna tidak ditimpa.
+- **Cache & timeout**: daftar subtitle disimpan di `./tmp/subdl` selama 10
+  menit (kunci: tab|judul|tahun|musim|episode), jadi pindah tab tidak menembak
+  ulang; tombol cari ulang mengirim `refresh=1` untuk melewati cache. Satu
+  pencarian (autocomplete + halaman judul/musim) dibatasi 20 detik. File zip
+  subtitle sendiri tidak disimpan.
+- **Manual dari subdl**: hasil pencarian tidak pernah dipasang otomatis;
+  track bawaan server tetap yang otomatis aktif (Indonesia → Inggris) lewat
+  `subTracks`, dan subtitle subdl/unggahan baru menggantikannya setelah
+  diklik.
 - Endpoint file hanya bisa mengambil URL zip yang sudah didaftarkan pool slug
   oleh `/api/subtitles` (bukan proxy bebas).
 
@@ -204,9 +207,10 @@ Indonesia dulu, lalu Inggris (lang atau label), tanpa keduanya tidak ada yang
 otomatis aktif. Karena itu tidak ada URL host video maupun subtitle yang
 menyentuh browser.
 
-CDN subtitle (scrapemaster) mengirim `MM:SS.mmm` (atau jam satu digit) yang
-bukan VTT valid — track ter-fetch 200 OK tapi 0 cue. Proxy menormalkan timestamp
-tiap baris cue (`normalizeVTT`) sebelum body diteruskan.
+Subtitle diteruskan apa adanya: timestamp dari sumber tidak digeser maupun
+dinormalkan server-side (`normalizeVTT` sudah dihapus). Track yang tampil kosong
+berarti format file di sumbernya yang tidak valid untuk parser VTT, bukan
+karena proxy.
 
 ## Log realtime
 
@@ -247,8 +251,8 @@ React tidak memasang ulang listener tiap render. Test regresinya
 | `GET /api/meta/:tab/:id` | detail judul (`id` harus `tt…`); tv menyertakan `episodes[]` |
 | `GET /api/streams?tab=&id=&s=&e=` | pecahkan stream: `{id,tab,servers:[{name,type,quality,qualities,subs,url,err}]}`; `url`/`qualities[].url`/`subs[].url` sudah `/s/<slug>`; tv wajib `s`/`e` |
 | `GET/HEAD /s/:slug` | proxy media: teruskan `Range`/`Content-Range`/`Accept-Ranges`, `Referer` host video, dan tulis ulang playlist m3u8; 404 bila slug tidak ada, 502 bila upstream gagal |
-| `GET /api/subtitles?tab=&id=&s=&e=` | cari subtitle subdl untuk judul/episode aktif (fresh tiap panggilan): `{subtitles:[{id,name,language,lang,downloads,url}]}`; `url` = `/api/subtitles/file?u=<slug>` |
-| `GET /api/subtitles/file?u=<slug>` | unduh zip subtitle subdl, ambil `.srt`/`.vtt` pertama, balas VTT bertimestamp `HH:MM:SS.mmm` |
+| `GET /api/subtitles?tab=&id=&s=&e=&refresh=` | cari subtitle subdl untuk judul/episode aktif (cache `./tmp/subdl` 10 menit; `refresh=1` melewati cache): `{subtitles:[{id,name,language,lang,downloads,url}]}`; `url` = `/api/subtitles/file?u=<slug>` |
+| `GET /api/subtitles/file?u=<slug>` | unduh zip subtitle subdl, ambil `.srt`/`.vtt` pertama, balas VTT apa adanya (SRT: tambah header + koma → titik) |
 | `GET /api/logs` (websocket) | siarkan log realtime `{id,at,level,text}`; riwayat terakhir dikirim saat menyambung |
 | `GET /healthz` | `ok` |
 
@@ -305,7 +309,7 @@ Cakupan sekarang:
 | `internal/logbus` | fan-out ke banyak pelanggan, replay riwayat, cancel idempoten, pelanggan lambat tidak memblok, batas riwayat |
 | `internal/resolve` | register/load/idempoten, kolisi, hint kotor, guard `Load`, persist antar-pool, file rusak, prune + jadwal tidy, ekstensi media pada slug |
 | `internal/subdl` | pemilihan judul movie/tv (nama tanpa tanda baca + tahun), slug musim (Specials/Season N), filter episode tv + pack yang mencakupnya, pemetaan bahasa/unduhan/zip, dua kali cari = dua kali fetch (fresh, bukan cache), upstream gagal/judul tak ada → error |
-| `main` | kontrak `/api/search` & `/api/meta` (ok/400), `/api/streams` → slug, `/api/subtitles` → endpoint VTT (`tt…`/`s`/`e` divalidasi), `/api/subtitles/file` (zip → VTT bertimestamp valid), `streamProxy` (rewrite playlist master+child, `URI=` tag, `Referer`, HEAD tanpa body, 404, 502, baris log), websocket `/api/logs` (riwayat + live), SPA fallback |
+| `main` | kontrak `/api/search` & `/api/meta` (ok/400), `/api/streams` → slug, `/api/subtitles` → endpoint VTT (`tt…`/`s`/`e` divalidasi), `/api/subtitles/file` (zip → VTT; SRT dikonversi header/titik), `streamProxy` (rewrite playlist master+child, `URI=` tag, `Referer`, HEAD tanpa body, 404, 502, baris log, subtitle apa adanya), websocket `/api/logs` (riwayat + live), SPA fallback |
 | `web` (vitest) | sidebar pencarian (hasil, movie→stream per kualitas, tv→episode→streams, error, filter premium, respons lama tidak menimpa hasil baru, konteks `media` memakai `tt…`), sidebar server (play, collapse, auto-buka), provider play/stop/status, `subTracks` (URL tidak aman/lang kosong/duplikat, default Indonesia→Inggris), kartu subtitle (cari per judul/episode, klik pakai, cari ulang = fetch baru, auto-pasang Indonesia), store log (`push`/id sama/ring buffer/anti-loop render), panel `LogPanel` |
 
 Live test (jaringan sungguhan, ~10 s):
@@ -337,7 +341,7 @@ resolve-nya berhasil punya URL yang bisa diputar.
 - Subtitle yang tersedia adalah apa yang dikirim server (biasanya VTT), bukan
   hasil ekstraksi dari file video. Master playlist embedmaster tidak memuat
   rendition `TYPE=SUBTITLES`, jadi track subtitle didaftarkan terpisah sebagai
-  `<Track>` (bukan dari manifest), dan waktunya dinormalkan server-side ke
-  `HH:MM:SS.mmm` (`normalizeVTT`) supaya valid di semua parser VTT.
+  `<Track>` (bukan dari manifest), dan waktunya dipakai apa adanya dari sumber
+  (tidak ada normalisasi/geser di server).
 - Token pada URL media tetap bisa dilihat server video lain; yang dihilangkan
   dari browser hanya URL panjang dan ter-encode.

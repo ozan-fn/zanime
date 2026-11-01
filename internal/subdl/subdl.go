@@ -7,12 +7,15 @@ package subdl
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,6 +28,13 @@ const (
 	userAgent   = "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0"
 	httpTimeout = 20 * time.Second
 	maxPage     = 8 << 20
+	// Daftar subtitle jarang berubah dalam hitungan menit; cache menahan
+	// autocomplete + halaman judul agar pindah tab/kartu tidak menembak ulang.
+	cacheDir = "tmp/subdl"
+	cacheTTL = 10 * time.Minute
+	// searchTimeout membatasi satu pencarian penuh (autocomplete + halaman
+	// judul, tv: + halaman musim).
+	searchTimeout = 20 * time.Second
 )
 
 // Result satu baris autocomplete /auto.
@@ -63,9 +73,27 @@ func New() *Client {
 // SetBase menimpa kedua host (site + API); dipakai test dengan httptest.Server.
 func (c *Client) SetBase(site, api string) { c.site, c.api = site, api }
 
-// Search mencari subtitle untuk satu judul. tv memakai season/episode untuk
-// memilih halaman musim dan menyaring baris episode; movie mengabaikannya.
+// Search mencari subtitle untuk satu judul (cache ./tmp/subdl, TTL 10 menit).
+// tv memakai season/episode untuk memilih halaman musim dan menyaring baris
+// episode; movie mengabaikannya.
 func (c *Client) Search(ctx context.Context, tab, name, year string, season, episode int) ([]Subtitle, error) {
+	return c.search(ctx, tab, name, year, season, episode, false)
+}
+
+// SearchFresh sama seperti Search tapi melewati cache (tombol "cari ulang").
+func (c *Client) SearchFresh(ctx context.Context, tab, name, year string, season, episode int) ([]Subtitle, error) {
+	return c.search(ctx, tab, name, year, season, episode, true)
+}
+
+func (c *Client) search(ctx context.Context, tab, name, year string, season, episode int, fresh bool) ([]Subtitle, error) {
+	key := cacheKey(tab, name, year, season, episode)
+	if !fresh {
+		if subs, ok := readCache(key); ok {
+			return subs, nil
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, searchTimeout)
+	defer cancel()
 	hits, err := c.autocomplete(ctx, name)
 	if err != nil {
 		return nil, err
@@ -86,7 +114,9 @@ func (c *Client) Search(ctx context.Context, tab, name, year string, season, epi
 			}
 		}
 	}
-	return relevant(parseRows(page, tab == "tv", episode), name), nil
+	subs := relevant(parseRows(page, tab == "tv", episode), name)
+	writeCache(key, subs)
+	return subs, nil
 }
 
 // relevant menyaring baris: hanya Indonesian + English, urut Indonesian dulu,
@@ -274,4 +304,46 @@ func firstMatch(re *regexp.Regexp, s string) string {
 func atoi(s string) int {
 	n, _ := strconv.Atoi(s)
 	return n
+}
+
+// ---- cache ./tmp/subdl ----
+
+func cacheKey(tab, name, year string, season, episode int) string {
+	return fmt.Sprintf("%s|%s|%s|%d|%d", tab, strings.ToLower(name), year, season, episode)
+}
+
+func cachePath(key string) string {
+	sum := sha1.Sum([]byte(key))
+	return filepath.Join(cacheDir, fmt.Sprintf("%x.json", sum))
+}
+
+func readCache(key string) ([]Subtitle, bool) {
+	path := cachePath(key)
+	info, err := os.Stat(path)
+	if err != nil || time.Since(info.ModTime()) > cacheTTL {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var out []Subtitle
+	if json.Unmarshal(data, &out) != nil || len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+func writeCache(key string, subs []Subtitle) {
+	if len(subs) == 0 {
+		return
+	}
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return
+	}
+	data, err := json.Marshal(subs)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(cachePath(key), data, 0o644)
 }

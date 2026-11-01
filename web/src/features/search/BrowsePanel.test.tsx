@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clearLogs } from '@/lib/logs'
+import { AppProvider, useApp } from '@/features/app/AppProvider'
 import { BrowsePanel } from './BrowsePanel'
 import type { Item, Meta, Server } from '@/lib/types'
 
@@ -38,7 +39,11 @@ const server = (over: Partial<Server> = {}): Server => ({
 
 function mount() {
   const onStreams = vi.fn()
-  render(<BrowsePanel onStreams={onStreams} />)
+  render(
+    <AppProvider>
+      <BrowsePanel onStreams={onStreams} />
+    </AppProvider>,
+  )
   return onStreams
 }
 
@@ -153,6 +158,41 @@ describe('BrowsePanel', () => {
 
     pending[0](respond({ results: [item({ id: 'tt1', name: 'Lama' })] }))
     await waitFor(() => expect(screen.queryByText('Lama')).toBeNull())
+  })
+
+  it('menandai episode yang sedang diputar', async () => {
+    vi.stubGlobal('fetch', stubFetch(
+      [item({ id: 'tt22248376', name: 'Frieren', type: 'tv' })],
+      meta({ id: 'tt22248376', name: 'Frieren', tmdb: '209867', episodes: [
+        { season: 1, episode: 1, title: 'The Journey' },
+        { season: 1, episode: 2, title: 'Magic' },
+      ] }),
+    ))
+    function PlayEp2() {
+      const { play } = useApp()
+      return (
+        <button type="button" onClick={() => play({ src: '/s/x.mp4', media: { tab: 'tv', id: 'tt22248376', season: 1, episode: 2 } })}>
+          putar e2
+        </button>
+      )
+    }
+    const onStreams = vi.fn()
+    render(
+      <AppProvider>
+        <BrowsePanel onStreams={onStreams} />
+        <PlayEp2 />
+      </AppProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'TV' }))
+    fireEvent.change(screen.getByPlaceholderText(/Cari judul/), { target: { value: 'frieren' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cari' }))
+    fireEvent.click((await screen.findAllByText('Frieren'))[0])
+    await screen.findByText('Magic')
+
+    expect(screen.queryByText('diputar')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'putar e2' }))
+    expect(screen.getByText('diputar')).toBeTruthy()
   })
 
   it('server gagal resolve tidak ikut dikirim ke sidebar server', async () => {

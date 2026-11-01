@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -328,7 +327,11 @@ func (s *server) apiSubtitles(c *gin.Context) {
 		s.fail(c, err)
 		return
 	}
-	subs, err := s.sub.Search(c.Request.Context(), tab, meta.Name, meta.Year, season, episode)
+	search := s.sub.Search
+	if c.Query("refresh") != "" {
+		search = s.sub.SearchFresh
+	}
+	subs, err := search(c.Request.Context(), tab, meta.Name, meta.Year, season, episode)
 	if err != nil {
 		s.logs.Errf("Subtitle gagal dimuat · %v", err)
 		s.fail(c, err)
@@ -410,7 +413,7 @@ func firstSubFile(data []byte) (string, error) {
 }
 
 // srtToVTT memberi header WEBVTT dan memakai titik pada baris waktu (SRT
-// memakai koma); normalizeVTT kemudian memastikan HH:MM:SS.mmm.
+// memakai koma). Timestamp tidak digeser/dinormalkan.
 func srtToVTT(text string) string {
 	body := strings.TrimSpace(strings.TrimPrefix(text, "\uFEFF"))
 	body = strings.ReplaceAll(body, "\r\n", "\n")
@@ -423,7 +426,7 @@ func srtToVTT(text string) string {
 			lines[i] = strings.ReplaceAll(line, ",", ".")
 		}
 	}
-	return normalizeVTT(strings.Join(lines, "\n"))
+	return strings.Join(lines, "\n")
 }
 
 func (s *server) fail(c *gin.Context, err error) {
@@ -504,19 +507,17 @@ func (s *server) streamProxy(c *gin.Context) {
 		return
 	}
 
-	// Subtitle: sebagian CDN mengirim MM:SS.mmm (atau jam satu digit) yang
-	// bukan VTT valid, sehingga track jadi kosong (0 cue) walau URL-nya sehat.
-	// Normalisasi timestamp di sini.
+	// Subtitle diteruskan apa adanya: timestamp dari sumber dipakai langsung,
+	// tidak ada normalisasi/geser di server.
 	if isSubtitle(res.Header.Get("Content-Type"), target.Path) {
 		body, err := io.ReadAll(res.Body)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
-		out := normalizeVTT(string(body))
 		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelOK, Text: fmt.Sprintf(
-			"Subtitle VTT siap · %d cue", strings.Count(out, "-->"))})
-		c.Data(http.StatusOK, "text/vtt; charset=utf-8", []byte(out))
+			"Subtitle VTT siap · %d cue", strings.Count(string(body), "-->"))})
+		c.Data(http.StatusOK, "text/vtt; charset=utf-8", body)
 		return
 	}
 
@@ -579,51 +580,6 @@ func isSubtitle(ct, p string) bool {
 	return strings.Contains(ct, "text/vtt") || strings.Contains(ct, "/vtt") ||
 		strings.Contains(ct, "x-subrip") || strings.Contains(ct, "/srt") ||
 		strings.HasSuffix(p, ".vtt") || strings.HasSuffix(p, ".srt")
-}
-
-var (
-	// Timestamp berjam (jam boleh satu digit): 1:23:45.000.
-	vttFullTS = regexp.MustCompile(`(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})`)
-	// Timestamp tanpa jam: 01:18.579; awalan wajib bukan digit/kolon supaya
-	// ekor timestamp berjam tidak ikut tertangkap.
-	vttShortTS = regexp.MustCompile(`(^|[^\d:])(\d{1,2}):(\d{2})[.,](\d{1,3})`)
-)
-
-// normalizeVTT memaksa semua timestamp pada baris cue jadi HH:MM:SS.mmm —
-// bentuk VTT valid yang diterima semua parser. Baris non-cue dibiarkan apa adanya.
-func normalizeVTT(body string) string {
-	lines := strings.Split(body, "\n")
-	for i, line := range lines {
-		if !strings.Contains(line, "-->") {
-			continue
-		}
-		line = vttFullTS.ReplaceAllStringFunc(line, func(m string) string {
-			g := vttFullTS.FindStringSubmatch(m)
-			return pad2(g[1]) + ":" + g[2] + ":" + g[3] + "." + padMillis(g[4])
-		})
-		line = vttShortTS.ReplaceAllStringFunc(line, func(m string) string {
-			g := vttShortTS.FindStringSubmatch(m)
-			return g[1] + "00:" + pad2(g[2]) + ":" + g[3] + "." + padMillis(g[4])
-		})
-		lines[i] = line
-	}
-	return strings.Join(lines, "\n")
-}
-
-func pad2(s string) string {
-	if len(s) == 1 {
-		return "0" + s
-	}
-	return s
-}
-
-// padMillis memadankan milidetik ke 3 digit dari kanan: ".5" = 500 ms (bukan
-// 5 ms), karena itu pecahan detik.
-func padMillis(s string) string {
-	for len(s) < 3 {
-		s += "0"
-	}
-	return s
 }
 
 // rewritePlaylist menulis ulang satu playlist m3u8 ke slug pool. Baris yang
