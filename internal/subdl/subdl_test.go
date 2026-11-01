@@ -178,6 +178,13 @@ func TestSearchCache(t *testing.T) {
 		if len(subs) != 3 {
 			t.Fatalf("subs = %d, want 3", len(subs))
 		}
+		// Zip harus selamat melewati cache: tanpa tautan unduh, endpoint
+		// /api/subtitles/file tidak bisa menyajikan VTT.
+		for _, s := range subs {
+			if !strings.HasPrefix(s.Zip, "https://dl.subdl.com/subtitle/") {
+				t.Fatalf("panggilan %d: zip %q hilang/tidak valid", i+1, s.Zip)
+			}
+		}
 	}
 	if got := atomic.LoadInt32(&auto); got != 1 {
 		t.Fatalf("autocomplete dipanggil %d kali, want 1 (hasil kedua dari cache)", got)

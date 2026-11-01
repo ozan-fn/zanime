@@ -339,9 +339,17 @@ func (s *server) apiSubtitles(c *gin.Context) {
 	}
 	// Zip didaftarkan ke pool slug: endpoint /api/subtitles/file hanya bisa
 	// mengambil URL yang memang didaftarkan di sini (bukan sembarang alamat).
-	for i := range subs {
-		subs[i].URL = "/api/subtitles/file?u=" + s.res.RegisterKind(subs[i].Zip, "sub-"+subs[i].Lang, ".zip")
+	// Baris tanpa zip dibuang — slug dengan URL kosong hanya menghasilkan 404/502
+	// saat tombol "pakai" ditekan.
+	out := subs[:0]
+	for _, sub := range subs {
+		if sub.Zip == "" {
+			continue
+		}
+		sub.URL = "/api/subtitles/file?u=" + s.res.RegisterKind(sub.Zip, "sub-"+sub.Lang, ".zip")
+		out = append(out, sub)
 	}
+	subs = out
 	s.logs.OKf("Subtitle siap · %d pilihan", len(subs))
 	c.JSON(http.StatusOK, gin.H{"subtitles": subs})
 }

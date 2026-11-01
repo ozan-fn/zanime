@@ -317,6 +317,15 @@ func cachePath(key string) string {
 	return filepath.Join(cacheDir, fmt.Sprintf("%x.json", sum))
 }
 
+// cachedSub: Subtitle.Zip sengaja `json:"-"` (tautan unduh asli tidak boleh
+// ikut ke klien), jadi zip disimpan di field terpisah di cache. Tanpa ini
+// daftar yang dibaca dari cache kehilangan tautan unduh dan /api/subtitles/file
+// hanya menghasilkan slug kosong (404/502 saat tombol "pakai" ditekan).
+type cachedSub struct {
+	Subtitle
+	Zip string `json:"zip"`
+}
+
 func readCache(key string) ([]Subtitle, bool) {
 	path := cachePath(key)
 	info, err := os.Stat(path)
@@ -327,8 +336,19 @@ func readCache(key string) ([]Subtitle, bool) {
 	if err != nil {
 		return nil, false
 	}
-	var out []Subtitle
-	if json.Unmarshal(data, &out) != nil || len(out) == 0 {
+	var cached []cachedSub
+	if json.Unmarshal(data, &cached) != nil || len(cached) == 0 {
+		return nil, false
+	}
+	out := make([]Subtitle, 0, len(cached))
+	for _, c := range cached {
+		if c.Zip == "" {
+			continue // cache lama (sebelum zip ikut disimpan): anggap basi
+		}
+		c.Subtitle.Zip = c.Zip
+		out = append(out, c.Subtitle)
+	}
+	if len(out) == 0 {
 		return nil, false
 	}
 	return out, true
@@ -341,7 +361,11 @@ func writeCache(key string, subs []Subtitle) {
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return
 	}
-	data, err := json.Marshal(subs)
+	cached := make([]cachedSub, len(subs))
+	for i, s := range subs {
+		cached[i] = cachedSub{Subtitle: s, Zip: s.Zip}
+	}
+	data, err := json.Marshal(cached)
 	if err != nil {
 		return
 	}
