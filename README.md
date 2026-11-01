@@ -169,15 +169,15 @@ mengandung "premium".
 
 Buka `http://127.0.0.1:8080`. Tata letak responsif (mobile-first):
 
-- **ponsel**: header menempel saat scroll, player dulu, lalu kartu server satu
-  baris yang bisa digeser, lalu panel pencarian; tombol Cari di header
-  menggulir ke input.
-- **tablet (`md`)**: panel pencarian di kiri, player di kanan, daftar server
-  satu baris penuh di bawah.
+- **ponsel**: header menempel saat scroll, player dulu, lalu **tab
+  Server/Subtitle/Log** tepat di bawah player, lalu panel pencarian; tombol
+  Cari di header menggulir ke input. Ketiga panel tetap ter-mount, jadi pindah
+  tab tidak memicu pencarian subtitle ulang.
+- **tablet (`md`)**: panel pencarian di kiri, player + tab di kanan.
 - **desktop (`lg`)**: tiga kolom — pencarian (bisa di-scroll sendiri), player
-  (kartu subtitle + log ikut, kolomnya scroll bila perlu), server. Hanya panel
-  server yang bisa di-collapse (tombolnya desktop-only), dan header menampilkan
-  judul yang sedang diputar.
+  (+log di kartunya, kolomnya scroll bila perlu), lalu server dengan kartu
+  subtitle yang bisa di-collapse di bawahnya. Header menampilkan judul yang
+  sedang diputar.
 
 Target sentuh minimal 32–36 px di ponsel, efek hover/marquee `Sq` dimatikan di
 perangkat tanpa hover.
@@ -189,7 +189,7 @@ perangkat tanpa hover.
 | Pilih episode | `GET /api/streams?tab=tv&id=&s=&e=` | daftar `(server, kualitas)` dari embedmaster tampil di sidebar kanan |
 | Klik satu baris server | `play(src)` | player memuat `/s/<slug>`; subtitle stream itu didaftarkan otomatis |
 | Subtitle | — | tiap subtitle jadi `<Track kind="subtitles">`; Indonesia aktif otomatis, fallback Inggris, sisanya di menu CC |
-| Card **Subtitle** (bawah player, atas log) | `GET /api/subtitles?…` | subtitle subdl (Indonesian lalu English, disaring regex judul); **pakai** langsung memasang + mengaktifkan track di player |
+| Card **Subtitle** (bawah kartu server di desktop; tab **Subtitle** di ponsel/tablet) | `GET /api/subtitles?…` | subtitle subdl (Indonesian lalu English, disaring regex judul), bisa di-collapse; **pakai** langsung memasang + mengaktifkan track di player |
 | Panel **Log** | `ws /api/logs` | log realtime (scrape + resolve saat daftar stream dimuat, pemuatan video) tampil di bawah player |
 
 Player: [Vidstack](https://vidstack.io) Default Layout (`@vidstack/react`) di

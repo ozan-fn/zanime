@@ -94,6 +94,19 @@ describe('SubtitleCard', () => {
     expect(onUse).not.toHaveBeenCalled()
   })
 
+  it('bisa di-collapse dan dibuka lagi tanpa mencari ulang', async () => {
+    vi.stubGlobal('fetch', stubFetch())
+    render(<SubtitleCard media={media} onUse={vi.fn()} />)
+    await screen.findByText(/S02E01/)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tutup pilihan subtitle' }))
+    expect(screen.queryByText(/S02E01/)).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Buka pilihan subtitle' }))
+    expect(screen.getByText(/S02E01/)).toBeTruthy()
+    expect(vi.mocked(fetch).mock.calls.length).toBe(1)
+  })
+
   it('tanpa judul tidak memanggil backend dan menampilkan petunjuk', () => {
     const fetchStub = vi.fn()
     vi.stubGlobal('fetch', fetchStub)

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Captions, RefreshCw } from 'lucide-react'
+import { Captions, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
 import { api } from '@/lib/api'
 import { log } from '@/lib/logs'
 import type { Subtitle } from '@/lib/types'
@@ -40,6 +40,7 @@ export function SubtitleCard({
   const [items, setItems] = useState<Subtitle[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [open, setOpen] = useState(true)
   const applied = useRef('')
   const autoRef = useRef(auto)
   useEffect(() => {
@@ -86,7 +87,7 @@ export function SubtitleCard({
   }, [load])
 
   return (
-    <div className="border-t border-border bg-card px-3 py-2 sm:px-3.5">
+    <div className="rounded-lg border border-border bg-card p-2.5 sm:rounded-xl sm:p-3">
       <div className="flex items-center gap-2 text-[10px] text-zinc-400">
         <Captions className="h-3.5 w-3.5" />
         <span className="font-semibold uppercase tracking-wide text-zinc-300">Subtitle</span>
@@ -101,10 +102,19 @@ export function SubtitleCard({
         >
           <RefreshCw className="h-3 w-3" />
         </button>
+        <button
+          type="button"
+          aria-label={open ? 'Tutup pilihan subtitle' : 'Buka pilihan subtitle'}
+          onClick={() => setOpen((v) => !v)}
+          className="grid h-7 w-7 place-items-center rounded text-zinc-400 transition hover:bg-zinc-800 hover:text-white sm:h-6 sm:w-6"
+        >
+          {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+        </button>
       </div>
 
-      {error && <p className="mt-1 rounded border border-rose-900 bg-rose-950/40 px-2 py-1 text-[10px] text-rose-300">{error}</p>}
+      {open && error && <p className="mt-1 rounded border border-rose-900 bg-rose-950/40 px-2 py-1 text-[10px] text-rose-300">{error}</p>}
 
+      {open && (
       <div className="mt-1 max-h-40 overflow-y-auto font-mono text-[10px] sm:max-h-32">
         {busy ? (
           <p className="py-1.5 text-zinc-600">mencari subtitle…</p>
@@ -137,6 +147,7 @@ export function SubtitleCard({
           ))
         )}
       </div>
+      )}
     </div>
   )
 }

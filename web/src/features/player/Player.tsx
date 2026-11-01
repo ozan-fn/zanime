@@ -17,7 +17,7 @@ import { log } from '@/lib/logs'
 import { Sq } from '@/features/text/Sq'
 import { useApp } from '@/features/app/AppProvider'
 import { LogPanel } from '@/features/log/LogPanel'
-import { SubtitleCard, type SubtitleMedia } from '@/features/subtitle/SubtitleCard'
+import type { SubtitleMedia } from '@/features/subtitle/SubtitleCard'
 import { cueCount, shiftCues, subTracks, toVtt } from './tracks'
 
 /* Pemutar: Vidstack Default Layout di atas <video> native, dengan HLS lewat
@@ -32,7 +32,21 @@ const DELAY_MAX = 10
 
 const delayLabel = (d: number) => `Sub ${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d).toFixed(1)}s`
 
-export function Player({ media }: { media?: SubtitleMedia }) {
+// Track subtitle tambahan (hasil kartu subdl / file sendiri).
+export type PlayerSubtitle = { src: string; label: string }
+
+export function Player({
+  media,
+  subtitle,
+  onSubtitle,
+  log: showLog = true,
+}: {
+  media?: SubtitleMedia
+  subtitle?: PlayerSubtitle | null
+  onSubtitle?: (sub: PlayerSubtitle | null) => void
+  /** Panel log di dalam kartu player (desktop). Ponsel memakai tab. */
+  log?: boolean
+}) {
   const { status, playing } = useApp()
   const current = playing?.src || ''
   const player = useRef<MediaPlayerInstance | null>(null)
@@ -67,15 +81,13 @@ export function Player({ media }: { media?: SubtitleMedia }) {
     }
   }, [applyDelay])
 
-  // Subtitle kiriman pengguna (file .vtt/.srt dari perangkat). URL-nya blob
-  // milik halaman ini, jadi tidak lewat proxy dan tetap terpasang saat ganti
-  // server.
-  const [local, setLocal] = useState<{ src: string; label: string } | null>(null)
-  const localSrc = useRef('')
+  // Subtitle tambahan dipegang HomePage (kartunya di bawah panel server);
+  // player hanya merawat blob unggahan yang dibuatnya sendiri.
+  const blobSrc = useRef('')
 
   useEffect(
     () => () => {
-      if (localSrc.current) URL.revokeObjectURL(localSrc.current)
+      if (blobSrc.current) URL.revokeObjectURL(blobSrc.current)
     },
     [],
   )
@@ -83,12 +95,20 @@ export function Player({ media }: { media?: SubtitleMedia }) {
   // Ganti judul/episode: subtitle lama tidak relevan lagi, jadi dilepas dari
   // player (termasuk blob unggahan). Ganti server tetap mempertahankannya.
   useEffect(() => {
-    setLocal(null)
-    if (localSrc.current) {
-      URL.revokeObjectURL(localSrc.current)
-      localSrc.current = ''
+    onSubtitle?.(null)
+    if (blobSrc.current) {
+      URL.revokeObjectURL(blobSrc.current)
+      blobSrc.current = ''
     }
-  }, [media])
+  }, [media, onSubtitle])
+
+  // Blob unggahan yang digantikan subtitle lain (mis. dari kartu) dilepas.
+  useEffect(() => {
+    if (blobSrc.current && blobSrc.current !== subtitle?.src) {
+      URL.revokeObjectURL(blobSrc.current)
+      blobSrc.current = ''
+    }
+  }, [subtitle])
 
   const loadSub = useCallback(async (file: File) => {
     try {
@@ -98,32 +118,23 @@ export function Player({ media }: { media?: SubtitleMedia }) {
         log.err(`Subtitle tidak berisi cue · ${file.name}`, 'player:sub')
         return
       }
-      if (localSrc.current) URL.revokeObjectURL(localSrc.current)
+      if (blobSrc.current) URL.revokeObjectURL(blobSrc.current)
       const src = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }))
-      localSrc.current = src
-      setLocal({ src, label: file.name.replace(/\.[^.]+$/, '') })
+      blobSrc.current = src
+      onSubtitle?.({ src, label: file.name.replace(/\.[^.]+$/, '') })
       log.ok(`Subtitle sendiri dimuat · ${file.name} · ${cues} cue`, 'player:sub')
     } catch (err) {
       log.err(`Subtitle gagal dibaca · ${err instanceof Error ? err.message : String(err)}`, 'player:sub')
     }
-  }, [])
-
-  // Subtitle dari kartu pencarian: URL VTT backend, jadi tetap same-origin dan
-  // tidak perlu blob.
-  const useSub = useCallback((src: string, label: string) => {
-    setLocal({ src, label })
-    log.ok(`Subtitle dipasang · ${label}`, 'player:sub')
-  }, [])
+  }, [onSubtitle])
 
   // Subtitle sendiri menang: track otomatis dilepas dari default agar tidak
   // rebutan dengan pilihan Indonesia/Inggris.
   const auto = subTracks(playing?.subs)
-  // Server tanpa track pilihan → kartu subtitle boleh memasang otomatis.
-  const needSub = !local && !auto.some((t) => t.default)
-  const tracks = local
+  const tracks = subtitle
     ? [
         ...auto.map((t) => ({ ...t, default: false })),
-        { src: local.src, kind: 'subtitles' as const, label: local.label, lang: 'und', default: true },
+        { src: subtitle.src, kind: 'subtitles' as const, label: subtitle.label, lang: 'und', default: true },
       ]
     : auto
 
@@ -142,7 +153,7 @@ export function Player({ media }: { media?: SubtitleMedia }) {
   // mode-nya diset eksplisit: track lokal (`und`) aktif, sisanya dimatikan.
   useEffect(() => {
     const p = player.current
-    if (!p || !local) return
+    if (!p || !subtitle) return
     const list = p.textTracks
     for (let i = 0; i < list.length; i++) {
       const track = list[i]
@@ -150,7 +161,7 @@ export function Player({ media }: { media?: SubtitleMedia }) {
       const lang: string = track.language
       track.mode = lang === 'und' ? 'showing' : 'disabled'
     }
-  }, [local, current])
+  }, [subtitle, current])
 
   // Elemen player di-mount ulang saat ganti server, jadi track dan player-nya
   // baru: pasang ulang pendengar delay pada instance yang sekarang.
@@ -275,8 +286,8 @@ export function Player({ media }: { media?: SubtitleMedia }) {
           )}
           {playing && (
           <label
-            title={local ? 'Ganti subtitle sendiri' : 'Subtitle sendiri'}
-            aria-label={local ? 'Ganti subtitle sendiri' : 'Subtitle sendiri'}
+            title={subtitle?.src.startsWith('blob:') ? 'Ganti subtitle sendiri' : 'Subtitle sendiri'}
+            aria-label={subtitle?.src.startsWith('blob:') ? 'Ganti subtitle sendiri' : 'Subtitle sendiri'}
             className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-full border border-border bg-zinc-900 text-zinc-300 transition hover:border-zinc-600 hover:bg-zinc-800 sm:h-7 sm:w-7"
           >
             <input
@@ -301,9 +312,9 @@ export function Player({ media }: { media?: SubtitleMedia }) {
           </span>
         </div>
       )}
-      {/* Pencarian subtitle di atas log; klik hasilnya = track dipasang. */}
-      <SubtitleCard media={media} auto={needSub} onUse={useSub} />
-      <LogPanel className="border-t border-border" panelClassName="rounded-none" maxHeight="max-h-40 lg:max-h-32" />
+      {showLog && (
+        <LogPanel className="border-t border-border" panelClassName="rounded-none" maxHeight="max-h-32" />
+      )}
     </div>
   )
 }

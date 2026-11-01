@@ -1,20 +1,47 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Clapperboard } from 'lucide-react'
 import { useApp } from '@/features/app/AppProvider'
-import { Player } from '@/features/player/Player'
+import { Player, type PlayerSubtitle } from '@/features/player/Player'
+import { subTracks } from '@/features/player/tracks'
+import { SubtitleCard } from '@/features/subtitle/SubtitleCard'
+import { PlayerTabs } from '@/features/home/PlayerTabs'
 import { ServerPanel } from '@/features/player/ServerPanel'
 import { Footer } from '@/features/home/Footer'
 import { BrowsePanel, type Streams } from '@/features/search/BrowsePanel'
 import { Sq } from '@/features/text/Sq'
 
 /* Satu halaman, mobile-first:
- * - ponsel: player dulu, lalu server (chip horizontal), lalu pencarian;
- * - tablet (md): pencarian kiri + player kanan, server satu baris penuh;
- * - desktop (lg): pencarian | player | server seperti sebelumnya.
+ * - ponsel/tablet: player dulu, lalu tab Server/Subtitle/Log, lalu pencarian;
+ *   tablet (md) menaruh pencarian di kiri player.
+ * - desktop (lg): pencarian | player (+log) | server + subtitle.
  * Header menempel di atas saat scroll di ponsel/tablet. */
+
+// Desktop = layout tiga kolom (sama dengan breakpoint `lg` di Tailwind).
+// Dipakai untuk memilih tab vs kolom, bukan sekadar menyembunyikan, supaya
+// subtitle tidak dicari dua kali.
+function useDesktop(): boolean {
+  const query = '(min-width: 1024px)'
+  const [desktop, setDesktop] = useState(
+    () => typeof window.matchMedia === 'function' && window.matchMedia(query).matches,
+  )
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const mq = window.matchMedia(query)
+    const onChange = () => setDesktop(mq.matches)
+    onChange()
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  return desktop
+}
+
 export function HomePage() {
+  const desktop = useDesktop()
   const [streams, setStreams] = useState<Streams | null>(null)
+  const [subtitle, setSubtitle] = useState<PlayerSubtitle | null>(null)
   const { playing } = useApp()
+  // Server tanpa track pilihan → kartu subtitle boleh memasang otomatis.
+  const needSub = !subtitle && !subTracks(playing?.subs).some((t) => t.default)
   const focusSearch = () => {
     const el = document.getElementById('search-q')
     el?.focus()
@@ -55,7 +82,20 @@ export function HomePage() {
         </div>
 
         <div className="order-1 min-w-0 md:order-2 md:min-h-0 lg:h-full lg:overflow-y-auto lg:pr-1">
-          <Player media={streams?.media} />
+          <Player
+            media={streams?.media}
+            subtitle={subtitle}
+            onSubtitle={setSubtitle}
+            log={desktop}
+          />
+          {!desktop && (
+            <PlayerTabs
+              streams={streams}
+              media={streams?.media}
+              auto={needSub}
+              onUse={(src, label) => setSubtitle({ src, label })}
+            />
+          )}
           {!playing && (
             <button
               type="button"
@@ -67,9 +107,18 @@ export function HomePage() {
           )}
         </div>
 
-        <div className="order-2 min-w-0 md:order-3 md:col-span-2 lg:order-3 lg:col-span-1 lg:min-h-0">
-          <ServerPanel streams={streams} />
-        </div>
+        {desktop && (
+          <div className="order-3 min-w-0 lg:min-h-0 lg:overflow-y-auto">
+            <ServerPanel streams={streams} />
+            <div className="mt-3">
+              <SubtitleCard
+                media={streams?.media}
+                auto={needSub}
+                onUse={(src, label) => setSubtitle({ src, label })}
+              />
+            </div>
+          </div>
+        )}
       </main>
 
       <Footer />
