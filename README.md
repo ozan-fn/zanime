@@ -123,6 +123,28 @@ Golden test `TestDecryptKnownVector` (di `internal/em`) memakai vektor asli
 (blob + pk + plaintext dari situs) sebagai jaring pengaman kalau kripto di sana
 berubah.
 
+### Subtitle (subdl)
+
+Pencarian subtitle sepenuhnya di server (`internal/subdl`); browser hanya
+memanggil endpoint sendiri dan tidak pernah menghubungi subdl (halaman subdl
+tidak membuka CORS, dan zip harus di-extract jadi VTT):
+
+| Tahap | Sumber | Yang terjadi |
+|-------|--------|--------------|
+| Cari judul | `api3.subdl.com/auto?query=` | autocomplete; hasil `movie`/`tv` dipilih yang namanya cocok (tanpa tanda baca) + tahun sebagai penentu |
+| Halaman subtitle | `subdl.com/subtitle/<sd-id>/<slug>[/<n>-season]` | tv: slug musim dibaca dari daftar season di halaman, lalu baris `data-row` disaring ke episode itu + pack yang mencakupnya |
+| Saring | — | hanya **Indonesian** + **English**, urut Indonesian dulu; nama rilis wajib cocok regex kata terpanjang dari judul (`Frieren: Beyond Journey's End` → `/frieren/i`), jadi baris `JudasEps1-Eps14` dsb. dibuang |
+| Pasang | `/api/subtitles/file?u=<slug>` | zip diunduh, `.srt`/`.vtt` pertama diambil, header `WEBVTT` + `normalizeVTT` |
+
+- **Fresh**: tidak ada cache. Tiap pencarian = autocomplete + halaman
+  judul/musim baru, jadi tautan zip yang dipakai selalu hasil resolve terbaru;
+  file zip-nya sendiri tidak disimpan.
+- **Otomatis (on the fly)**: kartu subtitle memasang Indonesia → Inggris tanpa
+  klik selama player belum punya track pilihan; subtitle dari server maupun
+  unggahan pengguna tidak ditimpa.
+- Endpoint file hanya bisa mengambil URL zip yang sudah didaftarkan pool slug
+  oleh `/api/subtitles` (bukan proxy bebas).
+
 ### Performa scrape
 
 Satu `/api/streams` ≈ 3 dtk ambil halaman player + 1,5 dtk feed; sisanya
@@ -145,9 +167,20 @@ mengandung "premium".
 
 ## UI
 
-Buka `http://127.0.0.1:8080`. Tata letak: sidebar kiri (cari + hasil/episode),
-player di tengah, sidebar kanan (server) yang bisa di-collapse. Sidebar kiri
-tidak bisa ditutup.
+Buka `http://127.0.0.1:8080`. Tata letak responsif (mobile-first):
+
+- **ponsel**: header menempel saat scroll, player dulu, lalu kartu server satu
+  baris yang bisa digeser, lalu panel pencarian; tombol Cari di header
+  menggulir ke input.
+- **tablet (`md`)**: panel pencarian di kiri, player di kanan, daftar server
+  satu baris penuh di bawah.
+- **desktop (`lg`)**: tiga kolom — pencarian (bisa di-scroll sendiri), player
+  (kartu subtitle + log ikut, kolomnya scroll bila perlu), server. Hanya panel
+  server yang bisa di-collapse (tombolnya desktop-only), dan header menampilkan
+  judul yang sedang diputar.
+
+Target sentuh minimal 32–36 px di ponsel, efek hover/marquee `Sq` dimatikan di
+perangkat tanpa hover.
 
 | Aksi di UI | Request | Efek |
 |------------|---------|------|
@@ -156,6 +189,7 @@ tidak bisa ditutup.
 | Pilih episode | `GET /api/streams?tab=tv&id=&s=&e=` | daftar `(server, kualitas)` dari embedmaster tampil di sidebar kanan |
 | Klik satu baris server | `play(src)` | player memuat `/s/<slug>`; subtitle stream itu didaftarkan otomatis |
 | Subtitle | — | tiap subtitle jadi `<Track kind="subtitles">`; Indonesia aktif otomatis, fallback Inggris, sisanya di menu CC |
+| Card **Subtitle** (bawah player, atas log) | `GET /api/subtitles?…` | subtitle subdl (Indonesian lalu English, disaring regex judul); **pakai** langsung memasang + mengaktifkan track di player |
 | Panel **Log** | `ws /api/logs` | log realtime (scrape + resolve saat daftar stream dimuat, pemuatan video) tampil di bawah player |
 
 Player: [Vidstack](https://vidstack.io) Default Layout (`@vidstack/react`) di
@@ -213,6 +247,8 @@ React tidak memasang ulang listener tiap render. Test regresinya
 | `GET /api/meta/:tab/:id` | detail judul (`id` harus `tt…`); tv menyertakan `episodes[]` |
 | `GET /api/streams?tab=&id=&s=&e=` | pecahkan stream: `{id,tab,servers:[{name,type,quality,qualities,subs,url,err}]}`; `url`/`qualities[].url`/`subs[].url` sudah `/s/<slug>`; tv wajib `s`/`e` |
 | `GET/HEAD /s/:slug` | proxy media: teruskan `Range`/`Content-Range`/`Accept-Ranges`, `Referer` host video, dan tulis ulang playlist m3u8; 404 bila slug tidak ada, 502 bila upstream gagal |
+| `GET /api/subtitles?tab=&id=&s=&e=` | cari subtitle subdl untuk judul/episode aktif (fresh tiap panggilan): `{subtitles:[{id,name,language,lang,downloads,url}]}`; `url` = `/api/subtitles/file?u=<slug>` |
+| `GET /api/subtitles/file?u=<slug>` | unduh zip subtitle subdl, ambil `.srt`/`.vtt` pertama, balas VTT bertimestamp `HH:MM:SS.mmm` |
 | `GET /api/logs` (websocket) | siarkan log realtime `{id,at,level,text}`; riwayat terakhir dikirim saat menyambung |
 | `GET /healthz` | `ok` |
 
@@ -252,10 +288,12 @@ Semua cache ada di `./tmp` dan boleh dihapus kapan saja:
 ## Test
 
 ```sh
-make vet                # go vet ./...
-make test               # unit test hermetic: go test -short -race ./... -timeout 15s
-make test-live          # live scrape ke embedmaster.link (~10 dtk, butuh jaringan)
-cd web && pnpm lint && pnpm test
+make vet                 # go vet ./...
+golangci-lint run ./...  # lint Go (staticcheck dll.), harus 0 issue
+make test                # unit test hermetic: go test -short -race ./... -timeout 15s
+make test-live           # live scrape ke embedmaster.link (~10 dtk, butuh jaringan)
+cd web && pnpm lint      # oxlint
+cd web && pnpm test      # vitest (unit test komponen + lib)
 ```
 
 Cakupan sekarang:
@@ -266,8 +304,9 @@ Cakupan sekarang:
 | `internal/em` | pipeline penuh di atas `httptest` (gerbang cookie → POST `tr=` → kredensial → feed → resolve), pemilihan episode tv, episode hilang, semua server gagal, cache hit/expired, ctx batal, HTTP 5xx, pola kredensial rusak, dekripsi (vektor asli + roundtrip + error), jenis stream dari resolve/ekstensi |
 | `internal/logbus` | fan-out ke banyak pelanggan, replay riwayat, cancel idempoten, pelanggan lambat tidak memblok, batas riwayat |
 | `internal/resolve` | register/load/idempoten, kolisi, hint kotor, guard `Load`, persist antar-pool, file rusak, prune + jadwal tidy, ekstensi media pada slug |
-| `main` | kontrak `/api/search` & `/api/meta` (ok/400), `/api/streams` → slug, `streamProxy` (rewrite playlist master+child, `URI=` tag, `Referer`, HEAD tanpa body, 404, 502, baris log), websocket `/api/logs` (riwayat + live), SPA fallback |
-| `web` (vitest) | sidebar pencarian (hasil, movie→stream per kualitas, tv→episode→streams, error, filter premium, respons lama tidak menimpa hasil baru), sidebar server (play, collapse, auto-buka), provider play/stop/status, `subTracks` (URL tidak aman/lang kosong/duplikat, default Indonesia→Inggris), store log (`push`/id sama/ring buffer/anti-loop render), panel `LogPanel` |
+| `internal/subdl` | pemilihan judul movie/tv (nama tanpa tanda baca + tahun), slug musim (Specials/Season N), filter episode tv + pack yang mencakupnya, pemetaan bahasa/unduhan/zip, dua kali cari = dua kali fetch (fresh, bukan cache), upstream gagal/judul tak ada → error |
+| `main` | kontrak `/api/search` & `/api/meta` (ok/400), `/api/streams` → slug, `/api/subtitles` → endpoint VTT (`tt…`/`s`/`e` divalidasi), `/api/subtitles/file` (zip → VTT bertimestamp valid), `streamProxy` (rewrite playlist master+child, `URI=` tag, `Referer`, HEAD tanpa body, 404, 502, baris log), websocket `/api/logs` (riwayat + live), SPA fallback |
+| `web` (vitest) | sidebar pencarian (hasil, movie→stream per kualitas, tv→episode→streams, error, filter premium, respons lama tidak menimpa hasil baru, konteks `media` memakai `tt…`), sidebar server (play, collapse, auto-buka), provider play/stop/status, `subTracks` (URL tidak aman/lang kosong/duplikat, default Indonesia→Inggris), kartu subtitle (cari per judul/episode, klik pakai, cari ulang = fetch baru, auto-pasang Indonesia), store log (`push`/id sama/ring buffer/anti-loop render), panel `LogPanel` |
 
 Live test (jaringan sungguhan, ~10 s):
 

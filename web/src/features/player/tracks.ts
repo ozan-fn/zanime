@@ -16,6 +16,46 @@ const safeURL = (url: string) => /^(\/|https?:\/\/)/i.test(url)
 const ID_RE = /\b(id|ind)\b|indonesia/i
 const EN_RE = /\b(en|eng)\b|english/i
 
+/* toVtt: <track> hanya menerima WebVTT. File .vtt dilewatkan apa adanya
+ * (BOM dibuang, CRLF dinormalkan); .srt diberi header WEBVTT dan koma pada
+ * baris waktu diganti titik. Baris teks cue tidak disentuh. */
+export function toVtt(text: string): string {
+  const body = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
+  if (body.trimStart().startsWith('WEBVTT')) return body
+  const cues = body
+    .split('\n')
+    .map((line) => (line.includes('-->') ? line.replace(/,/g, '.') : line))
+    .join('\n')
+    .trim()
+  return `WEBVTT\n\n${cues}\n`
+}
+
+// cueCount menghitung baris waktu VTT (00:00:01.000 --> …), dipakai untuk
+// memastikan file kiriman pengguna benar-benar berisi cue.
+export function cueCount(vtt: string): number {
+  return (vtt.match(/^\s*\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->/gm) || []).length
+}
+
+export type Cue = { startTime: number; endTime: number }
+
+/* shiftCues menggeser waktu cue sebesar `delay` detik (positif = subtitle
+ * tampil lebih lambat). Waktu asli tiap cue disimpan di `base`, jadi geseran
+ * idempoten: nilai bisa dinaikkan-turunkan berulang tanpa menumpuk, dan cue
+ * baru dari track yang baru dimuat ikut mengenal delay yang sedang aktif.
+ * Waktu mulai tidak pernah negatif. */
+export function shiftCues(cues: readonly Cue[], delay: number, base: WeakMap<object, Cue>): void {
+  for (const cue of cues) {
+    let orig = base.get(cue)
+    if (!orig) {
+      orig = { startTime: cue.startTime, endTime: cue.endTime }
+      base.set(cue, orig)
+    }
+    const start = Math.max(0, orig.startTime + delay)
+    cue.startTime = start
+    cue.endTime = Math.max(start, orig.endTime + delay)
+  }
+}
+
 /* subTracks menyiapkan track subtitle untuk <Track>: URL wajib aman, lang
  * wajib ada (dipakai menu subtitle), duplikat lang dibuang, dan satu track
  * dipilih otomatis — Indonesia, fallback Inggris; tanpa keduanya tidak ada

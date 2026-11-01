@@ -85,6 +85,8 @@ describe('BrowsePanel', () => {
     await waitFor(() => expect(onStreams).toHaveBeenCalled())
     const payload = onStreams.mock.calls.at(-1)![0]
     expect(payload.title).toBe('Spider-Man')
+    // Kartu subtitle memakai meta/imdb id (`tt…`), bukan id TMDB numerik.
+    expect(payload.media).toMatchObject({ tab: 'movie', id: 'tt0145487', name: 'Spider-Man' })
     expect(payload.rows.map((r: { quality: string }) => r.quality)).toEqual(['1080p', '480p'])
     expect(payload.rows[0].subs).toEqual([{ label: 'Indonesia', lang: 'id', url: 'https://sub/id.vtt' }])
   })

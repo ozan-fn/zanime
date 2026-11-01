@@ -42,3 +42,16 @@ export type Server = {
   url?: string
   err?: string
 }
+
+// Satu subtitle hasil pencarian (subdl); `url` = endpoint VTT siap pakai.
+export type Subtitle = {
+  id: string
+  name: string
+  author?: string
+  lang: string
+  language: string
+  downloads: number
+  episodeFrom?: number
+  episodeTo?: number
+  url: string
+}

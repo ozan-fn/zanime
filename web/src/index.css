@@ -45,6 +45,12 @@ dialog::backdrop { background: rgba(9, 9, 11, .78); }
 .chip.on { background: #fafafa; border-color: #fafafa; color: #18181b; font-weight: 500; }
 .chip[disabled] { opacity: .4; cursor: default; }
 button:focus-visible, input:focus-visible { outline: 2px solid #52525b; outline-offset: 1px; }
+/* Sentuhan: hindari zoom dobel-tap dan highlight biru bawaan di ponsel. */
+button, label, input, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+/* Marquee hover tidak berlaku di perangkat sentuh (tanpa hover). */
+@media (hover: none) {
+  .sq:hover .sq-inner { animation: none; }
+}
 /* Teks terpotong (ellipsis) bergeser melebar saat hover + tooltip teks
    lengkap, jadi judul/path file panjang tetap terbaca tanpa menggeser list. */
 .sq { overflow: hidden; min-width: 0; white-space: nowrap; text-overflow: ellipsis; }

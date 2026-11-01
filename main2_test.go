@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +21,7 @@ import (
 	"zanime/internal/em"
 	"zanime/internal/logbus"
 	"zanime/internal/resolve"
+	"zanime/internal/subdl"
 	"zanime/internal/tmdb"
 )
 
@@ -72,6 +75,8 @@ func newRouter(t *testing.T) (*gin.Engine, *server) {
 	r.GET("/api/search", srv.apiSearch)
 	r.GET("/api/meta/:tab/:id", srv.apiMeta)
 	r.GET("/api/streams", srv.apiStreams)
+	r.GET("/api/subtitles", srv.apiSubtitles)
+	r.GET("/api/subtitles/file", srv.apiSubtitleFile)
 	r.GET("/s/:slug", srv.streamProxy)
 	r.NoRoute(srv.spaFallback)
 	return r, srv
@@ -79,6 +84,85 @@ func newRouter(t *testing.T) (*gin.Engine, *server) {
 
 func fakeWebFS() fs.FS {
 	return fstest.MapFS{"index.html": {Data: []byte("<html>zanime</html>")}}
+}
+
+// TestAPISubtitles: hasil subdl dikembalikan dengan slug /api/subtitles/file,
+// zip diubah jadi VTT bertimestamp valid; tab/id/tv tanpa s,e → 400.
+func TestAPISubtitles(t *testing.T) {
+	var zipData bytes.Buffer
+	zw := zip.NewWriter(&zipData)
+	f, err := zw.Create("spider-man.srt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.Write([]byte("1\r\n00:00:01,000 --> 00:00:02,500\r\nHalo\r\n"))
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var up *httptest.Server
+	up = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auto":
+			_, _ = w.Write([]byte(`{"results":[{"type":"movie","name":"Spider-Man","year":2002,"link":"/subtitle/sd1/spider-man"}]}`))
+		case "/subtitle/sd1/spider-man":
+			_, _ = w.Write([]byte(`<div data-language="english" data-language-name="English">
+<li class="flex" data-downloads="42" data-row data-id="555">
+<a data-subtitle-title href="/s/info/m1/x"><h4>Spider-Man 2002 English</h4></a>
+<a data-subtitle-download href="` + up.URL + `/sub/555-1.zip">dl</a>
+</li></div>`))
+		case "/sub/555-1.zip":
+			_, _ = w.Write(zipData.Bytes())
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer up.Close()
+
+	r, srv := newRouter(t)
+	sd := subdl.New()
+	sd.SetBase(up.URL, up.URL)
+	srv.sub = sd
+
+	res := httptest.NewRecorder()
+	r.ServeHTTP(res, httptest.NewRequest("GET", "/api/subtitles?tab=movie&id=tt0145487", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", res.Code, res.Body.String())
+	}
+	var body struct {
+		Subtitles []subdl.Subtitle `json:"subtitles"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bukan JSON: %v", err)
+	}
+	if len(body.Subtitles) != 1 || body.Subtitles[0].Language != "English" || body.Subtitles[0].ID != "555" {
+		t.Fatalf("subtitles body: %+v", body.Subtitles)
+	}
+	u := body.Subtitles[0].URL
+	if !strings.HasPrefix(u, "/api/subtitles/file?u=") {
+		t.Fatalf("URL harus endpoint VTT, dapat %q", u)
+	}
+
+	res = httptest.NewRecorder()
+	r.ServeHTTP(res, httptest.NewRequest("GET", u, nil))
+	got := res.Body.String()
+	if res.Code != http.StatusOK || !strings.Contains(got, "WEBVTT") ||
+		!strings.Contains(got, "00:00:01.000 --> 00:00:02.500") {
+		t.Fatalf("VTT salah: %d %q", res.Code, got)
+	}
+
+	for _, q := range []string{
+		"/api/subtitles?tab=movie",
+		"/api/subtitles?tab=anime&id=tt0145487",
+		"/api/subtitles?tab=tv&id=tt22248376",
+		"/api/subtitles/file?u=tidak-ada",
+	} {
+		res = httptest.NewRecorder()
+		r.ServeHTTP(res, httptest.NewRequest("GET", q, nil))
+		if res.Code != http.StatusBadRequest && res.Code != http.StatusNotFound {
+			t.Fatalf("%q status %d, want 400/404", q, res.Code)
+		}
+	}
 }
 
 // TestAPIMeta: bentuk meta movie; id bukan tt… dan tab salah → 400.

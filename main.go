@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"embed"
 	"errors"
@@ -24,6 +26,7 @@ import (
 	"zanime/internal/em"
 	"zanime/internal/logbus"
 	"zanime/internal/resolve"
+	"zanime/internal/subdl"
 	"zanime/internal/tmdb"
 )
 
@@ -51,6 +54,9 @@ var proxyClient = &http.Client{
 	},
 }
 
+// subHTTP mengambil zip subtitle subdl (ukuran kecil, bukan streaming).
+var subHTTP = &http.Client{Timeout: 30 * time.Second}
+
 func main() {
 	if err := config.LoadDotEnv(".env"); err != nil {
 		log.Printf(".env: %v", err)
@@ -68,7 +74,7 @@ func main() {
 	logs := logbus.New()
 	emc := em.New()
 	emc.SetLogger(hubLogger{hub: logs})
-	srv := &server{web: webRoot, tmdb: tmdb.New(), em: emc, res: res, logs: logs}
+	srv := &server{web: webRoot, tmdb: tmdb.New(), em: emc, res: res, logs: logs, sub: subdl.New()}
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -84,6 +90,8 @@ func main() {
 	r.GET("/api/search", srv.apiSearch)
 	r.GET("/api/meta/:tab/:id", srv.apiMeta)
 	r.GET("/api/streams", srv.apiStreams)
+	r.GET("/api/subtitles", srv.apiSubtitles)
+	r.GET("/api/subtitles/file", srv.apiSubtitleFile)
 	r.GET("/api/logs", srv.apiLogs) // websocket: log realtime ke UI
 	r.GET("/s/:slug", srv.streamProxy)
 	r.HEAD("/s/:slug", srv.streamProxy)
@@ -107,6 +115,7 @@ type server struct {
 	web  fs.FS
 	tmdb *tmdb.Client
 	em   streamer
+	sub  *subdl.Client
 	res  *resolve.Pool
 	logs *logbus.Hub
 }
@@ -288,6 +297,133 @@ func (s *server) apiStreams(c *gin.Context) {
 	}
 	s.logs.OKf("Daftar stream siap · %d dari %d server bisa diputar", playable, len(res))
 	c.JSON(http.StatusOK, gin.H{"id": id, "tab": tab, "servers": res})
+}
+
+// apiSubtitles: cari subtitle subdl untuk judul yang sedang dibuka. Nama+tahun
+// diambil dari meta supaya autocomplete subdl dapat query yang tepat; tv ikut
+// memilih musim + episode. Tiap permintaan fresh (tanpa cache): tautan unduh
+// yang dikembalikan berasal dari halaman yang baru diambil.
+func (s *server) apiSubtitles(c *gin.Context) {
+	tab, id := c.Query("tab"), strings.TrimSpace(c.Query("id"))
+	if (tab != "movie" && tab != "tv") || !strings.HasPrefix(id, "tt") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "subtitles harus ?tab=movie|tv&id=<imdb-id>"})
+		return
+	}
+	season, episode := 0, 0
+	if tab == "tv" {
+		ses, err1 := strconv.Atoi(c.Query("s"))
+		epi, err2 := strconv.Atoi(c.Query("e"))
+		if err1 != nil || err2 != nil || ses < 0 || epi < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "tv butuh ?s=<season>&e=<episode>"})
+			return
+		}
+		season, episode = ses, epi
+	}
+	if s.sub == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "pencarian subtitle tidak aktif"})
+		return
+	}
+	meta, err := s.tmdb.Meta(c.Request.Context(), tab, id)
+	if err != nil {
+		s.fail(c, err)
+		return
+	}
+	subs, err := s.sub.Search(c.Request.Context(), tab, meta.Name, meta.Year, season, episode)
+	if err != nil {
+		s.logs.Errf("Subtitle gagal dimuat · %v", err)
+		s.fail(c, err)
+		return
+	}
+	// Zip didaftarkan ke pool slug: endpoint /api/subtitles/file hanya bisa
+	// mengambil URL yang memang didaftarkan di sini (bukan sembarang alamat).
+	for i := range subs {
+		subs[i].URL = "/api/subtitles/file?u=" + s.res.RegisterKind(subs[i].Zip, "sub-"+subs[i].Lang, ".zip")
+	}
+	s.logs.OKf("Subtitle siap · %d pilihan", len(subs))
+	c.JSON(http.StatusOK, gin.H{"subtitles": subs})
+}
+
+// apiSubtitleFile mengubah zip subtitle subdl jadi VTT siap track: entri
+// .srt/.vtt pertama, header WEBVTT, lalu timestamp dinormalkan.
+func (s *server) apiSubtitleFile(c *gin.Context) {
+	raw, ok := s.res.Load(c.Query("u"))
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "subtitle tidak ada"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "URL subtitle tidak valid"})
+		return
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 zanime")
+	res, err := subHTTP.Do(req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "gagal menghubungi sumber subtitle"})
+		return
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("sumber subtitle HTTP %s", res.Status)})
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(res.Body, 20<<20))
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	text, err := firstSubFile(data)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	out := srtToVTT(text)
+	s.logs.OKf("Subtitle subdl siap · %d cue", strings.Count(out, "-->"))
+	c.Data(http.StatusOK, "text/vtt; charset=utf-8", []byte(out))
+}
+
+// firstSubFile mengambil berkas .srt/.vtt pertama dari zip subtitle.
+func firstSubFile(data []byte) (string, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return "", fmt.Errorf("zip subtitle rusak: %w", err)
+	}
+	for _, f := range zr.File {
+		name := strings.ToLower(f.Name)
+		if !strings.HasSuffix(name, ".srt") && !strings.HasSuffix(name, ".vtt") {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		body, err := io.ReadAll(io.LimitReader(rc, 8<<20))
+		_ = rc.Close()
+		if err != nil {
+			continue
+		}
+		return string(body), nil
+	}
+	return "", fmt.Errorf("zip subtitle tanpa .srt/.vtt")
+}
+
+// srtToVTT memberi header WEBVTT dan memakai titik pada baris waktu (SRT
+// memakai koma); normalizeVTT kemudian memastikan HH:MM:SS.mmm.
+func srtToVTT(text string) string {
+	body := strings.TrimSpace(strings.TrimPrefix(text, "\uFEFF"))
+	body = strings.ReplaceAll(body, "\r\n", "\n")
+	if !strings.HasPrefix(body, "WEBVTT") {
+		body = "WEBVTT\n\n" + body
+	}
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "-->") {
+			lines[i] = strings.ReplaceAll(line, ",", ".")
+		}
+	}
+	return normalizeVTT(strings.Join(lines, "\n"))
 }
 
 func (s *server) fail(c *gin.Context, err error) {

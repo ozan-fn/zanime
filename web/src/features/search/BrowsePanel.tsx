@@ -20,7 +20,19 @@ export type StreamRow = {
   url: string
 }
 
-export type Streams = { title: string; rows: StreamRow[] }
+export type Streams = {
+  title: string
+  rows: StreamRow[]
+  // Konteks judul/episode untuk kartu subtitle (di bawah player).
+  media?: {
+    tab: Tab
+    id: string
+    name: string
+    year?: string
+    season?: number
+    episode?: number
+  }
+}
 
 const TABS: Array<{ label: string; tab: Tab }> = [
   { label: 'Movie', tab: 'movie' },
@@ -135,7 +147,18 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
       const body = await api<{ servers: Server[] }>(url, signal)
       if (!latest(signal)) return
       const rows = flt(body.servers || [])
-      onStreams({ title: what, rows })
+      onStreams({
+        title: what,
+        rows,
+        media: {
+          tab,
+          id: m.id, // imdb tt… — /api/subtitles memakai meta, bukan id TMDB
+          name: m.name,
+          year: m.year,
+          season: ep?.season,
+          episode: ep?.episode,
+        },
+      })
       if (!rows.length) {
         log.err('Tidak ada server yang bisa diputar', 'dlg:streams')
         setError('Tidak ada server stream yang bisa diputar.')
@@ -155,7 +178,7 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
   const eps = (meta?.episodes || []).filter((e) => e.season === season)
 
   return (
-    <aside className="flex min-h-0 flex-col gap-2.5 rounded-xl border border-border bg-card p-3 lg:h-full">
+    <aside className="flex min-h-0 flex-col gap-2 rounded-lg border border-border bg-card p-2.5 sm:gap-2.5 sm:rounded-xl sm:p-3 lg:h-full lg:p-4">
       <div className="flex gap-1.5">
         <input
           id="search-q"
@@ -165,10 +188,10 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') void doSearch(q) }}
-          className="min-w-0 flex-1 rounded-lg border border-border bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-zinc-600"
+          className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-zinc-600 sm:h-auto sm:px-2.5 sm:py-1.5 sm:text-xs"
         />
         <button type="button" aria-label="Cari" onClick={() => void doSearch(q)}
-          className="grid shrink-0 place-items-center rounded-lg bg-primary px-2.5 text-primary-contrast transition hover:bg-zinc-200">
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-contrast transition hover:bg-zinc-200 sm:h-auto sm:w-auto sm:px-2.5">
           <Search className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -183,20 +206,20 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
 
       {error && <p className="rounded border border-rose-900 bg-rose-950/40 px-2 py-1.5 text-[11px] text-rose-300">{error}</p>}
 
-      <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-0.5">
+      <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-0.5 max-h-[55vh] lg:max-h-none">
         {busy ? <Note>{busy}</Note>
           : view === 'results' ? (
             results.length
               ? results.map((m) => (
                 <button key={m.id} type="button" onClick={() => void openTitle(m)}
-                  className="flex w-full items-center gap-2 rounded-lg border border-border bg-zinc-900 p-1.5 text-left transition hover:bg-zinc-800">
+                  className="flex w-full items-center gap-2 rounded-lg border border-border bg-zinc-900 p-1.5 text-left transition hover:border-zinc-600 hover:bg-zinc-800">
                   {m.poster && (
                     <img src={m.poster} alt="" loading="lazy"
-                      className="h-14 w-10 shrink-0 rounded bg-zinc-800 object-cover"
+                      className="h-16 w-11 shrink-0 rounded bg-zinc-800 object-cover sm:h-14 sm:w-10"
                       onError={(e) => (e.currentTarget.style.display = 'none')} />
                   )}
                   <span className="min-w-0">
-                    <Sq text={m.name} className="block text-xs text-zinc-200" />
+                    <Sq text={m.name} className="block text-sm text-zinc-200 sm:text-xs" />
                     <span className="text-[10px] text-zinc-500">{[m.year, m.type === 'tv' ? 'TV' : 'Movie'].filter(Boolean).join(' · ')}</span>
                   </span>
                 </button>
@@ -214,11 +237,11 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
                 {eps.length
                   ? eps.map((v) => (
                     <button key={`${v.season}:${v.episode}`} type="button" onClick={() => void loadStreams(meta!, v)}
-                      className="flex w-full items-center gap-2 rounded-lg border border-border bg-zinc-900 px-2 py-1.5 text-left transition hover:bg-zinc-800">
+                      className="flex w-full items-center gap-2 rounded-lg border border-border bg-zinc-900 px-2 py-2 text-left transition hover:bg-zinc-800 sm:py-1.5">
                       <span className="grid h-6 w-7 shrink-0 place-items-center rounded bg-zinc-800 text-[10px] font-semibold text-zinc-300">
                         E{v.episode}
                       </span>
-                      <Sq text={v.title || `Episode ${v.episode}`} className="min-w-0 flex-1 text-xs text-zinc-300" />
+                      <Sq text={v.title || `Episode ${v.episode}`} className="min-w-0 flex-1 text-sm text-zinc-300 sm:text-xs" />
                     </button>
                   ))
                   : <Note>Season kosong.</Note>}
