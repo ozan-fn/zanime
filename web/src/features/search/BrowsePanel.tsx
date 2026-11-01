@@ -68,6 +68,7 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
    * lama diabaikan. Backend ikut membatalkan scrape-nya saat koneksi ditutup. */
   const inflight = useRef<AbortController | null>(null)
   function start() {
+    if (inflight.current) log.info('Permintaan sebelumnya dibatalkan', 'dlg:abort')
     inflight.current?.abort()
     const c = new AbortController()
     inflight.current = c

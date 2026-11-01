@@ -331,6 +331,11 @@ func (s *server) streamProxy(c *gin.Context) {
 
 	res, err := proxyClient.Do(req)
 	if err != nil {
+		// Player membatalkan permintaan (mis. ganti server) — bukan kegagalan.
+		if errors.Is(err, context.Canceled) {
+			s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelInfo, Text: "Permintaan dibatalkan browser"})
+			return
+		}
 		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelErr, Text: fmt.Sprintf("Media gagal dihubungi · %v", err)})
 		c.JSON(http.StatusBadGateway, gin.H{"error": "gagal menghubungi upstream: " + err.Error()})
 		return

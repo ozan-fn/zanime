@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import '@vidstack/react/player/styles/default/theme.css'
 import '@vidstack/react/player/styles/default/layouts/video.css'
 import { MediaPlayer, MediaProvider, Track, isHLSProvider, type MediaProviderAdapter, type MediaErrorDetail } from '@vidstack/react'
@@ -26,9 +26,13 @@ export function Player() {
     if (isHLSProvider(provider)) provider.library = Hls
   }, [])
 
+  const prevSrc = useRef('')
   useEffect(() => {
+    // Ganti server = elemen lama di-unmount (hls.js lama di-destroy).
+    if (prevSrc.current && prevSrc.current !== current) log.info('Membatalkan stream sebelumnya', 'player:abort')
+    prevSrc.current = current
     if (current) log.info('Memasang sumber video…', 'player:src')
-  }, [current, playing])
+  }, [current])
 
   const handlePlay = useCallback(() => log.ok('Pemutaran mulai', 'player:play'), [])
   const handleReady = useCallback(() => log.ok('Video siap diputar', 'player:ready'), [])
@@ -38,14 +42,14 @@ export function Player() {
   )
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-black">
+    <div className="overflow-hidden rounded-xl border border-border bg-black">
       {playing ? (
         <MediaPlayer
           // key = src: ganti server me-mount ulang elemen, jadi hls.js lama
           // dilepas (abort) dan stream baru mulai dari nol, bukan menunggu
           // buffer lama yang macet.
           key={current}
-          className="aspect-video w-full lg:aspect-auto lg:min-h-0 lg:flex-1"
+          className="aspect-video w-full"
           src={current}
           title={playing.title}
           autoPlay
@@ -72,12 +76,12 @@ export function Player() {
           <DefaultVideoLayout icons={defaultLayoutIcons} colorScheme="dark" />
         </MediaPlayer>
       ) : (
-        <div className="grid aspect-video place-items-center text-sm text-zinc-600 lg:aspect-auto lg:flex-1">
+        <div className="grid aspect-video place-items-center text-sm text-zinc-600">
           Pilih judul lewat pencarian untuk mulai streaming.
         </div>
       )}
       {(playing || status) && (
-        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-card px-4 py-3">
+        <div className="flex items-center justify-between gap-3 border-t border-border bg-card px-4 py-3">
           <div className="min-w-0">
             {playing?.title && <Sq text={playing.title} className="text-sm font-medium text-zinc-100" />}
             {(playing?.sub || status) && (
@@ -97,7 +101,7 @@ export function Player() {
         </div>
       )}
       {/* Log realtime di bawah player: pemuatan stream + video oleh player. */}
-      <LogPanel className="shrink-0 border-t border-border" panelClassName="rounded-none" maxHeight="max-h-40 lg:max-h-32" />
+      <LogPanel className="border-t border-border" panelClassName="rounded-none" maxHeight="max-h-40 lg:max-h-32" />
     </div>
   )
 }

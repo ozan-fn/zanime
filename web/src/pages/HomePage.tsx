@@ -3,7 +3,6 @@ import { Clapperboard } from 'lucide-react'
 import { useApp } from '@/features/app/AppProvider'
 import { Player } from '@/features/player/Player'
 import { ServerPanel } from '@/features/player/ServerPanel'
-import { Header } from '@/features/home/Header'
 import { Footer } from '@/features/home/Footer'
 import { BrowsePanel, type Streams } from '@/features/search/BrowsePanel'
 
@@ -27,14 +26,13 @@ export function HomePage() {
             <p className="text-xs text-zinc-500">Streaming film & seri</p>
           </div>
         </div>
-        <Header onOpenSearch={focusSearch} />
       </header>
 
       <main className="mt-6 flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
         <div className="order-2 min-w-0 lg:order-1 lg:min-h-0 lg:w-64 lg:shrink-0">
           <BrowsePanel onStreams={setStreams} />
         </div>
-        <div className="order-1 flex min-w-0 flex-1 flex-col lg:order-2 lg:min-h-0">
+        <div className="order-1 min-w-0 flex-1 lg:order-2">
           <Player />
           {!playing && (
             <button
