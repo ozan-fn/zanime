@@ -9,13 +9,14 @@ import (
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/go-resty/resty/v2"
 )
 
 const (
@@ -77,12 +78,12 @@ type Meta struct {
 }
 
 type Client struct {
-	http *http.Client
+	http *resty.Client
 	base string
 }
 
 func New() *Client {
-	return &Client{http: &http.Client{Timeout: httpTimeout}, base: base}
+	return &Client{http: resty.New().SetTimeout(httpTimeout), base: base}
 }
 
 // SetBase mengganti endpoint sumber catalog (dipakai test dengan
@@ -201,24 +202,14 @@ func (c *Client) Meta(ctx context.Context, tab, id string) (*Meta, error) {
 }
 
 func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	res, err := c.http.R().SetContext(ctx).SetHeader("Accept", "application/json").Get(endpoint)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/json")
-	res, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
+	if res.StatusCode() != http.StatusOK {
+		return nil, fmt.Errorf("cinemeta HTTP %s", res.Status())
 	}
-	defer func() { _ = res.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
-	if err != nil {
-		return nil, err
-	}
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("cinemeta HTTP %s", res.Status)
-	}
-	return body, nil
+	return res.Body(), nil
 }
 
 func tabCinemaType(tab string) string {

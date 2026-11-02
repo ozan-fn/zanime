@@ -10,12 +10,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/go-resty/resty/v2"
 )
 
 const (
@@ -78,11 +79,8 @@ func (c *Client) playerPage(ctx context.Context, embed string) (string, string, 
 		c.logf("page", LogErr, "halaman embed gagal: %v", err)
 		return "", "", err
 	}
-	html, err := readHTML(res)
-	if err != nil {
-		return "", "", err
-	}
-	playerURL := res.Request.URL.String()
+	html := res.String()
+	playerURL := res.RawResponse.Request.URL.String()
 	// Gerbang welcome: halaman belum memuat config obfuscated; POST tr= untuk
 	// menukar cookie menjadi halaman player sesungguhnya.
 	if !strings.Contains(html, "atob(") || !strings.Contains(html, "v2/assets") {
@@ -96,10 +94,8 @@ func (c *Client) playerPage(ctx context.Context, embed string) (string, string, 
 			c.logf("page", LogErr, "gerbang welcome gagal: %v", err)
 			return "", "", err
 		}
-		if html, err = readHTML(res); err != nil {
-			return "", "", err
-		}
-		playerURL = res.Request.URL.String()
+		html = res.String()
+		playerURL = res.RawResponse.Request.URL.String()
 	}
 	c.logf("page", LogOK, "Halaman player siap")
 	return playerURL, html, nil
@@ -154,13 +150,8 @@ func (c *Client) feed(ctx context.Context, cfg credCfg, playerURL string) ([]fee
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = res.Body.Close() }()
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
-	}
 	var out []feedRow
-	for _, line := range strings.Split(string(body), "\n") {
+	for _, line := range strings.Split(string(res.Body()), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -196,12 +187,7 @@ func (c *Client) resolve(ctx context.Context, cfg credCfg, playerURL string, row
 		if err != nil {
 			continue
 		}
-		body, err := io.ReadAll(res.Body)
-		_ = res.Body.Close()
-		if err != nil {
-			continue
-		}
-		plain, err := decrypt(string(body), cfg.PK)
+		plain, err := decrypt(string(res.Body()), cfg.PK)
 		if err != nil {
 			continue
 		}
@@ -213,46 +199,27 @@ func (c *Client) resolve(ctx context.Context, cfg credCfg, playerURL string, row
 }
 
 // get mengirim GET dengan User-Agent + header tambahan.
-func (c *Client) get(ctx context.Context, endpoint string, headers map[string]string) (*http.Response, error) {
-	return c.do(ctx, http.MethodGet, endpoint, nil, headers)
+func (c *Client) get(ctx context.Context, endpoint string, headers map[string]string) (*resty.Response, error) {
+	return c.exec(c.http.R().SetContext(ctx), http.MethodGet, endpoint, headers)
 }
 
 // postForm mengirim POST x-www-form-urlencoded (dipakai gerbang welcome).
-func (c *Client) postForm(ctx context.Context, endpoint string, form url.Values, headers map[string]string) (*http.Response, error) {
-	h := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
-	for k, v := range headers {
-		h[k] = v
-	}
-	return c.do(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()), h)
+func (c *Client) postForm(ctx context.Context, endpoint string, form url.Values, headers map[string]string) (*resty.Response, error) {
+	return c.exec(c.http.R().SetContext(ctx).SetFormDataFromValues(form), http.MethodPost, endpoint, headers)
 }
 
-func (c *Client) do(ctx context.Context, method, endpoint string, body io.Reader, headers map[string]string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
-	if err != nil {
-		return nil, fmt.Errorf("permintaan %s: %w", method, err)
-	}
-	req.Header.Set("User-Agent", userAgent)
+func (c *Client) exec(req *resty.Request, method, endpoint string, headers map[string]string) (*resty.Response, error) {
 	for k, v := range headers {
-		req.Header.Set(k, v)
+		req.SetHeader(k, v)
 	}
-	res, err := c.http.Do(req)
+	res, err := req.Execute(method, endpoint)
 	if err != nil {
 		return nil, err
 	}
-	if res.StatusCode < 200 || res.StatusCode >= 400 {
-		_ = res.Body.Close()
-		return nil, fmt.Errorf("server sumber HTTP %s", res.Status)
+	if res.StatusCode() < 200 || res.StatusCode() >= 400 {
+		return nil, fmt.Errorf("server sumber HTTP %s", res.Status())
 	}
 	return res, nil
-}
-
-func readHTML(res *http.Response) (string, error) {
-	defer func() { _ = res.Body.Close() }()
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return "", err
-	}
-	return string(body), nil
 }
 
 // resolveRef menyelesaikan URL relatif terhadap halaman player.
@@ -276,8 +243,8 @@ func originOf(rawURL string) string {
 	return u.Scheme + "://" + u.Host
 }
 
-// newHTTP mengembalikan klien HTTP dengan cookie jar sendiri (sesi per judul).
-func newHTTP() *http.Client {
+// newHTTP mengembalikan klien resty dengan cookie jar sendiri (sesi per judul).
+func newHTTP() *resty.Client {
 	jar, _ := cookiejar.New(nil)
-	return &http.Client{Jar: jar}
+	return resty.NewWithClient(&http.Client{Jar: jar}).SetHeader("User-Agent", userAgent)
 }

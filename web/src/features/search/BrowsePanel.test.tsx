@@ -177,6 +177,8 @@ describe('BrowsePanel', () => {
     expect(onStreams.mock.calls.at(-1)![0].media).toMatchObject({ tab: 'movie', id: 'tt0145487' })
     const fetched = vi.mocked(fetch).mock.calls.map(([u]) => String(u))
     expect(fetched.some((u) => u.startsWith('/api/meta/movie/tt0145487'))).toBe(true)
+    // Nama judul ikut ditulis ke URL (slug) tanpa mengubah pemilihan otomatis.
+    expect(screen.getByTestId('loc').textContent).toBe('/?tab=movie&id=tt0145487&name=spider-man')
   })
 
   it('membuka judul/episode menulis tab, id, dan episode ke URL', async () => {
@@ -193,10 +195,10 @@ describe('BrowsePanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cari' }))
     fireEvent.click((await screen.findAllByText('Frieren'))[0])
     await screen.findByText('Magic')
-    expect(screen.getByTestId('loc').textContent).toBe('/?tab=tv&id=tt22248376')
+    expect(screen.getByTestId('loc').textContent).toBe('/?tab=tv&id=tt22248376&name=frieren')
 
     fireEvent.click(screen.getByText('Magic'))
-    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/?tab=tv&id=tt22248376&s=2&e=3'))
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/?tab=tv&id=tt22248376&s=2&e=3&name=frieren'))
   })
 
   it('menandai episode yang sedang diputar', async () => {

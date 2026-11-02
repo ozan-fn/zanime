@@ -58,6 +58,10 @@ const flt = (servers: Server[]): StreamRow[] =>
       : [mk(s.url!, s.quality ? String(s.quality).toLowerCase() : '')]
   })
 
+// slug: nama judul untuk URL yang bisa dibaca (spider-man-no-way-home).
+const slug = (s: string) =>
+  s.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48)
+
 function Note({ children }: { children: React.ReactNode }) {
   return <p className="p-4 text-center text-xs text-zinc-500">{children}</p>
 }
@@ -137,9 +141,11 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
       if (!latest(signal)) return
       if (!m.tmdb) throw new Error('Judul ini tidak punya id TMDB.')
       setMeta(m)
-      setParams(ep
-        ? { tab: useTab, id, s: String(ep.season), e: String(ep.episode) }
-        : { tab: useTab, id })
+      const next: Record<string, string> = { tab: useTab, id }
+      if (ep) { next.s = String(ep.season); next.e = String(ep.episode) }
+      const name = slug(m.name)
+      if (name) next.name = name
+      setParams(next)
       log.ok(`Detail siap · ${(m.episodes || []).length} episode`, 'dlg:meta')
       if (useTab === 'movie') await loadStreams(m, null, useTab)
       else {
@@ -197,7 +203,8 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
   }
 
   // URL berisi judul/episode → pilih otomatis. Stream tidak diputar sampai
-  // pengguna memilih server.
+  // pengguna memilih server. `name` hanya teks judul untuk URL yang dibagikan,
+  // jadi tidak perlu dibaca saat boot (id yang menentukan).
   const booted = useRef(false)
   useEffect(() => {
     if (booted.current) return
@@ -282,7 +289,8 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
                       playing.media.episode === v.episode
                     return (
                       <button key={`${v.season}:${v.episode}`} type="button" onClick={() => {
-                        setParams({ tab, id: meta!.id, s: String(v.season), e: String(v.episode) })
+                        const name = slug(meta!.name)
+                        setParams({ tab, id: meta!.id, s: String(v.season), e: String(v.episode), ...(name ? { name } : {}) })
                         void loadStreams(meta!, v)
                       }}
                         aria-current={watched ? 'true' : undefined}

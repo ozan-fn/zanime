@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,11 +15,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-resty/resty/v2"
 	"github.com/gorilla/websocket"
 
 	"zanime/internal/config"
@@ -39,7 +43,7 @@ var webFiles embed.FS
 // diaktifkan (DialContext kustom mematikannya kalau ForceAttemptHTTP2 tidak
 // diset) supaya banyak segmen di-multiplex lewat satu koneksi, dan batas idle
 // per host dinaikkan supaya tidak membuka TLS handshake baru tiap segmen.
-var proxyClient = &http.Client{
+var proxyClient = resty.NewWithClient(&http.Client{
 	Transport: &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
 		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -51,15 +55,22 @@ var proxyClient = &http.Client{
 		// Media tidak perlu dikompresi; hindari negosiasi gzip di jalur panas.
 		DisableCompression: true,
 	},
-}
+})
 
 // subHTTP mengambil zip subtitle subdl (ukuran kecil, bukan streaming).
-var subHTTP = &http.Client{Timeout: 30 * time.Second}
+var subHTTP = resty.New().SetTimeout(30 * time.Second)
 
 func main() {
 	if err := config.LoadDotEnv(".env"); err != nil {
 		log.Printf(".env: %v", err)
 	}
+	// cPanel membatasi jumlah proses (LVE nproc, mis. 100), jadi paralelisme
+	// runtime dipatok ke GOMAXPROCS (default 30) — tidak pernah di atasnya.
+	cpus := runtime.NumCPU()
+	limit := int(config.Int("GOMAXPROCS", 30))
+	procs := min(cpus, limit)
+	runtime.GOMAXPROCS(procs)
+	log.Printf("GOMAXPROCS=%d dari %d CPU (batas env %d): paralelisme dibatasi supaya nproc cPanel/LVE tidak tembus", procs, cpus, limit)
 
 	addr := flag.String("addr", "0.0.0.0:"+config.String("PORT", "8080"), "HTTP listen address")
 	flag.Parse()
@@ -75,32 +86,31 @@ func main() {
 	emc.SetLogger(hubLogger{hub: logs})
 	srv := &server{web: webRoot, tmdb: tmdb.New(), em: emc, res: res, logs: logs, sub: subdl.New()}
 
-	gin.SetMode(gin.ReleaseMode)
-	r := gin.New()
-	r.Use(gin.Recovery())
-	r.GET("/", srv.index)
-	r.GET("/assets/*filepath", srv.webFile) // aset Vite (JS/CSS)
-	r.GET("/favicon.ico", srv.webFile)
+	r := chi.NewRouter()
+	r.Use(middleware.Recoverer)
+	r.Get("/", srv.index)
+	r.Get("/assets/*", srv.webFile) // aset Vite (JS/CSS)
+	r.Get("/favicon.ico", srv.webFile)
 	// SPA fallback: React Router punya route `/` dan `*` (404), jadi path
 	// lain harus tetap dapat index.html; endpoint API yang salah tulis tetap
 	// JSON 404 supaya error di sisi client mudah dibedakan.
-	r.NoRoute(srv.spaFallback)
-	r.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
-	r.GET("/api/search", srv.apiSearch)
-	r.GET("/api/meta/:tab/:id", srv.apiMeta)
-	r.GET("/api/streams", srv.apiStreams)
-	r.GET("/api/subtitles", srv.apiSubtitles)
-	r.GET("/api/subtitles/file", srv.apiSubtitleFile)
-	r.GET("/api/logs", srv.apiLogs) // websocket: log realtime ke UI
-	r.GET("/s/:slug", srv.streamProxy)
-	r.HEAD("/s/:slug", srv.streamProxy)
+	r.NotFound(srv.spaFallback)
+	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	r.Get("/api/search", srv.apiSearch)
+	r.Get("/api/meta/{tab}/{id}", srv.apiMeta)
+	r.Get("/api/streams", srv.apiStreams)
+	r.Get("/api/subtitles", srv.apiSubtitles)
+	r.Get("/api/subtitles/file", srv.apiSubtitleFile)
+	r.Get("/api/logs", srv.apiLogs) // websocket: log realtime ke UI
+	r.Get("/s/{slug}", srv.streamProxy)
+	r.Head("/s/{slug}", srv.streamProxy)
 
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatalf("listen %s: %v", *addr, err)
 	}
 	log.Printf("listening on %s", ln.Addr())
-	if err := r.RunListener(ln); err != nil {
+	if err := http.Serve(ln, r); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -123,6 +133,32 @@ type server struct {
 // (dev Vite juga boleh menyambung lewat proxy).
 var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 
+// writeJSON mengirim satu body JSON (pengganti c.JSON gin).
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeErr mengirim {"error": "..."} seperti gin.H{"error": ...} dulu.
+func writeErr(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeText mengirim teks polos.
+func writeText(w http.ResponseWriter, status int, text string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(text))
+}
+
+// writeData mengirim byte dengan content-type tertentu.
+func writeData(w http.ResponseWriter, status int, contentType string, data []byte) {
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(status)
+	_, _ = w.Write(data)
+}
+
 // hubLogger menjembatani em.Logger (baris pipeline scrape) ke logbus.
 type hubLogger struct{ hub *logbus.Hub }
 
@@ -132,12 +168,12 @@ func (l hubLogger) Log(id, level, msg string) {
 
 // apiLogs menyiarkan log realtime ke browser lewat websocket: riwayat terakhir
 // dulu, lalu baris baru. Dipakai panel log di depan player.
-func (s *server) apiLogs(c *gin.Context) {
+func (s *server) apiLogs(w http.ResponseWriter, r *http.Request) {
 	if s.logs == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "log tidak aktif"})
+		writeErr(w, http.StatusServiceUnavailable, "log tidak aktif")
 		return
 	}
-	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return // Upgrade sudah menulis respons HTTP.
 	}
@@ -164,104 +200,105 @@ func (s *server) apiLogs(c *gin.Context) {
 // SPA fallback: path GET yang tak dikenal dapat index.html (React Router
 // yang menampilkan 404), kecuali path API/fetch yang salah tulis —
 // itu tetap JSON 404 supaya error di sisi client mudah dibedakan.
-func (s *server) spaFallback(c *gin.Context) {
-	p := c.Request.URL.Path
+func (s *server) spaFallback(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.Path
 	if strings.Contains(p, "/api/") || p == "/healthz" || strings.HasPrefix(p, "/s/") {
-		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	s.index(c)
+	s.index(w, r)
 }
 
 // File statis hasil build Vite (aset di /assets/*, favicon).
-func (s *server) webFile(c *gin.Context) {
-	name := strings.TrimPrefix(c.Request.URL.Path, "/")
+func (s *server) webFile(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/")
 	if name == "" || name == "index.html" {
-		s.index(c)
+		s.index(w, r)
 		return
 	}
 	data, err := fs.ReadFile(s.web, name)
 	if err != nil {
-		c.String(http.StatusNotFound, "tidak ada")
+		writeText(w, http.StatusNotFound, "tidak ada")
 		return
 	}
 	switch {
 	case strings.HasSuffix(name, ".js"):
-		c.Data(http.StatusOK, "text/javascript; charset=utf-8", data)
+		writeData(w, http.StatusOK, "text/javascript; charset=utf-8", data)
 	case strings.HasSuffix(name, ".css"):
-		c.Data(http.StatusOK, "text/css; charset=utf-8", data)
+		writeData(w, http.StatusOK, "text/css; charset=utf-8", data)
 	case strings.HasSuffix(name, ".svg"):
-		c.Data(http.StatusOK, "image/svg+xml", data)
+		writeData(w, http.StatusOK, "image/svg+xml", data)
 	default:
-		c.Data(http.StatusOK, "application/octet-stream", data)
+		writeData(w, http.StatusOK, "application/octet-stream", data)
 	}
 }
 
-func (s *server) index(c *gin.Context) {
+func (s *server) index(w http.ResponseWriter, r *http.Request) {
 	// Not FileFromFS: http.FileServer redirects *index.html to ".", which
 	// loops forever on "/". Serve the bytes directly instead.
 	data, err := fs.ReadFile(s.web, "index.html")
 	if err != nil {
-		c.String(http.StatusInternalServerError, "index.html tidak ditemukan")
+		writeText(w, http.StatusInternalServerError, "index.html tidak ditemukan")
 		return
 	}
-	c.Data(http.StatusOK, "text/html; charset=utf-8", data)
+	writeData(w, http.StatusOK, "text/html; charset=utf-8", data)
 }
 
 // apiSearch: pencarian judul. Backend yang menghubungi sumber catalog; hasil
 // membawa id TMDB (moviedb_id) yang dibutuhkan embedmaster.
-func (s *server) apiSearch(c *gin.Context) {
-	q := strings.TrimSpace(c.Query("q"))
-	tab := c.Query("tab")
+func (s *server) apiSearch(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	tab := r.URL.Query().Get("tab")
 	if q == "" || (tab != "movie" && tab != "tv") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "query harus ?q=<judul>&tab=movie|tv"})
+		writeErr(w, http.StatusBadRequest, "query harus ?q=<judul>&tab=movie|tv")
 		return
 	}
-	res, err := s.tmdb.Search(c.Request.Context(), tab, q)
+	res, err := s.tmdb.Search(r.Context(), tab, q)
 	if err != nil {
-		s.fail(c, err)
+		s.fail(w, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"results": res})
+	writeJSON(w, http.StatusOK, map[string]any{"results": res})
 }
 
 // apiMeta: detail satu judul (movie: metadata; tv: metadata + daftar episode).
-func (s *server) apiMeta(c *gin.Context) {
-	tab, id := c.Param("tab"), c.Param("id")
+func (s *server) apiMeta(w http.ResponseWriter, r *http.Request) {
+	tab, id := chi.URLParam(r, "tab"), chi.URLParam(r, "id")
 	if (tab != "movie" && tab != "tv") || !strings.HasPrefix(id, "tt") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "meta harus /api/meta/movie|tv/<imdb-id>"})
+		writeErr(w, http.StatusBadRequest, "meta harus /api/meta/movie|tv/<imdb-id>")
 		return
 	}
-	res, err := s.tmdb.Meta(c.Request.Context(), tab, id)
+	res, err := s.tmdb.Meta(r.Context(), tab, id)
 	if err != nil {
-		s.fail(c, err)
+		s.fail(w, err)
 		return
 	}
-	c.JSON(http.StatusOK, res)
+	writeJSON(w, http.StatusOK, res)
 }
 
 // apiStreams: daftar stream hasil scraping embedmaster untuk satu TMDB id
 // (movie) atau satu episode tv. Fetch/dekripsi terjadi di Go (internal/em).
-func (s *server) apiStreams(c *gin.Context) {
-	tab := c.Query("tab")
-	id := strings.TrimSpace(c.Query("id"))
+func (s *server) apiStreams(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	tab := query.Get("tab")
+	id := strings.TrimSpace(query.Get("id"))
 	if (tab != "movie" && tab != "tv") || id == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "streams harus ?tab=movie|tv&id=<tmdb-id>"})
+		writeErr(w, http.StatusBadRequest, "streams harus ?tab=movie|tv&id=<tmdb-id>")
 		return
 	}
 	var tv *em.TVEpisode
 	if tab == "tv" {
-		ses, err1 := strconv.Atoi(c.Query("s"))
-		epi, err2 := strconv.Atoi(c.Query("e"))
+		ses, err1 := strconv.Atoi(query.Get("s"))
+		epi, err2 := strconv.Atoi(query.Get("e"))
 		if err1 != nil || err2 != nil || ses < 0 || epi < 1 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "tv butuh ?s=<season>&e=<episode>"})
+			writeErr(w, http.StatusBadRequest, "tv butuh ?s=<season>&e=<episode>")
 			return
 		}
 		tv = &em.TVEpisode{Season: ses, Episode: epi}
 	}
-	res, err := s.em.Streams(c.Request.Context(), tab, id, tv)
+	res, err := s.em.Streams(r.Context(), tab, id, tv)
 	if err != nil {
-		s.fail(c, err)
+		s.fail(w, err)
 		return
 	}
 	// Semua URL didaftarkan ke pool slug; player/subtitle hanya melihat
@@ -295,46 +332,47 @@ func (s *server) apiStreams(c *gin.Context) {
 		}
 	}
 	s.logs.OKf("Daftar stream siap · %d dari %d server bisa diputar", playable, len(res))
-	c.JSON(http.StatusOK, gin.H{"id": id, "tab": tab, "servers": res})
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "tab": tab, "servers": res})
 }
 
 // apiSubtitles: cari subtitle subdl untuk judul yang sedang dibuka. Nama+tahun
 // diambil dari meta supaya autocomplete subdl dapat query yang tepat; tv ikut
 // memilih musim + episode. Tiap permintaan fresh (tanpa cache): tautan unduh
 // yang dikembalikan berasal dari halaman yang baru diambil.
-func (s *server) apiSubtitles(c *gin.Context) {
-	tab, id := c.Query("tab"), strings.TrimSpace(c.Query("id"))
+func (s *server) apiSubtitles(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	tab, id := query.Get("tab"), strings.TrimSpace(query.Get("id"))
 	if (tab != "movie" && tab != "tv") || !strings.HasPrefix(id, "tt") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "subtitles harus ?tab=movie|tv&id=<imdb-id>"})
+		writeErr(w, http.StatusBadRequest, "subtitles harus ?tab=movie|tv&id=<imdb-id>")
 		return
 	}
 	season, episode := 0, 0
 	if tab == "tv" {
-		ses, err1 := strconv.Atoi(c.Query("s"))
-		epi, err2 := strconv.Atoi(c.Query("e"))
+		ses, err1 := strconv.Atoi(query.Get("s"))
+		epi, err2 := strconv.Atoi(query.Get("e"))
 		if err1 != nil || err2 != nil || ses < 0 || epi < 1 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "tv butuh ?s=<season>&e=<episode>"})
+			writeErr(w, http.StatusBadRequest, "tv butuh ?s=<season>&e=<episode>")
 			return
 		}
 		season, episode = ses, epi
 	}
 	if s.sub == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "pencarian subtitle tidak aktif"})
+		writeErr(w, http.StatusServiceUnavailable, "pencarian subtitle tidak aktif")
 		return
 	}
-	meta, err := s.tmdb.Meta(c.Request.Context(), tab, id)
+	meta, err := s.tmdb.Meta(r.Context(), tab, id)
 	if err != nil {
-		s.fail(c, err)
+		s.fail(w, err)
 		return
 	}
 	search := s.sub.Search
-	if c.Query("refresh") != "" {
+	if query.Get("refresh") != "" {
 		search = s.sub.SearchFresh
 	}
-	subs, err := search(c.Request.Context(), tab, meta.Name, meta.Year, season, episode)
+	subs, err := search(r.Context(), tab, meta.Name, meta.Year, season, episode)
 	if err != nil {
 		s.logs.Errf("Subtitle gagal dimuat · %v", err)
-		s.fail(c, err)
+		s.fail(w, err)
 		return
 	}
 	// Zip didaftarkan ke pool slug: endpoint /api/subtitles/file hanya bisa
@@ -351,48 +389,49 @@ func (s *server) apiSubtitles(c *gin.Context) {
 	}
 	subs = out
 	s.logs.OKf("Subtitle siap · %d pilihan", len(subs))
-	c.JSON(http.StatusOK, gin.H{"subtitles": subs})
+	writeJSON(w, http.StatusOK, map[string]any{"subtitles": subs})
 }
 
 // apiSubtitleFile mengubah zip subtitle subdl jadi VTT siap track: entri
 // .srt/.vtt pertama, header WEBVTT, lalu timestamp dinormalkan.
-func (s *server) apiSubtitleFile(c *gin.Context) {
-	raw, ok := s.res.Load(c.Query("u"))
+func (s *server) apiSubtitleFile(w http.ResponseWriter, r *http.Request) {
+	raw, ok := s.res.Load(r.URL.Query().Get("u"))
 	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "subtitle tidak ada"})
+		writeErr(w, http.StatusNotFound, "subtitle tidak ada")
 		return
 	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	target, err := url.Parse(raw)
+	if err != nil || (target.Scheme != "http" && target.Scheme != "https") {
+		writeErr(w, http.StatusBadRequest, "URL subtitle tidak valid")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+	res, err := subHTTP.R().SetContext(ctx).SetDoNotParseResponse(true).
+		SetHeader("User-Agent", "Mozilla/5.0 zanime").Get(raw)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "URL subtitle tidak valid"})
+		writeErr(w, http.StatusBadGateway, "gagal menghubungi sumber subtitle")
 		return
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 zanime")
-	res, err := subHTTP.Do(req)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "gagal menghubungi sumber subtitle"})
+	body := res.RawBody()
+	defer func() { _ = body.Close() }()
+	if res.StatusCode() != http.StatusOK {
+		writeErr(w, http.StatusBadGateway, fmt.Sprintf("sumber subtitle HTTP %s", res.Status()))
 		return
 	}
-	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode != http.StatusOK {
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("sumber subtitle HTTP %s", res.Status)})
-		return
-	}
-	data, err := io.ReadAll(io.LimitReader(res.Body, 20<<20))
+	data, err := io.ReadAll(io.LimitReader(body, 20<<20))
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	text, err := firstSubFile(data)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	out := srtToVTT(text)
 	s.logs.OKf("Subtitle subdl siap · %d cue", strings.Count(out, "-->"))
-	c.Data(http.StatusOK, "text/vtt; charset=utf-8", []byte(out))
+	writeData(w, http.StatusOK, "text/vtt; charset=utf-8", []byte(out))
 }
 
 // firstSubFile mengambil berkas .srt/.vtt pertama dari zip subtitle.
@@ -437,12 +476,12 @@ func srtToVTT(text string) string {
 	return strings.Join(lines, "\n")
 }
 
-func (s *server) fail(c *gin.Context, err error) {
+func (s *server) fail(w http.ResponseWriter, err error) {
 	status := http.StatusBadGateway
 	if errors.Is(err, context.DeadlineExceeded) {
 		status = http.StatusGatewayTimeout
 	}
-	c.JSON(status, gin.H{"error": err.Error()})
+	writeErr(w, status, err.Error())
 }
 
 // streamProxy menyalurkan satu URL media terdaftar lewat RAM (tanpa disk),
@@ -450,33 +489,29 @@ func (s *server) fail(c *gin.Context, err error) {
 // ditulis ulang: setiap URI (playlist turun / segmen / URI= di tag)
 // didaftarkan jadi slug /s/<slug>, karena player tidak bisa meminta
 // playlist turunan langsung ke host video tanpa Referer.
-func (s *server) streamProxy(c *gin.Context) {
-	raw, ok := s.res.Load(c.Param("slug"))
+func (s *server) streamProxy(w http.ResponseWriter, r *http.Request) {
+	raw, ok := s.res.Load(chi.URLParam(r, "slug"))
 	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "slug tidak ada"})
+		writeErr(w, http.StatusNotFound, "slug tidak ada")
 		return
 	}
 	target, err := url.Parse(raw)
 	if err != nil || (target.Scheme != "http" && target.Scheme != "https") {
-		c.JSON(http.StatusNotFound, gin.H{"error": "slug tidak ada"})
+		writeErr(w, http.StatusNotFound, "slug tidak ada")
 		return
 	}
-	px := "px:" + c.Param("slug")
+	px := "px:" + chi.URLParam(r, "slug")
 
-	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, target.String(), nil)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "URL tidak valid"})
-		return
-	}
-	if rng := c.GetHeader("Range"); rng != "" {
-		req.Header.Set("Range", rng)
-	}
 	// Host video embedmaster menolak request tanpa Referer halaman player
 	// mereka; Referer ini juga membuka Access-Control-Allow-Origin.
-	req.Header.Set("User-Agent", "Mozilla/5.0 zanime")
-	req.Header.Set("Referer", "https://embdmstrplayer.com/")
+	req := proxyClient.R().SetContext(r.Context()).SetDoNotParseResponse(true).
+		SetHeader("User-Agent", "Mozilla/5.0 zanime").
+		SetHeader("Referer", "https://embdmstrplayer.com/")
+	if rng := r.Header.Get("Range"); rng != "" {
+		req.SetHeader("Range", rng)
+	}
 
-	res, err := proxyClient.Do(req)
+	res, err := req.Execute(r.Method, target.String())
 	if err != nil {
 		// Player membatalkan permintaan (mis. ganti server) — bukan kegagalan.
 		if errors.Is(err, context.Canceled) {
@@ -484,61 +519,62 @@ func (s *server) streamProxy(c *gin.Context) {
 			return
 		}
 		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelErr, Text: fmt.Sprintf("Media gagal dihubungi · %v", err)})
-		c.JSON(http.StatusBadGateway, gin.H{"error": "gagal menghubungi upstream: " + err.Error()})
+		writeErr(w, http.StatusBadGateway, "gagal menghubungi upstream: "+err.Error())
 		return
 	}
-	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode < 200 || res.StatusCode >= 400 {
-		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelErr, Text: fmt.Sprintf("Media ditolak server sumber · HTTP %s", res.Status)})
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("upstream HTTP %s", res.Status)})
+	body := res.RawBody()
+	defer func() { _ = body.Close() }()
+	if res.StatusCode() < 200 || res.StatusCode() >= 400 {
+		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelErr, Text: fmt.Sprintf("Media ditolak server sumber · HTTP %s", res.Status())})
+		writeErr(w, http.StatusBadGateway, fmt.Sprintf("upstream HTTP %s", res.Status()))
 		return
 	}
 
-	if isPlaylist(res.Header.Get("Content-Type"), target.Path) {
-		body, err := io.ReadAll(res.Body)
+	if isPlaylist(res.Header().Get("Content-Type"), target.Path) {
+		data, err := io.ReadAll(body)
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			writeErr(w, http.StatusBadGateway, err.Error())
 			return
 		}
-		renditions, segments, vod := playlistStats(string(body))
+		renditions, segments, vod := playlistStats(string(data))
 		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelOK, Text: fmt.Sprintf(
 			"Playlist HLS dibaca · %d rendition · %d segmen · %s", renditions, segments, vodLabel(vod))})
 		// VOD (ada #EXT-X-ENDLIST) tidak berubah → biarkan browser meng-cache;
 		// playlist live tetap no-store. Master playlist bisa 1+ MB, jadi
 		// meng-cache menghindari fetch ulang besar tiap player membacanya.
 		if vod {
-			c.Header("Cache-Control", "public, max-age=600")
+			w.Header().Set("Cache-Control", "public, max-age=600")
 		} else {
-			c.Header("Cache-Control", "no-store")
+			w.Header().Set("Cache-Control", "no-store")
 		}
-		c.Data(http.StatusOK, "application/vnd.apple.mpegurl", []byte(s.rewritePlaylist(target, string(body))))
+		writeData(w, http.StatusOK, "application/vnd.apple.mpegurl", []byte(s.rewritePlaylist(target, string(data))))
 		return
 	}
 
 	// Subtitle diteruskan apa adanya: timestamp dari sumber dipakai langsung,
 	// tidak ada normalisasi/geser di server.
-	if isSubtitle(res.Header.Get("Content-Type"), target.Path) {
-		body, err := io.ReadAll(res.Body)
+	if isSubtitle(res.Header().Get("Content-Type"), target.Path) {
+		data, err := io.ReadAll(body)
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			writeErr(w, http.StatusBadGateway, err.Error())
 			return
 		}
 		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelOK, Text: fmt.Sprintf(
-			"Subtitle VTT siap · %d cue", strings.Count(string(body), "-->"))})
-		c.Data(http.StatusOK, "text/vtt; charset=utf-8", body)
+			"Subtitle VTT siap · %d cue", strings.Count(string(data), "-->"))})
+		writeData(w, http.StatusOK, "text/vtt; charset=utf-8", data)
 		return
 	}
 
 	for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"} {
-		if v := res.Header.Get(h); v != "" {
-			c.Header(h, v)
+		if v := res.Header().Get(h); v != "" {
+			w.Header().Set(h, v)
 		}
 	}
 	s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelOK, Text: fmt.Sprintf(
-		"Media terkirim · HTTP %s · %s", res.Status, sizeLabel(res.Header.Get("Content-Length")))})
-	c.Status(res.StatusCode)
-	if c.Request.Method != http.MethodHead {
-		_, _ = io.Copy(c.Writer, res.Body)
+		"Media terkirim · HTTP %s · %s", res.Status(), sizeLabel(res.Header().Get("Content-Length")))})
+	w.WriteHeader(res.StatusCode())
+	if r.Method != http.MethodHead {
+		_, _ = io.Copy(w, body)
 	}
 }
 

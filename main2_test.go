@@ -14,7 +14,7 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 
 	"zanime/internal/em"
@@ -63,21 +63,20 @@ func fakeCinemeta(t *testing.T) *httptest.Server {
 	}))
 }
 
-func newRouter(t *testing.T) (*gin.Engine, *server) {
+func newRouter(t *testing.T) (http.Handler, *server) {
 	t.Helper()
 	t.Chdir(t.TempDir())
-	gin.SetMode(gin.TestMode)
 	src := tmdb.New()
 	src.SetBase(fakeCinemeta(t).URL)
 	srv := &server{web: fakeWebFS(), tmdb: src, em: emOK(), res: resolve.New()}
-	r := gin.New()
-	r.GET("/api/search", srv.apiSearch)
-	r.GET("/api/meta/:tab/:id", srv.apiMeta)
-	r.GET("/api/streams", srv.apiStreams)
-	r.GET("/api/subtitles", srv.apiSubtitles)
-	r.GET("/api/subtitles/file", srv.apiSubtitleFile)
-	r.GET("/s/:slug", srv.streamProxy)
-	r.NoRoute(srv.spaFallback)
+	r := chi.NewRouter()
+	r.Get("/api/search", srv.apiSearch)
+	r.Get("/api/meta/{tab}/{id}", srv.apiMeta)
+	r.Get("/api/streams", srv.apiStreams)
+	r.Get("/api/subtitles", srv.apiSubtitles)
+	r.Get("/api/subtitles/file", srv.apiSubtitleFile)
+	r.Get("/s/{slug}", srv.streamProxy)
+	r.NotFound(srv.spaFallback)
 	return r, srv
 }
 
@@ -252,10 +251,9 @@ func TestStreamProxyPlaylistRewrite(t *testing.T) {
 	}))
 	defer upstream.Close()
 	t.Chdir(t.TempDir())
-	gin.SetMode(gin.TestMode)
 	srv := &server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New()}
-	r := gin.New()
-	r.GET("/s/:slug", srv.streamProxy)
+	r := chi.NewRouter()
+	r.Get("/s/{slug}", srv.streamProxy)
 
 	res := httptest.NewRecorder()
 	r.ServeHTTP(res, httptest.NewRequest("GET", "/s/"+srv.res.Register(upstream.URL+"/master.m3u8", "master"), nil))
@@ -299,10 +297,9 @@ func TestPlaylistCacheControl(t *testing.T) {
 	}))
 	defer upstream.Close()
 	t.Chdir(t.TempDir())
-	gin.SetMode(gin.TestMode)
 	srv := &server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New()}
-	r := gin.New()
-	r.GET("/s/:slug", srv.streamProxy)
+	r := chi.NewRouter()
+	r.Get("/s/{slug}", srv.streamProxy)
 
 	res := httptest.NewRecorder()
 	r.ServeHTTP(res, httptest.NewRequest("GET", "/s/"+srv.res.Register(upstream.URL+"/vod.m3u8", "vod"), nil))
@@ -348,11 +345,10 @@ func TestStreamProxyPassthrough(t *testing.T) {
 	}))
 	defer upstream.Close()
 	t.Chdir(t.TempDir())
-	gin.SetMode(gin.TestMode)
 	srv := &server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New()}
-	r := gin.New()
-	r.GET("/s/:slug", srv.streamProxy)
-	r.HEAD("/s/:slug", srv.streamProxy)
+	r := chi.NewRouter()
+	r.Get("/s/{slug}", srv.streamProxy)
+	r.Head("/s/{slug}", srv.streamProxy)
 
 	res := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/s/"+srv.res.Register(upstream.URL+"/f.mp4", "film"), nil)
@@ -405,10 +401,9 @@ func TestStreamProxySubtitle(t *testing.T) {
 	}))
 	defer upstream.Close()
 	t.Chdir(t.TempDir())
-	gin.SetMode(gin.TestMode)
 	srv := &server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New()}
-	r := gin.New()
-	r.GET("/s/:slug", srv.streamProxy)
+	r := chi.NewRouter()
+	r.Get("/s/{slug}", srv.streamProxy)
 
 	res := httptest.NewRecorder()
 	r.ServeHTTP(res, httptest.NewRequest("GET", "/s/"+srv.res.Register(upstream.URL+"/sub.vtt", "sub"), nil))
@@ -430,10 +425,9 @@ func TestStreamProxySubtitle(t *testing.T) {
 // TestSPAFallback: path tidak dikenal → index.html; path /api/… dan /s/… tak
 // dikenal → JSON 404 (bukan index) supaya client bisa bedakan error.
 func TestSPAFallback(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	srv := &server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New()}
-	r := gin.New()
-	r.NoRoute(srv.spaFallback)
+	r := chi.NewRouter()
+	r.NotFound(srv.spaFallback)
 
 	res := httptest.NewRecorder()
 	r.ServeHTTP(res, httptest.NewRequest("GET", "/somewhere", nil))
@@ -472,13 +466,12 @@ func TestStreamProxyLogs(t *testing.T) {
 	}))
 	defer upstream.Close()
 	t.Chdir(t.TempDir())
-	gin.SetMode(gin.TestMode)
 	logs := logbus.New()
 	ch, cancel := logs.Subscribe()
 	defer cancel()
 	srv := &server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New(), logs: logs}
-	r := gin.New()
-	r.GET("/s/:slug", srv.streamProxy)
+	r := chi.NewRouter()
+	r.Get("/s/{slug}", srv.streamProxy)
 
 	res := httptest.NewRecorder()
 	r.ServeHTTP(res, httptest.NewRequest("GET", "/s/"+srv.res.Register(upstream.URL+"/master.m3u8", "master"), nil))
@@ -493,11 +486,10 @@ func TestStreamProxyLogs(t *testing.T) {
 
 // TestAPILogsWebSocket: klien websocket menerima riwayat lalu baris baru.
 func TestAPILogsWebSocket(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	logs := logbus.New()
 	srv := &server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New(), logs: logs}
-	r := gin.New()
-	r.GET("/api/logs", srv.apiLogs)
+	r := chi.NewRouter()
+	r.Get("/api/logs", srv.apiLogs)
 	ts := httptest.NewServer(r)
 	defer ts.Close()
 

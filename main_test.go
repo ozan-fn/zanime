@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gin-gonic/gin"
+	"github.com/go-chi/chi/v5"
 
 	"zanime/internal/tmdb"
 )
@@ -16,7 +16,6 @@ import (
 // bug dulu (array polos) membuat UI selalu tampil "Masukkan query lalu tekan
 // Cari" padahal data sudah sampai.
 func TestAPISearchWrappedShape(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/catalog/movie/top/spiderman.json" ||
 			r.URL.Path == "/catalog/movie/top/search=spiderman.json" {
@@ -37,8 +36,8 @@ func TestAPISearchWrappedShape(t *testing.T) {
 	src := tmdb.New()
 	src.SetBase(upstream.URL)
 	srv := &server{tmdb: src}
-	r := gin.New()
-	r.GET("/api/search", srv.apiSearch)
+	r := chi.NewRouter()
+	r.Get("/api/search", srv.apiSearch)
 
 	res := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/search?tab=movie&q=spiderman", nil)
@@ -64,10 +63,9 @@ func TestAPISearchWrappedShape(t *testing.T) {
 
 // TestAPISearchBadRequest: parameter salah tetap 400 dengan pesan JSON.
 func TestAPISearchBadRequest(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	srv := &server{tmdb: tmdb.New()}
-	r := gin.New()
-	r.GET("/api/search", srv.apiSearch)
+	r := chi.NewRouter()
+	r.Get("/api/search", srv.apiSearch)
 	res := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/search?tab=lain&q=x", nil)
 	r.ServeHTTP(res, req)

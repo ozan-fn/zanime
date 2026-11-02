@@ -9,7 +9,6 @@ import (
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -17,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-resty/resty/v2"
 )
 
 const (
@@ -67,7 +68,7 @@ type Server struct {
 // Client mengambil stream dari embedmaster. Base/http dapat ditimpa test.
 type Client struct {
 	Base string
-	http *http.Client
+	http *resty.Client
 	log  Logger
 }
 

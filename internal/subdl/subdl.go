@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/go-resty/resty/v2"
 )
 
 const (
@@ -63,11 +64,11 @@ type Subtitle struct {
 type Client struct {
 	site string
 	api  string
-	http *http.Client
+	http *resty.Client
 }
 
 func New() *Client {
-	return &Client{site: defaultSite, api: defaultAPI, http: &http.Client{Timeout: httpTimeout}}
+	return &Client{site: defaultSite, api: defaultAPI, http: resty.New().SetTimeout(httpTimeout)}
 }
 
 // SetBase menimpa kedua host (site + API); dipakai test dengan httptest.Server.
@@ -176,26 +177,18 @@ func (c *Client) autocomplete(ctx context.Context, query string) ([]Result, erro
 }
 
 func (c *Client) get(ctx context.Context, endpoint string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	res, err := c.http.R().SetContext(ctx).
+		SetHeader("User-Agent", userAgent).
+		SetHeader("Accept", "application/json, text/html").
+		SetHeader("Referer", defaultSite+"/").
+		Get(endpoint)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "application/json, text/html")
-	req.Header.Set("Referer", defaultSite+"/")
-	res, err := c.http.Do(req)
-	if err != nil {
-		return "", err
+	if res.StatusCode() != http.StatusOK {
+		return "", fmt.Errorf("subdl HTTP %s", res.Status())
 	}
-	defer func() { _ = res.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(res.Body, maxPage))
-	if err != nil {
-		return "", err
-	}
-	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("subdl HTTP %s", res.Status)
-	}
-	return string(body), nil
+	return res.String(), nil
 }
 
 var (
