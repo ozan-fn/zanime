@@ -51,6 +51,24 @@ export function Player({
   const current = playing?.src || ''
   const player = useRef<MediaPlayerInstance | null>(null)
 
+  // Identitas konten yang diputar. Ganti judul/episode/movie = konten baru,
+  // selalu mulai dari 0; ganti server pada konten yang sama = lanjut menit.
+  const content = playing?.media
+    ? `${playing.media.tab}:${playing.media.id}:${playing.media.season ?? ''}:${playing.media.episode ?? ''}`
+    : playing?.title || ''
+  // Posisi terakhir media yang tampil (detik). Nilai 0 diabaikan supaya
+  // sumber yang baru dipasang tidak menimpa posisi sebelum sempat dilanjutkan.
+  const at = useRef(0)
+  const handleTime = useCallback(() => {
+    const p = player.current
+    if (p && p.currentTime > 0) at.current = p.currentTime
+  }, [])
+  // Konten baru: buang posisi lama, termasuk saat slug stream kebetulan sama.
+  useEffect(() => {
+    at.current = 0
+    if (player.current) player.current.currentTime = 0
+  }, [content])
+
   // Delay subtitle digeser langsung di cue track (bukan lewat file), jadi
   // berlaku untuk subtitle server maupun file kiriman pengguna. Waktu asli
   // cue disimpan terpisah supaya geseran bisa dinaik-turunkan.
@@ -205,7 +223,18 @@ export function Player({
   }, [current])
 
   const handlePlay = useCallback(() => log.ok('Pemutaran mulai', 'player:play'), [])
-  const handleReady = useCallback(() => log.ok('Video siap diputar', 'player:ready'), [])
+  const handleReady = useCallback(() => {
+    // Sumber baru untuk konten yang sama (ganti server) melanjutkan posisi
+    // terakhir; konten baru sudah membuat `at` = 0.
+    const p = player.current
+    if (p && Math.abs(p.currentTime - at.current) > 1) {
+      p.currentTime = at.current
+      const m = Math.floor(at.current / 60)
+      const s = String(Math.floor(at.current % 60)).padStart(2, '0')
+      log.info(`Ganti server: lanjut dari ${m}:${s}`, 'player:resume')
+    }
+    log.ok('Video siap diputar', 'player:ready')
+  }, [])
   const handleError = useCallback(
     (detail: MediaErrorDetail) => log.err(`Video gagal diputar · ${detail.message || detail.code}`, 'player:err'),
     [],
@@ -229,6 +258,7 @@ export function Player({
           onProviderChange={handleProviderChange}
           onPlay={handlePlay}
           onCanPlay={handleReady}
+          onTimeUpdate={handleTime}
           onError={handleError}
         >
           <MediaProvider>

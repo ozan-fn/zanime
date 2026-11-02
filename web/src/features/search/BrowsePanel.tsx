@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Search } from 'lucide-react'
 import { api } from '@/lib/api'
 import { log } from '@/lib/logs'
@@ -80,6 +81,9 @@ function Chip({ label, on, disabled, onClick }: { label: React.ReactNode; on?: b
 
 export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) {
   const { playing } = useApp()
+  // Judul/episode yang dipilih tercermin di URL (?tab=&id=&s=&e=) supaya bisa
+  // dibagikan dan dibuka lagi tanpa memutar stream.
+  const [params, setParams] = useSearchParams()
   const [tab, setTab] = useState<Tab>('movie')
   const [q, setQ] = useState('')
   const [results, setResults] = useState<Item[]>([])
@@ -122,22 +126,27 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
     }
   }
 
-  // Pilih judul: movie langsung ke streams; tv ke daftar episode.
-  async function openTitle(item: Item) {
+  // Pilih judul: movie langsung ke streams; tv ke daftar episode. `ep` diisi
+  // saat judul dibuka dari URL yang menunjuk satu episode.
+  async function open(useTab: Tab, id: string, ep?: { season: number; episode: number }) {
     const signal = start()
     setError(''); setBusy('Memuat detail…')
-    log.info(`Membuka detail "${item.name}"…`, 'dlg:meta')
+    log.info(`Membuka detail "${id}"…`, 'dlg:meta')
     try {
-      const m = await api<Meta>(`/api/meta/${tab}/${item.id}`, signal)
+      const m = await api<Meta>(`/api/meta/${useTab}/${id}`, signal)
       if (!latest(signal)) return
       if (!m.tmdb) throw new Error('Judul ini tidak punya id TMDB.')
       setMeta(m)
+      setParams(ep
+        ? { tab: useTab, id, s: String(ep.season), e: String(ep.episode) }
+        : { tab: useTab, id })
       log.ok(`Detail siap · ${(m.episodes || []).length} episode`, 'dlg:meta')
-      if (tab === 'movie') await loadStreams(m, null)
+      if (useTab === 'movie') await loadStreams(m, null, useTab)
       else {
         const seasons = [...new Set((m.episodes || []).map((e) => e.season))].sort((a, b) => a - b)
-        setSeason(seasons.includes(1) ? 1 : seasons[0] || 1)
+        setSeason(ep?.season ?? (seasons.includes(1) ? 1 : seasons[0] || 1))
         setView('episodes')
+        if (ep) await loadStreams(m, ep, useTab)
       }
     } catch (err) {
       if (!latest(signal)) return
@@ -149,13 +158,13 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
   }
 
   // Scrapping embedmaster untuk movie atau satu episode tv.
-  async function loadStreams(m: Meta, ep: Episode | null) {
+  async function loadStreams(m: Meta, ep: Episode | null, useTab: Tab = tab) {
     const signal = start()
     setBusy('Mencari stream…')
     const what = ep ? `${m.name} S${ep.season}E${ep.episode}` : m.name
     log.info(`Mencari server untuk "${what}"…`, 'dlg:streams')
     try {
-      let url = `/api/streams?tab=${tab}&id=${encodeURIComponent(m.tmdb)}`
+      let url = `/api/streams?tab=${useTab}&id=${encodeURIComponent(m.tmdb)}`
       if (ep) url += `&s=${ep.season}&e=${ep.episode}`
       const body = await api<{ servers: Server[] }>(url, signal)
       if (!latest(signal)) return
@@ -164,7 +173,7 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
         title: what,
         rows,
         media: {
-          tab,
+          tab: useTab,
           id: m.id, // imdb tt… — /api/subtitles memakai meta, bukan id TMDB
           name: m.name,
           year: m.year,
@@ -186,6 +195,23 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
       if (latest(signal)) setBusy('')
     }
   }
+
+  // URL berisi judul/episode → pilih otomatis. Stream tidak diputar sampai
+  // pengguna memilih server.
+  const booted = useRef(false)
+  useEffect(() => {
+    if (booted.current) return
+    booted.current = true
+    const t = params.get('tab')
+    const id = params.get('id') || ''
+    if ((t !== 'movie' && t !== 'tv') || !id) return
+    const s = params.get('s')
+    const e = params.get('e')
+    setTab(t)
+    void open(t, id, s !== null && e !== null && Number(e) >= 1 ? { season: Number(s) || 0, episode: Number(e) } : undefined)
+    // Hanya saat halaman pertama dibuka.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const seasons = [...new Set((meta?.episodes || []).map((e) => e.season))].sort((a, b) => a - b)
   const eps = (meta?.episodes || []).filter((e) => e.season === season)
@@ -223,8 +249,7 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
         {busy ? <Note>{busy}</Note>
           : view === 'results' ? (
             results.length
-              ? results.map((m) => (
-                <button key={m.id} type="button" onClick={() => void openTitle(m)}
+              ? results.map((m) => (                  <button key={m.id} type="button" onClick={() => void open(tab, m.id)}
                   className="flex w-full items-center gap-2 rounded-lg border border-border bg-zinc-900 p-1.5 text-left transition hover:border-zinc-600 hover:bg-zinc-800">
                   {m.poster && (
                     <img src={m.poster} alt="" loading="lazy"
@@ -256,7 +281,10 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
                       playing.media.season === v.season &&
                       playing.media.episode === v.episode
                     return (
-                      <button key={`${v.season}:${v.episode}`} type="button" onClick={() => void loadStreams(meta!, v)}
+                      <button key={`${v.season}:${v.episode}`} type="button" onClick={() => {
+                        setParams({ tab, id: meta!.id, s: String(v.season), e: String(v.episode) })
+                        void loadStreams(meta!, v)
+                      }}
                         aria-current={watched ? 'true' : undefined}
                         className={`flex w-full items-center gap-2 rounded-lg border px-2 py-2 text-left transition sm:py-1.5 ${
                           watched ? 'border-zinc-400 bg-zinc-800' : 'border-border bg-zinc-900 hover:bg-zinc-800'

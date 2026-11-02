@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clearLogs } from '@/lib/logs'
 import { AppProvider, useApp } from '@/features/app/AppProvider'
@@ -37,14 +38,22 @@ const server = (over: Partial<Server> = {}): Server => ({
   ...over,
 })
 
-function mount() {
+function mount(initial = '/') {
   const onStreams = vi.fn()
   render(
     <AppProvider>
-      <BrowsePanel onStreams={onStreams} />
+      <MemoryRouter initialEntries={[initial]}>
+        <BrowsePanel onStreams={onStreams} />
+        <Where />
+      </MemoryRouter>
     </AppProvider>,
   )
   return onStreams
+}
+
+function Where() {
+  const loc = useLocation()
+  return <span data-testid="loc">{loc.pathname + loc.search}</span>
 }
 
 function stubFetch(search: Item[], metaJSON: Meta = meta(), servers: Server[] = [server()]) {
@@ -160,6 +169,36 @@ describe('BrowsePanel', () => {
     await waitFor(() => expect(screen.queryByText('Lama')).toBeNull())
   })
 
+  it('URL ?tab=&id= memilih judul otomatis tanpa memutar stream', async () => {
+    vi.stubGlobal('fetch', stubFetch([]))
+    const onStreams = mount('/?tab=movie&id=tt0145487')
+
+    await waitFor(() => expect(onStreams).toHaveBeenCalled())
+    expect(onStreams.mock.calls.at(-1)![0].media).toMatchObject({ tab: 'movie', id: 'tt0145487' })
+    const fetched = vi.mocked(fetch).mock.calls.map(([u]) => String(u))
+    expect(fetched.some((u) => u.startsWith('/api/meta/movie/tt0145487'))).toBe(true)
+  })
+
+  it('membuka judul/episode menulis tab, id, dan episode ke URL', async () => {
+    vi.stubGlobal('fetch', stubFetch(
+      [item({ id: 'tt22248376', name: 'Frieren', type: 'tv' })],
+      meta({ id: 'tt22248376', name: 'Frieren', tmdb: '209867', episodes: [
+        { season: 2, episode: 3, title: 'Magic' },
+      ] }),
+    ))
+    mount()
+
+    fireEvent.click(screen.getByRole('button', { name: 'TV' }))
+    fireEvent.change(screen.getByPlaceholderText(/Cari judul/), { target: { value: 'frieren' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cari' }))
+    fireEvent.click((await screen.findAllByText('Frieren'))[0])
+    await screen.findByText('Magic')
+    expect(screen.getByTestId('loc').textContent).toBe('/?tab=tv&id=tt22248376')
+
+    fireEvent.click(screen.getByText('Magic'))
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/?tab=tv&id=tt22248376&s=2&e=3'))
+  })
+
   it('menandai episode yang sedang diputar', async () => {
     vi.stubGlobal('fetch', stubFetch(
       [item({ id: 'tt22248376', name: 'Frieren', type: 'tv' })],
@@ -179,8 +218,10 @@ describe('BrowsePanel', () => {
     const onStreams = vi.fn()
     render(
       <AppProvider>
-        <BrowsePanel onStreams={onStreams} />
-        <PlayEp2 />
+        <MemoryRouter>
+          <BrowsePanel onStreams={onStreams} />
+          <PlayEp2 />
+        </MemoryRouter>
       </AppProvider>,
     )
 
