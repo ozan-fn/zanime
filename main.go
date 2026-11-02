@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -87,10 +89,13 @@ func main() {
 	srv := &server{web: webRoot, tmdb: tmdb.New(), em: emc, res: res, logs: logs, sub: subdl.New()}
 
 	r := chi.NewRouter()
-	r.Use(middleware.Recoverer)
+	r.Use(middleware.Recoverer, rateLimit(maxRPS))
 	r.Get("/", srv.index)
 	r.Get("/assets/*", srv.webFile) // aset Vite (JS/CSS)
-	r.Get("/favicon.ico", srv.webFile)
+	// Berkas statis di root dist (favicon, ikon PWA/Apple, og:image, manifest).
+	for _, p := range []string{"/favicon.ico", "/favicon.svg", "/icon-180.png", "/icon-512.png", "/og.png", "/site.webmanifest"} {
+		r.Get(p, srv.webFile)
+	}
 	// SPA fallback: React Router punya route `/` dan `*` (404), jadi path
 	// lain harus tetap dapat index.html; endpoint API yang salah tulis tetap
 	// JSON 404 supaya error di sisi client mudah dibedakan.
@@ -132,6 +137,95 @@ type server struct {
 // upgrader WebSocket: aplikasi lokal satu-origin, jadi semua Origin diterima
 // (dev Vite juga boleh menyambung lewat proxy).
 var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+
+// pageOG adalah tag og:/twitter: yang diisi saat HTML dilayani. Crawler
+// (WhatsApp, X, Discord) tidak menjalankan JS, jadi judul + poster harus sudah
+// ada di HTML mentah.
+type pageOG struct {
+	title string
+	desc  string
+	image string
+}
+
+const siteDescription = "Cari judul, pilih server, lalu putar film dan serial langsung di browser. Tanpa unduhan dan tanpa aplikasi tambahan."
+
+// titleOG menyusun tag OG dari judul di URL (?tab=&id=&s=&e=); nil bila tidak
+// ada judul valid atau meta gagal diambil (halaman memakai tag default).
+func (s *server) titleOG(r *http.Request) *pageOG {
+	q := r.URL.Query()
+	tab, id := q.Get("tab"), strings.TrimSpace(q.Get("id"))
+	if s.tmdb == nil || (tab != "movie" && tab != "tv") || !strings.HasPrefix(id, "tt") {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	m, err := s.tmdb.Meta(ctx, tab, id)
+	if err != nil || m.Name == "" {
+		return nil
+	}
+	title := m.Name
+	if m.Year != "" {
+		title += " (" + m.Year + ")"
+	}
+	if tab == "tv" && q.Get("s") != "" && q.Get("e") != "" {
+		title += fmt.Sprintf(" S%sE%s", q.Get("s"), q.Get("e"))
+	}
+	desc := strings.TrimSpace(m.Description)
+	if desc == "" {
+		desc = "Tonton " + m.Name + " di kafuu: cari judul, pilih server, lalu putar langsung di browser."
+	}
+	if runes := []rune(desc); len(runes) > 200 {
+		desc = string(runes[:200]) + "…"
+	}
+	return &pageOG{title: title + " — kafuu", desc: desc, image: posterOG(m.Poster)}
+}
+
+// posterOG memakai poster yang cukup besar untuk pratinjau tautan: Metahub
+// mengirim /poster/small/ (terlalu kecil untuk kartu WhatsApp/X), jadi diganti
+// ke ukuran medium bila polanya cocok.
+func posterOG(poster string) string {
+	if strings.Contains(poster, "/poster/small/") {
+		return strings.Replace(poster, "/poster/small/", "/poster/medium/", 1)
+	}
+	return poster
+}
+
+// maxRPS membatasi total permintaan per detik. Sengaja dipatok di kode (bukan
+// env): cukup untuk banyak segmen HLS paralel, dan lonjakan tetap tertahan
+// supaya nproc cPanel tidak ikut melonjak.
+const maxRPS = 200
+
+// rateLimit adalah token bucket sederhana: bucket penuh = rps (burst maksimal
+// satu detik), isi ulang mengikuti waktu. Kelebihan dibalas 429.
+func rateLimit(rps float64) func(http.Handler) http.Handler {
+	var (
+		mu     sync.Mutex
+		tokens = rps
+		last   = time.Now()
+	)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			now := time.Now()
+			mu.Lock()
+			tokens += now.Sub(last).Seconds() * rps
+			if tokens > rps {
+				tokens = rps
+			}
+			last = now
+			ok := tokens >= 1
+			if ok {
+				tokens--
+			}
+			mu.Unlock()
+			if !ok {
+				w.Header().Set("Retry-After", "1")
+				writeErr(w, http.StatusTooManyRequests, "terlalu banyak permintaan")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
 // writeJSON mengirim satu body JSON (pengganti c.JSON gin).
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -228,6 +322,12 @@ func (s *server) webFile(w http.ResponseWriter, r *http.Request) {
 		writeData(w, http.StatusOK, "text/css; charset=utf-8", data)
 	case strings.HasSuffix(name, ".svg"):
 		writeData(w, http.StatusOK, "image/svg+xml", data)
+	case strings.HasSuffix(name, ".png"):
+		writeData(w, http.StatusOK, "image/png", data)
+	case strings.HasSuffix(name, ".ico"):
+		writeData(w, http.StatusOK, "image/x-icon", data)
+	case strings.HasSuffix(name, ".webmanifest"):
+		writeData(w, http.StatusOK, "application/manifest+json", data)
 	default:
 		writeData(w, http.StatusOK, "application/octet-stream", data)
 	}
@@ -240,6 +340,28 @@ func (s *server) index(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeText(w, http.StatusInternalServerError, "index.html tidak ditemukan")
 		return
+	}
+	// og:url / og:image harus absolut; origin diisi saat halaman dilayani
+	// (X-Forwarded-Proto dipakai kalau ada reverse proxy seperti cPanel).
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0], "https") {
+		scheme = "https"
+	}
+	origin := scheme + "://" + r.Host
+	og := pageOG{title: "kafuu — Streaming Film & Seri", desc: siteDescription, image: origin + "/og.png"}
+	if t := s.titleOG(r); t != nil {
+		og = *t
+		if og.image == "" {
+			og.image = origin + "/og.png"
+		}
+	}
+	for _, v := range []struct{ ph, val string }{
+		{"__PAGE_TITLE__", og.title},
+		{"__PAGE_DESC__", og.desc},
+		{"__PAGE_IMAGE__", og.image},
+		{"__PAGE_URL__", origin + r.URL.RequestURI()},
+	} {
+		data = bytes.ReplaceAll(data, []byte(v.ph), []byte(html.EscapeString(v.val)))
 	}
 	writeData(w, http.StatusOK, "text/html; charset=utf-8", data)
 }

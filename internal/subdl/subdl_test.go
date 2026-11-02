@@ -101,7 +101,7 @@ func TestParseRowsEpisodeFilter(t *testing.T) {
 	}
 
 	// Search ikut menyaring bahasa + relevansi judul, Indonesian dulu.
-	filtered := relevant(ep1, "Frieren: Beyond Journey's End")
+	filtered := relevant(ep1, "Frieren: Beyond Journey's End", 2, 1)
 	if len(filtered) != 3 || filtered[0].Lang != "indonesian" || filtered[1].Lang != "english" {
 		t.Fatalf("urutan/bahasa salah: %+v", filtered)
 	}
@@ -132,16 +132,120 @@ func TestRelevant(t *testing.T) {
 		{Lang: "indonesian", Name: "JudasEps1-Eps14"},
 		{Lang: "english", Name: "Some Other Show S01E01"},
 	}
-	got := relevant(rows, "Frieren: Beyond Journey's End")
+	got := relevant(rows, "Frieren: Beyond Journey's End", 1, 3)
+	// Pack tanpa info (PMR) tetap ada tapi di belakang episode yang cocok.
 	if len(got) != 2 || got[0].Name != "[PMR] Frieren Beyond Journey's End (BD Remux 1080p AVC FLAC AAC)" ||
 		got[1].Name != "Frieren.Beyond.Journeys.End.S01E01-04.JAPANESE.WEBRip.NF" {
 		t.Fatalf("filter judul/bahasa salah: %+v", got)
 	}
 
-	// Judul non-latin: tanpa kata kunci, hanya filter bahasa (tetap indo dulu).
-	jp := relevant(rows, "葬送のフリーレン")
-	if len(jp) != 4 || jp[0].Lang != "indonesian" {
+	// Judul non-latin: tanpa kata kunci judul, tapi filter episode tetap jalan
+	// ("Some Other Show S01E01" milik episode lain ikut dibuang).
+	jp := relevant(rows, "葬送のフリーレン", 1, 3)
+	if len(jp) != 3 || jp[0].Lang != "indonesian" {
 		t.Fatalf("judul non-latin: %+v", jp)
+	}
+}
+
+// TestRankEpisode: baris untuk episode lain dibuang, pack tetap ada tapi
+// berperingkat di bawah episode itu sendiri.
+func TestRankEpisode(t *testing.T) {
+	cases := []struct {
+		name       string
+		season, ep int
+		rank       int
+		ok         bool
+	}{
+		{"Frieren.Beyond.Journeys.End.S01E03.CR.WEB-DL", 1, 3, 0, true},
+		{"Frieren.Beyond.Journeys.End.S01E30.CR.WEB-DL", 1, 3, 0, false},
+		{"Frieren.Beyond.Journeys.End.S02E01.1080p", 1, 3, 0, false},
+		{"Frieren.Beyond.Journeys.End.S01E01-04.JAPANESE.WEBRip.NF", 1, 3, 1, true},
+		{"Frieren.Beyond.Journey's.End.S01E01-E21.WEB.1080p", 1, 3, 1, true},
+		{"Frieren.Beyond.Journeys.End.S01.JAPANESE.WEBRip.NF", 1, 3, 1, true},
+		{"SousounoFrieren-03[1080pAV110Bit]", 1, 3, 0, true},
+		{"SousounoFrieren-21[1080pAV110Bit]", 1, 3, 0, false},
+		{"[PMR] Frieren Beyond Journey's End (BD Remux 1080p AVC FLAC AAC)", 1, 3, 2, true},
+		{"JudasEps1-Eps14", 1, 3, 1, true},
+		{"JudasEps1-Eps2", 1, 3, 0, false},
+		// Referensi Jujutsu Kaisen S1E1.
+		{"JUJUTSU KAISEN episode 1", 1, 1, 0, true},
+		{"Jujutsu Kaisen - S01E01 [1080p x264 10bits]", 1, 1, 0, true},
+		{"Jujutsu Kaisen BD Episode 01 - 12 Part 2", 1, 1, 1, true},
+		{"RESYNC SUB RETAIL NETFLIX FOR JUJUTSU KAISEN 720p WEB-DL x264-Pahe.in (EP 1-24)", 1, 1, 1, true},
+		{"Jujutsu.Kaisen.S01.COMPLETE.NF.WEB-DL", 1, 1, 1, true},
+		{"Jujutsu.Kaisen.Season.01.WEBRip.Netflix.en", 1, 1, 1, true},
+		{"JUJUTSU.KAISEN.S01E51.CR.WEB-DL.English.EN", 1, 1, 0, false},
+	}
+	for _, c := range cases {
+		rank, ok := rankEpisode(Subtitle{Name: c.name}, c.season, c.ep)
+		if rank != c.rank || ok != c.ok {
+			t.Fatalf("%q: rank=%d ok=%v, want %d/%v", c.name, rank, ok, c.rank, c.ok)
+		}
+	}
+
+	// Atribut halaman menang atas nama rilis yang tidak menyebut episode.
+	if rank, ok := rankEpisode(Subtitle{Name: "pack", EpisodeFrom: 1, EpisodeTo: 10}, 1, 3); !ok || rank != 1 {
+		t.Fatalf("atribut rentang: rank=%d ok=%v, want 1/true", rank, ok)
+	}
+	// Nomor absolut tanpa musim tidak bisa dipetakan ke musim >1: jangan dibuang.
+	if rank, ok := rankEpisode(Subtitle{Name: "Show-18"}, 2, 3); !ok || rank != 2 {
+		t.Fatalf("absolut musim 2: rank=%d ok=%v, want 2/true", rank, ok)
+	}
+}
+
+// TestRelevantFallback: kalau tidak ada satu pun baris yang cocok episode,
+// semua hasil saringan judul+bahasa tetap ditampilkan (Indonesian dulu) alih-
+// alih daftar kosong.
+func TestRelevantFallback(t *testing.T) {
+	rows := []Subtitle{
+		{Lang: "english", Name: "Frieren S01E05", Downloads: 90},
+		{Lang: "indonesian", Name: "Frieren S01E05", Downloads: 5},
+		{Lang: "vietnamese", Name: "Frieren S01E05"},
+		{Lang: "indonesian", Name: "Frieren S01E06", Downloads: 50},
+	}
+	got := relevant(rows, "Frieren", 1, 9) // episode 9 tidak ada di daftar
+	if len(got) != 3 {
+		t.Fatalf("fallback = %d baris, want 3 (%+v)", len(got), got)
+	}
+	if got[0].Lang != "indonesian" {
+		t.Fatalf("urutan fallback harus Indonesian dulu: %+v", got)
+	}
+
+	// Ada yang cocok → baris episode lain tetap dibuang.
+	got = relevant(rows, "Frieren", 1, 6)
+	if len(got) != 1 || got[0].Name != "Frieren S01E06" {
+		t.Fatalf("episode cocok harus menyaring yang lain: %+v", got)
+	}
+}
+
+// TestRelevantOrderJujutsu: urutan untuk S1E1 — episode itu sendiri dulu, lalu
+// pack yang mencakupnya, lalu yang tanpa info episode; episode lain dibuang.
+func TestRelevantOrderJujutsu(t *testing.T) {
+	rows := []Subtitle{
+		{Lang: "indonesian", Name: "JUJUTSU KAISEN episode 1", Downloads: 111},
+		{Lang: "indonesian", Name: "Jujutsu.Kaisen.S01.COMPLETE.NF.WEB-DL", Downloads: 327},
+		{Lang: "indonesian", Name: "Jujutsu Kaisen BD Complete - FackYeah", Downloads: 7273},
+		{Lang: "indonesian", Name: "Jujutsu Kaisen - S01E01 [1080p x264 10bits]", Downloads: 180},
+		{Lang: "english", Name: "JUJUTSU.KAISEN.S01E51.CR.WEB-DL.English.EN", Downloads: 668},
+		{Lang: "english", Name: "Jujutsu.Kaisen.S01.WEBRip.Netflix.en", Downloads: 5544},
+		{Lang: "english", Name: "Jujutsu.Kaisen.Season.01.WEBRip.Netflix.en", Downloads: 6215},
+	}
+	got := relevant(rows, "Jujutsu Kaisen", 1, 1)
+	want := []string{
+		"Jujutsu Kaisen - S01E01 [1080p x264 10bits]", // rank 0, unduhan lebih banyak
+		"JUJUTSU KAISEN episode 1",
+		"Jujutsu.Kaisen.S01.COMPLETE.NF.WEB-DL",      // rank 1 (season pack)
+		"Jujutsu Kaisen BD Complete - FackYeah",      // rank 2 (tanpa info episode)
+		"Jujutsu.Kaisen.Season.01.WEBRip.Netflix.en", // English: rank 1, unduhan terbanyak
+		"Jujutsu.Kaisen.S01.WEBRip.Netflix.en",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("hasil %d baris, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Name != want[i] {
+			t.Fatalf("urutan[%d] = %q, want %q (semua: %+v)", i, got[i].Name, want[i], got)
+		}
 	}
 }
 

@@ -56,6 +56,7 @@ func fakeCinemeta(t *testing.T) *httptest.Server {
 				"moviedb_id":  557,
 				"name":        "Spider-Man",
 				"releaseInfo": "2002",
+				"poster":      "https://img/poster.jpg",
 			}})
 		default:
 			w.WriteHeader(http.StatusNotFound)

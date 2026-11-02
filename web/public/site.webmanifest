@@ -1,0 +1,14 @@
+{
+  "name": "kafuu — Streaming Film & Seri",
+  "short_name": "kafuu",
+  "description": "Cari judul, pilih server, lalu putar film dan serial langsung di browser.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
+  "icons": [
+    { "src": "/icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -115,18 +116,124 @@ func (c *Client) search(ctx context.Context, tab, name, year string, season, epi
 			}
 		}
 	}
-	subs := relevant(parseRows(page, tab == "tv", episode), name)
+	subs := relevant(parseRows(page, tab == "tv", episode), name, season, episode)
 	writeCache(key, subs)
 	return subs, nil
 }
 
-// relevant menyaring baris: hanya Indonesian + English, urut Indonesian dulu,
-// dan nama rilis harus memuat kata kunci judul (kata terpanjang) supaya
-// subtitle judul lain yang ikut di halaman tidak muncul.
-func relevant(subs []Subtitle, name string) []Subtitle {
+// releaseInfo adalah season/episode yang tertulis di satu baris subtitle.
+// 0 = tidak disebut; from..to = rentang episode (to == from untuk satu episode).
+type releaseInfo struct {
+	season   int
+	from, to int
+}
+
+var (
+	reSeasonEp = regexp.MustCompile(`(?i)\bS(\d{1,2})[\s._-]*E(?:P)?\s*(\d{1,3})(?:\s*[-–~]\s*E?(?:P)?\s*(\d{1,3}))?`) // Tanpa \b di depan: rilis sering menempelkan penanda ke judul
+	// ("JudasEps1-Eps14"); "Episode 01 - 12" dan "EP 1-24" juga diterima.
+	reEpsRange   = regexp.MustCompile(`(?i)(?:episode|eps?)\.?\s*(\d{1,3})(?:\s*[-–~]\s*(?:(?:episode|eps?)\.?\s*)?(\d{1,3}))?`)
+	reEpOnly     = regexp.MustCompile(`(?i)\bE(?:P)?\s*(\d{1,3})(?:\s*[-–~]\s*E?(?:P)?\s*(\d{1,3}))?`)
+	reAbsEp      = regexp.MustCompile(`[-–]\s*(\d{1,3})(?:v\d)?\b`)
+	reSeasonTag  = regexp.MustCompile(`(?i)\bS(\d{1,2})\b`)
+	reSeasonWord = regexp.MustCompile(`(?i)\bseason[\s._-]*(\d{1,2})\b`)
+)
+
+// rankEpisode memutuskan apakah satu baris cocok dengan episode yang diminta
+// dan seberapa dekat: 0 = episode itu sendiri, 1 = pack yang mencakupnya
+// (rentang/season/complete), 2 = tanpa info episode. ok=false = episode lain.
+func rankEpisode(s Subtitle, season, episode int) (int, bool) {
+	if episode <= 0 {
+		return 2, true
+	}
+	ri := releaseInfoOf(s)
+	if ri.from == 0 && ri.season == 0 {
+		return 2, true // tanpa info episode (complete/BD): biarkan, urut belakang
+	}
+	if ri.season > 0 && season > 0 && ri.season != season {
+		return 0, false
+	}
+	if ri.season == 0 && season > 1 {
+		// Nomor telanjang ("Show-18") biasanya absolut; untuk musim >1 tidak
+		// bisa dipetakan ke episode musim ini, jadi jangan dibuang.
+		return 2, true
+	}
+	if ri.from > 0 {
+		if episode < ri.from || episode > ri.to {
+			return 0, false
+		}
+		if ri.from == ri.to {
+			return 0, true
+		}
+		return 1, true
+	}
+	return 1, true // season pack tanpa nomor episode
+}
+
+// releaseInfoOf memakai atribut halaman bila ada (lebih dipercaya), lalu
+// jatuh ke nama rilis untuk baris yang atributnya kosong.
+func releaseInfoOf(s Subtitle) releaseInfo {
+	if s.EpisodeFrom > 0 {
+		ri := releaseInfo{from: s.EpisodeFrom, to: s.EpisodeTo}
+		if ri.to == 0 {
+			ri.to = ri.from
+		}
+		return ri
+	}
+	return parseRelease(s.Name)
+}
+
+// parseRelease membaca penanda musim/episode dari nama rilis: "S01E03",
+// "S1E1-E4", "E03", "Eps1-Eps14", "Show-18", atau "S01"/"Season 1" (pack).
+func parseRelease(name string) releaseInfo {
+	if m := reSeasonEp.FindStringSubmatch(name); m != nil {
+		ri := releaseInfo{season: atoi(m[1]), from: atoi(m[2]), to: atoi(m[2])}
+		if m[3] != "" {
+			ri.to = atoi(m[3])
+		}
+		return ri
+	}
+	if m := reEpsRange.FindStringSubmatch(name); m != nil {
+		ri := releaseInfo{from: atoi(m[1]), to: atoi(m[1])}
+		if m[2] != "" {
+			ri.to = atoi(m[2])
+		}
+		return ri
+	}
+	if m := reEpOnly.FindStringSubmatch(name); m != nil {
+		ri := releaseInfo{from: atoi(m[1]), to: atoi(m[1])}
+		if m[2] != "" {
+			ri.to = atoi(m[2])
+		}
+		return ri
+	}
+	if m := reAbsEp.FindStringSubmatch(name); m != nil {
+		n := atoi(m[1])
+		return releaseInfo{from: n, to: n}
+	}
+	if m := reSeasonTag.FindStringSubmatch(name); m != nil {
+		return releaseInfo{season: atoi(m[1])}
+	}
+	if m := reSeasonWord.FindStringSubmatch(name); m != nil {
+		return releaseInfo{season: atoi(m[1])}
+	}
+	return releaseInfo{}
+}
+
+// relevant menyaring baris: hanya Indonesian + English, nama rilis harus
+// memuat kata kunci judul (kata terpanjang) supaya subtitle judul lain tidak
+// muncul, dan episode harus cocok. Urutan: Indonesian dulu, lalu yang paling
+// dekat (episode itu sendiri → pack → tanpa info), lalu unduhan terbanyak.
+// Kalau tidak ada satu pun yang cocok episode (sering terjadi pada rilis yang
+// penomorannya berbeda), semua baris hasil saringan judul/bahasa tetap
+// ditampilkan — lebih baik daripada daftar kosong.
+func relevant(subs []Subtitle, name string, season, episode int) []Subtitle {
 	re := anchor(name)
-	out := make([]Subtitle, 0, len(subs))
-	var eng []Subtitle
+	type ranked struct {
+		sub  Subtitle
+		rank int
+	}
+	rows := make([]ranked, 0, len(subs))
+	var other []ranked // beda episode: hanya dipakai bila tidak ada yang cocok
 	for _, s := range subs {
 		if s.Lang != "indonesian" && s.Lang != "english" {
 			continue
@@ -134,13 +241,36 @@ func relevant(subs []Subtitle, name string) []Subtitle {
 		if re != nil && !re.MatchString(s.Name) {
 			continue
 		}
-		if s.Lang == "indonesian" {
-			out = append(out, s)
+		rank, ok := rankEpisode(s, season, episode)
+		if !ok {
+			other = append(other, ranked{sub: s, rank: 3})
 			continue
 		}
-		eng = append(eng, s)
+		rows = append(rows, ranked{sub: s, rank: rank})
 	}
-	return append(out, eng...)
+	sortRows := func(rs []ranked) {
+		sort.SliceStable(rs, func(i, j int) bool {
+			a, b := rs[i], rs[j]
+			ai, bi := a.sub.Lang == "indonesian", b.sub.Lang == "indonesian"
+			if ai != bi {
+				return ai
+			}
+			if a.rank != b.rank {
+				return a.rank < b.rank
+			}
+			return a.sub.Downloads > b.sub.Downloads
+		})
+	}
+	if len(rows) == 0 {
+		rows = other
+	}
+	sortRows(rows)
+
+	out := make([]Subtitle, len(rows))
+	for i, r := range rows {
+		out[i] = r.sub
+	}
+	return out
 }
 
 // anchor = regexp kata terpanjang dari judul (mis. "Frieren: Beyond Journey's

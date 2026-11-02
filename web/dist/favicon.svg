@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="kafuu">
+  <rect width="64" height="64" rx="14" fill="#0b0b0e"/>
+  <rect x="12.2" y="10.2" width="39.6" height="9.6" rx="1.6" fill="#34d399"/>
+  <rect x="12.2" y="23" width="39.6" height="30.7" rx="3.2" fill="#e7e7ea"/>
+  <path d="M29.4 31.4v11.7l11-5.8z" fill="#0b0b0e"/>
+</svg>
