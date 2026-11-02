@@ -25,4 +25,38 @@ describe('AppProvider', () => {
     act(() => result.current.play({ src: '' }))
     expect(result.current.playing).toBeNull()
   })
+
+  it('ganti server tanpa subtitle mempertahankan subtitle stream sebelumnya', () => {
+    const { result } = renderHook(() => useApp(), { wrapper: AppProvider })
+    const media = { tab: 'movie' as const, id: 'tt1' }
+    const english = { label: 'English', lang: 'en', url: '/s/sub-en.vtt' }
+
+    act(() => result.current.play({ src: '/s/server-a', media, subs: [english] }))
+    act(() => result.current.play({ src: '/s/server-b', media, subs: [] }))
+
+    expect(result.current.playing?.src).toBe('/s/server-b')
+    expect(result.current.playing?.subs).toEqual([english])
+  })
+
+  it('ganti server dengan subtitle baru menggantikan subtitle lama', () => {
+    const { result } = renderHook(() => useApp(), { wrapper: AppProvider })
+    const media = { tab: 'movie' as const, id: 'tt1' }
+    const english = { label: 'English', lang: 'en', url: '/s/sub-en.vtt' }
+    const indonesia = { label: 'Indonesia', lang: 'id', url: '/s/sub-id.vtt' }
+
+    act(() => result.current.play({ src: '/s/server-a', media, subs: [english] }))
+    act(() => result.current.play({ src: '/s/server-b', media, subs: [indonesia] }))
+
+    expect(result.current.playing?.subs).toEqual([indonesia])
+  })
+
+  it('pindah episode tidak membawa subtitle episode sebelumnya', () => {
+    const { result } = renderHook(() => useApp(), { wrapper: AppProvider })
+    const english = { label: 'English', lang: 'en', url: '/s/sub-en.vtt' }
+
+    act(() => result.current.play({ src: '/s/ep1', media: { tab: 'tv', id: 'tt1', season: 1, episode: 1 }, subs: [english] }))
+    act(() => result.current.play({ src: '/s/ep2', media: { tab: 'tv', id: 'tt1', season: 1, episode: 2 }, subs: [] }))
+
+    expect(result.current.playing?.subs).toEqual([])
+  })
 })

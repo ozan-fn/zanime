@@ -14,7 +14,7 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/goceleris/celeris"
+	"github.com/gofiber/fiber/v2"
 	"github.com/gorilla/websocket"
 
 	"zanime/internal/em"
@@ -245,9 +245,9 @@ func TestStreamProxyPlaylistRewrite(t *testing.T) {
 	defer upstream.Close()
 	t.Chdir(t.TempDir())
 	srv := &Server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New()}
-	r := startTestApp(t, srv, func(mux *celeris.Server) {
-		mux.GET("/s/:slug", srv.streamProxy)
-		mux.HEAD("/s/:slug", srv.streamProxy)
+	r := startTestApp(t, srv, func(app *fiber.App) {
+		app.Get("/s/:slug", srv.streamProxy)
+		app.Head("/s/:slug", srv.streamProxy)
 	})
 
 	res := httptest.NewRecorder()
@@ -293,9 +293,9 @@ func TestPlaylistCacheControl(t *testing.T) {
 	defer upstream.Close()
 	t.Chdir(t.TempDir())
 	srv := &Server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New()}
-	r := startTestApp(t, srv, func(mux *celeris.Server) {
-		mux.GET("/s/:slug", srv.streamProxy)
-		mux.HEAD("/s/:slug", srv.streamProxy)
+	r := startTestApp(t, srv, func(app *fiber.App) {
+		app.Get("/s/:slug", srv.streamProxy)
+		app.Head("/s/:slug", srv.streamProxy)
 	})
 
 	res := httptest.NewRecorder()
@@ -343,9 +343,9 @@ func TestStreamProxyPassthrough(t *testing.T) {
 	defer upstream.Close()
 	t.Chdir(t.TempDir())
 	srv := &Server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New()}
-	r := startTestApp(t, srv, func(mux *celeris.Server) {
-		mux.GET("/s/:slug", srv.streamProxy)
-		mux.HEAD("/s/:slug", srv.streamProxy)
+	r := startTestApp(t, srv, func(app *fiber.App) {
+		app.Get("/s/:slug", srv.streamProxy)
+		app.Head("/s/:slug", srv.streamProxy)
 	})
 
 	res := httptest.NewRecorder()
@@ -400,9 +400,9 @@ func TestStreamProxySubtitle(t *testing.T) {
 	defer upstream.Close()
 	t.Chdir(t.TempDir())
 	srv := &Server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New()}
-	r := startTestApp(t, srv, func(mux *celeris.Server) {
-		mux.GET("/s/:slug", srv.streamProxy)
-		mux.HEAD("/s/:slug", srv.streamProxy)
+	r := startTestApp(t, srv, func(app *fiber.App) {
+		app.Get("/s/:slug", srv.streamProxy)
+		app.Head("/s/:slug", srv.streamProxy)
 	})
 
 	res := httptest.NewRecorder()
@@ -435,10 +435,10 @@ func TestWebFilePrecompressed(t *testing.T) {
 		"favicon.svg":       {Data: []byte("<svg/>")},
 	}
 	srv := &Server{web: web, tmdb: tmdb.New(), em: fakeEM(), res: resolve.New()}
-	r := startTestApp(t, srv, func(mux *celeris.Server) {
-		mux.GET("/assets/*filepath", srv.webFile)
-		mux.GET("/favicon.svg", srv.webFile)
-		mux.NotFound(srv.spaFallback)
+	r := startTestApp(t, srv, func(app *fiber.App) {
+		app.Get("/assets/*", srv.webFile)
+		app.Get("/favicon.svg", srv.webFile)
+		app.Use(srv.spaFallback)
 	})
 
 	cases := []struct{ accept, body, enc string }{
@@ -492,7 +492,7 @@ func TestWebFilePrecompressed(t *testing.T) {
 // dikenal → JSON 404 (bukan index) supaya client bisa bedakan error.
 func TestSPAFallback(t *testing.T) {
 	srv := &Server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New()}
-	r := startTestApp(t, srv, func(mux *celeris.Server) { mux.NotFound(srv.spaFallback) })
+	r := startTestApp(t, srv, func(app *fiber.App) { app.Use(srv.spaFallback) })
 
 	res := httptest.NewRecorder()
 	r.ServeHTTP(res, httptest.NewRequest("GET", "/somewhere", nil))
@@ -553,9 +553,9 @@ func TestStreamProxyLogs(t *testing.T) {
 	ch, cancel := logs.Subscribe()
 	defer cancel()
 	srv := &Server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New(), logs: logs}
-	r := startTestApp(t, srv, func(mux *celeris.Server) {
-		mux.GET("/s/:slug", srv.streamProxy)
-		mux.HEAD("/s/:slug", srv.streamProxy)
+	r := startTestApp(t, srv, func(app *fiber.App) {
+		app.Get("/s/:slug", srv.streamProxy)
+		app.Head("/s/:slug", srv.streamProxy)
 	})
 
 	res := httptest.NewRecorder()
@@ -573,7 +573,7 @@ func TestStreamProxyLogs(t *testing.T) {
 func TestAPILogsWebSocket(t *testing.T) {
 	logs := logbus.New()
 	srv := &Server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New(), logs: logs}
-	r := startTestApp(t, srv, func(mux *celeris.Server) { mux.GET("/api/logs", srv.logsRoute()) })
+	r := startTestApp(t, srv, func(app *fiber.App) { app.Get("/api/logs", srv.logsRoute()) })
 
 	// Ditulis sebelum klien menyambung: harus dikirim sebagai riwayat.
 	logs.Emit(logbus.Event{ID: "srv:X:verify", Level: logbus.LevelInfo, Text: "uji X…"})

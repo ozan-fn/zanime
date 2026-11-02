@@ -1,8 +1,8 @@
 package app
 
 import (
-	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goceleris/celeris"
+	"github.com/gofiber/fiber/v2"
 )
 
-// testApp menjalankan app celeris di port acak (engine std) supaya test memakai
-// routing + middleware yang sama dengan produksi, tanpa chi.
+// testApp menjalankan app fiber di port acak supaya test memakai routing +
+// middleware yang sama dengan produksi.
 type testApp struct {
 	t    *testing.T
 	srv  *Server
@@ -24,30 +24,27 @@ type testApp struct {
 
 // startTestApp menjalankan Server pada port acak. register opsional untuk
 // memasang route khusus test; tanpa itu seluruh route produksi dipasang.
-func startTestApp(t *testing.T, srv *Server, register func(*celeris.Server)) *testApp {
+func startTestApp(t *testing.T, srv *Server, register func(*fiber.App)) *testApp {
 	t.Helper()
-	mux := celeris.New(celeris.Config{Addr: "127.0.0.1:0"})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	if register == nil {
-		srv.Register(mux)
+		srv.Register(app)
 	} else {
-		register(mux)
+		register(app)
 	}
-	go func() { _ = mux.Start() }()
-	deadline := time.Now().Add(5 * time.Second)
-	for mux.Addr() == nil {
-		if time.Now().After(deadline) {
-			t.Fatal("server uji tidak siap")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	app := &testApp{
+	go func() { _ = app.Listener(ln) }()
+	ta := &testApp{
 		t:    t,
 		srv:  srv,
-		base: "http://" + mux.Addr().String(),
+		base: "http://" + ln.Addr().String(),
 		http: &http.Client{Timeout: 10 * time.Second},
 	}
-	t.Cleanup(func() { _ = mux.Shutdown(context.Background()) })
-	return app
+	t.Cleanup(func() { _ = app.Shutdown() })
+	return ta
 }
 
 // ServeHTTP menjalankan satu permintaan ke server uji lalu menulis balasannya

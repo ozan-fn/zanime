@@ -8,7 +8,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/goceleris/celeris"
+	"github.com/gofiber/fiber/v2"
 
 	"zanime/internal/tmdb"
 )
@@ -16,9 +16,9 @@ import (
 // TestRateLimit: token bucket menolak kelebihan dengan 429 + Retry-After,
 // dan request berikutnya setelah bucket terisi lagi tetap lolos.
 func TestRateLimit(t *testing.T) {
-	app := startTestApp(t, &Server{}, func(mux *celeris.Server) {
-		mux.Use(rateLimit(1)) // kapasitas 1, isi 1 token/detik
-		mux.GET("/", func(c *celeris.Context) error { return c.String(http.StatusOK, "ok") })
+	app := startTestApp(t, &Server{}, func(app *fiber.App) {
+		app.Use(rateLimit(1)) // kapasitas 1, isi 1 token/detik
+		app.Get("/", func(c *fiber.Ctx) error { return c.SendString("ok") })
 	})
 
 	serve := func() *httptest.ResponseRecorder {
@@ -79,7 +79,7 @@ func TestAPISearchWrappedShape(t *testing.T) {
 	src := tmdb.New()
 	src.SetBase(upstream.URL)
 	srv := &Server{tmdb: src}
-	app := startTestApp(t, srv, func(mux *celeris.Server) { mux.GET("/api/search", srv.apiSearch) })
+	app := startTestApp(t, srv, func(app *fiber.App) { app.Get("/api/search", srv.apiSearch) })
 
 	res := httptest.NewRecorder()
 	app.ServeHTTP(res, httptest.NewRequest("GET", "/api/search?tab=movie&q=spiderman", nil))
@@ -106,7 +106,7 @@ func TestAPISearchWrappedShape(t *testing.T) {
 // (og:url/og:image harus absolut), termasuk saat di belakang proxy.
 func TestIndexOrigin(t *testing.T) {
 	srv := &Server{web: fstest.MapFS{"index.html": {Data: []byte(`<meta property="og:image" content="__PAGE_IMAGE__"><meta property="og:url" content="__PAGE_URL__">`)}}}
-	app := startTestApp(t, srv, func(mux *celeris.Server) { mux.GET("/", srv.index) })
+	app := startTestApp(t, srv, func(app *fiber.App) { app.Get("/", srv.index) })
 
 	for _, tc := range []struct{ proto, wantImage, wantURL string }{
 		{"", "http://example.com/og.png", "http://example.com/"},
@@ -134,7 +134,7 @@ func TestIndexOGTitle(t *testing.T) {
 	src.SetBase(fakeCinemeta(t).URL)
 	srv := &Server{web: fstest.MapFS{"index.html": {Data: []byte(
 		`<title>__PAGE_TITLE__</title><meta property="og:image" content="__PAGE_IMAGE__"><meta property="og:url" content="__PAGE_URL__">`)}}, tmdb: src}
-	app := startTestApp(t, srv, func(mux *celeris.Server) { mux.GET("/", srv.index) })
+	app := startTestApp(t, srv, func(app *fiber.App) { app.Get("/", srv.index) })
 
 	res := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/?tab=movie&id=tt0145487", nil)
@@ -155,7 +155,7 @@ func TestIndexOGTitle(t *testing.T) {
 // TestAPISearchBadRequest: parameter salah tetap 400 dengan pesan JSON.
 func TestAPISearchBadRequest(t *testing.T) {
 	srv := &Server{tmdb: tmdb.New()}
-	app := startTestApp(t, srv, func(mux *celeris.Server) { mux.GET("/api/search", srv.apiSearch) })
+	app := startTestApp(t, srv, func(app *fiber.App) { app.Get("/api/search", srv.apiSearch) })
 	res := httptest.NewRecorder()
 	app.ServeHTTP(res, httptest.NewRequest("GET", "/api/search?tab=lain&q=x", nil))
 	if res.Code != http.StatusBadRequest {

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"github.com/goceleris/celeris"
+	"github.com/gofiber/fiber/v2"
 
 	"zanime/internal/em"
 	"zanime/internal/logbus"
@@ -34,37 +34,37 @@ func (l hubLogger) Log(id, level, msg string) {
 
 // apiSearch: pencarian judul. Backend yang menghubungi sumber catalog; hasil
 // membawa id TMDB (moviedb_id) yang dibutuhkan embedmaster.
-func (s *Server) apiSearch(c *celeris.Context) error {
+func (s *Server) apiSearch(c *fiber.Ctx) error {
 	q := strings.TrimSpace(c.Query("q"))
 	tab := c.Query("tab")
 	if q == "" || (tab != "movie" && tab != "tv") {
 		return errJSON(c, http.StatusBadRequest, "query harus ?q=<judul>&tab=movie|tv")
 	}
-	res, err := s.tmdb.Search(c.Context(), tab, q)
+	res, err := s.tmdb.Search(c.UserContext(), tab, q)
 	if err != nil {
 		log.Printf("api:search gagal: %v", err)
 		return s.fail(c, err)
 	}
-	return c.JSON(http.StatusOK, map[string]any{"results": res})
+	return c.Status(http.StatusOK).JSON(map[string]any{"results": res})
 }
 
 // apiMeta: detail satu judul (movie: metadata; tv: metadata + daftar episode).
-func (s *Server) apiMeta(c *celeris.Context) error {
-	tab, id := c.Param("tab"), c.Param("id")
+func (s *Server) apiMeta(c *fiber.Ctx) error {
+	tab, id := c.Params("tab"), c.Params("id")
 	if (tab != "movie" && tab != "tv") || !strings.HasPrefix(id, "tt") {
 		return errJSON(c, http.StatusBadRequest, "meta harus /api/meta/movie|tv/<imdb-id>")
 	}
-	res, err := s.tmdb.Meta(c.Context(), tab, id)
+	res, err := s.tmdb.Meta(c.UserContext(), tab, id)
 	if err != nil {
 		log.Printf("api:meta gagal: %v", err)
 		return s.fail(c, err)
 	}
-	return c.JSON(http.StatusOK, res)
+	return c.Status(http.StatusOK).JSON(res)
 }
 
 // apiStreams: daftar stream hasil scraping embedmaster untuk satu TMDB id
 // (movie) atau satu episode tv. Fetch/dekripsi terjadi di Go (internal/em).
-func (s *Server) apiStreams(c *celeris.Context) error {
+func (s *Server) apiStreams(c *fiber.Ctx) error {
 	tab := c.Query("tab")
 	id := strings.TrimSpace(c.Query("id"))
 	if (tab != "movie" && tab != "tv") || id == "" {
@@ -79,7 +79,7 @@ func (s *Server) apiStreams(c *celeris.Context) error {
 		}
 		tv = &em.TVEpisode{Season: ses, Episode: epi}
 	}
-	res, err := s.em.Streams(c.Context(), tab, id, tv)
+	res, err := s.em.Streams(c.UserContext(), tab, id, tv)
 	if err != nil {
 		log.Printf("api:streams gagal: %v", err)
 		return s.fail(c, err)
@@ -115,14 +115,14 @@ func (s *Server) apiStreams(c *celeris.Context) error {
 		}
 	}
 	s.logs.OKf("Daftar stream siap · %d dari %d server bisa diputar", playable, len(res))
-	return c.JSON(http.StatusOK, map[string]any{"id": id, "tab": tab, "servers": res})
+	return c.Status(http.StatusOK).JSON(map[string]any{"id": id, "tab": tab, "servers": res})
 }
 
 // apiSubtitles: cari subtitle subdl untuk judul yang sedang dibuka. Nama+tahun
 // diambil dari meta supaya autocomplete subdl dapat query yang tepat; tv ikut
 // memilih musim + episode. Tiap permintaan fresh (tanpa cache): tautan unduh
 // yang dikembalikan berasal dari halaman yang baru diambil.
-func (s *Server) apiSubtitles(c *celeris.Context) error {
+func (s *Server) apiSubtitles(c *fiber.Ctx) error {
 	tab, id := c.Query("tab"), strings.TrimSpace(c.Query("id"))
 	if (tab != "movie" && tab != "tv") || !strings.HasPrefix(id, "tt") {
 		return errJSON(c, http.StatusBadRequest, "subtitles harus ?tab=movie|tv&id=<imdb-id>")
@@ -139,7 +139,7 @@ func (s *Server) apiSubtitles(c *celeris.Context) error {
 	if s.sub == nil {
 		return errJSON(c, http.StatusServiceUnavailable, "pencarian subtitle tidak aktif")
 	}
-	meta, err := s.tmdb.Meta(c.Context(), tab, id)
+	meta, err := s.tmdb.Meta(c.UserContext(), tab, id)
 	if err != nil {
 		return s.fail(c, err)
 	}
@@ -147,7 +147,7 @@ func (s *Server) apiSubtitles(c *celeris.Context) error {
 	if c.Query("refresh") != "" {
 		search = s.sub.SearchFresh
 	}
-	subs, err := search(c.Context(), tab, meta.Name, meta.Year, season, episode)
+	subs, err := search(c.UserContext(), tab, meta.Name, meta.Year, season, episode)
 	if err != nil {
 		log.Printf("api:subtitles gagal: %v", err)
 		return s.fail(c, err)
@@ -166,12 +166,12 @@ func (s *Server) apiSubtitles(c *celeris.Context) error {
 	}
 	subs = out
 	s.logs.OKf("Subtitle siap · %d pilihan", len(subs))
-	return c.JSON(http.StatusOK, map[string]any{"subtitles": subs})
+	return c.Status(http.StatusOK).JSON(map[string]any{"subtitles": subs})
 }
 
 // apiSubtitleFile mengubah zip subtitle subdl jadi VTT siap track: entri
 // .srt/.vtt pertama, header WEBVTT, lalu timestamp dinormalkan.
-func (s *Server) apiSubtitleFile(c *celeris.Context) error {
+func (s *Server) apiSubtitleFile(c *fiber.Ctx) error {
 	raw, ok := s.res.Load(c.Query("u"))
 	if !ok {
 		return errJSON(c, http.StatusNotFound, "subtitle tidak ada")
@@ -180,7 +180,7 @@ func (s *Server) apiSubtitleFile(c *celeris.Context) error {
 	if err != nil || (target.Scheme != "http" && target.Scheme != "https") {
 		return errJSON(c, http.StatusBadRequest, "URL subtitle tidak valid")
 	}
-	ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(c.UserContext(), 30*time.Second)
 	defer cancel()
 	res, err := subHTTP.R().SetContext(ctx).SetDoNotParseResponse(true).
 		SetHeader("User-Agent", "Mozilla/5.0 zanime").Get(raw)
@@ -202,13 +202,14 @@ func (s *Server) apiSubtitleFile(c *celeris.Context) error {
 	}
 	out := srtToVTT(text)
 	s.logs.OKf("Subtitle subdl siap · %d cue", strings.Count(out, "-->"))
-	return c.Blob(http.StatusOK, "text/vtt; charset=utf-8", []byte(out))
+	c.Set("Content-Type", "text/vtt; charset=utf-8")
+	return c.Status(http.StatusOK).Send([]byte(out))
 }
 
 // apiTranslate menerjemahkan subtitle milik player (slug /s/…) ke bahasa lain.
 // Browser tidak pernah menghubungi penyedia terjemahan: permintaan dan cache
 // ada di server, jadi hasil yang sama kembali seketika.
-func (s *Server) apiTranslate(c *celeris.Context) error {
+func (s *Server) apiTranslate(c *fiber.Ctx) error {
 	u := strings.TrimSpace(c.Query("u"))
 	if u == "" {
 		return errJSON(c, http.StatusBadRequest, "butuh ?u=<slug subtitle>")
@@ -221,9 +222,9 @@ func (s *Server) apiTranslate(c *celeris.Context) error {
 	if !ok {
 		return errJSON(c, http.StatusNotFound, "subtitle tidak ada")
 	}
-	to := c.QueryDefault("to", "id")
-	from := c.QueryDefault("from", "en")
-	ctx, cancel := context.WithTimeout(c.Context(), 2*time.Minute)
+	to := c.Query("to", "id")
+	from := c.Query("from", "en")
+	ctx, cancel := context.WithTimeout(c.UserContext(), 2*time.Minute)
 	defer cancel()
 	body, err := fetchSubtitleText(ctx, raw)
 	if err != nil {
@@ -240,7 +241,7 @@ func (s *Server) apiTranslate(c *celeris.Context) error {
 		note = " · cache"
 	}
 	s.logs.OKf("Terjemahan %s siap · %d cue%s", to, res.Cues, note)
-	return c.JSON(http.StatusOK, map[string]any{
+	return c.Status(http.StatusOK).JSON(map[string]any{
 		"url":    "/api/translate/file?c=" + res.Key,
 		"cues":   res.Cues,
 		"cached": res.Cached,
@@ -262,12 +263,13 @@ func subSlug(u string) string {
 }
 
 // apiTranslateFile menyajikan VTT hasil terjemahan yang tersimpan di server.
-func (s *Server) apiTranslateFile(c *celeris.Context) error {
+func (s *Server) apiTranslateFile(c *fiber.Ctx) error {
 	vtt, ok := translate.Cached(c.Query("c"))
 	if !ok {
 		return errJSON(c, http.StatusNotFound, "terjemahan tidak ada")
 	}
-	return c.Blob(http.StatusOK, "text/vtt; charset=utf-8", []byte(vtt))
+	c.Set("Content-Type", "text/vtt; charset=utf-8")
+	return c.Status(http.StatusOK).Send([]byte(vtt))
 }
 
 // fetchSubtitleText mengambil subtitle dari host video lewat slug pool sebagai

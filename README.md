@@ -8,7 +8,7 @@ Alur: **cari (Cinemeta) → pilih server (embedmaster) → putar lewat `/s/<slug
 Scraping, kredensial, dan dekripsi embedmaster di Go (`internal/em`); URL media
 panjang disembunyikan di balik slug pendek.
 
-Stack: [celeris](https://github.com/goceleris/celeris) (HTTP engine + router),
+Stack: [fiber v2](https://github.com/gofiber/fiber) (HTTP engine + router),
 [resty v2](https://github.com/go-resty/resty) (HTTP client),
 [godotenv](https://github.com/joho/godotenv) (`.env`), React 19 + Vite +
 Vidstack (UI), hls.js (HLS).
@@ -17,7 +17,7 @@ Vidstack (UI), hls.js (HLS).
 
 ```
 main.go            embed web/dist + panggil internal/app
-internal/app       server celeris: route, handler web/api/proxy, rate limit
+internal/app       server fiber: route, handler web/api/proxy, rate limit
 internal/tmdb      Cinemeta (cari + meta), cache tmp/tmdb
 internal/em        scrape embedmaster: gerbang → kredensial → feed → resolve
 internal/subdl     subtitle subdl, cache tmp/subdl

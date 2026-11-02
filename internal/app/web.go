@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goceleris/celeris"
+	"github.com/gofiber/fiber/v2"
 )
 
 // pageOG adalah tag og:/twitter: yang diisi saat HTML dilayani. Crawler
@@ -24,7 +24,7 @@ type pageOG struct {
 
 const siteDescription = "Cari judul, pilih server, lalu putar film dan serial langsung di browser. Tanpa unduhan dan tanpa aplikasi tambahan."
 
-func (s *Server) index(c *celeris.Context) error {
+func (s *Server) index(c *fiber.Ctx) error {
 	// Not FileFromFS: http.FileServer redirects *index.html to ".", which
 	// loops forever on "/". Serve the bytes directly instead.
 	data, err := fs.ReadFile(s.web, "index.html")
@@ -34,14 +34,11 @@ func (s *Server) index(c *celeris.Context) error {
 	// og:url / og:image harus absolut; origin diisi saat halaman dilayani
 	// (X-Forwarded-Proto dipakai kalau ada reverse proxy seperti cPanel).
 	scheme := "http"
-	if c.IsTLS() || strings.EqualFold(strings.Split(c.Header("X-Forwarded-Proto"), ",")[0], "https") {
+	if c.Secure() || strings.EqualFold(strings.Split(c.Get("X-Forwarded-Proto"), ",")[0], "https") {
 		scheme = "https"
 	}
-	origin := scheme + "://" + c.Host()
-	uri := c.Path()
-	if q := c.RawQuery(); q != "" {
-		uri += "?" + q
-	}
+	origin := scheme + "://" + c.Hostname()
+	uri := c.OriginalURL()
 
 	og := pageOG{title: "kafuu — Streaming Film & Seri", desc: siteDescription, image: origin + "/og.png"}
 	if t := s.titleOG(c); t != nil {
@@ -58,17 +55,18 @@ func (s *Server) index(c *celeris.Context) error {
 	} {
 		data = []byte(strings.ReplaceAll(string(data), v.ph, html.EscapeString(v.val)))
 	}
-	return c.Blob(http.StatusOK, "text/html; charset=utf-8", data)
+	c.Set("Content-Type", "text/html; charset=utf-8")
+	return c.Status(http.StatusOK).Send(data)
 }
 
 // titleOG menyusun tag OG dari judul di URL (?tab=&id=&s=&e=); nil bila tidak
 // ada judul valid atau meta gagal diambil (halaman memakai tag default).
-func (s *Server) titleOG(c *celeris.Context) *pageOG {
+func (s *Server) titleOG(c *fiber.Ctx) *pageOG {
 	tab, id := c.Query("tab"), strings.TrimSpace(c.Query("id"))
 	if s.tmdb == nil || (tab != "movie" && tab != "tv") || !strings.HasPrefix(id, "tt") {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.UserContext(), 5*time.Second)
 	defer cancel()
 	m, err := s.tmdb.Meta(ctx, tab, id)
 	if err != nil || m.Name == "" {
@@ -104,7 +102,7 @@ func posterOG(poster string) string {
 // spaFallback: path GET yang tak dikenal dapat index.html (React Router yang
 // menampilkan 404), kecuali path API/fetch yang salah tulis — itu tetap JSON
 // 404 supaya error di sisi client mudah dibedakan.
-func (s *Server) spaFallback(c *celeris.Context) error {
+func (s *Server) spaFallback(c *fiber.Ctx) error {
 	p := c.Path()
 	if strings.Contains(p, "/api/") || p == "/healthz" || strings.HasPrefix(p, "/s/") {
 		return errJSON(c, http.StatusNotFound, "not found")
@@ -115,7 +113,7 @@ func (s *Server) spaFallback(c *celeris.Context) error {
 // webFile menyajikan berkas statis dist. Varian praskompresi
 // (<nama>.br/.zst/.gz) dipakai bila klien menerimanya, jadi server tidak perlu
 // mengompres di jalur permintaan.
-func (s *Server) webFile(c *celeris.Context) error {
+func (s *Server) webFile(c *fiber.Ctx) error {
 	name := strings.TrimPrefix(c.Path(), "/")
 	if name == "" || name == "index.html" {
 		return s.index(c)
@@ -124,15 +122,16 @@ func (s *Server) webFile(c *celeris.Context) error {
 	// permintaan (judul/poster OG), jadi versi statisnya selalu basi.
 	data, enc, err := s.readAsset(c, name)
 	if err != nil {
-		return c.String(http.StatusNotFound, "tidak ada")
+		return c.Status(http.StatusNotFound).SendString("tidak ada")
 	}
 	// Vary selalu dikirim: respons berbeda menurut Accept-Encoding, jadi
 	// cache perantara tidak boleh mencampur keduanya.
-	c.SetHeader("Vary", "Accept-Encoding")
+	c.Set("Vary", "Accept-Encoding")
 	if enc != "" {
-		c.SetHeader("Content-Encoding", enc)
+		c.Set("Content-Encoding", enc)
 	}
-	return c.Blob(http.StatusOK, contentType(name), data)
+	c.Set("Content-Type", contentType(name))
+	return c.Status(http.StatusOK).Send(data)
 }
 
 // precompressedEncodings: urutan varian yang dipakai. Brotli dulu (paling
@@ -145,8 +144,8 @@ var precompressedEncodings = []struct{ suffix, enc string }{
 
 // readAsset membaca aset dist, memilih varian praskompresi yang tersedia dan
 // didukung klien. index.html tidak lewat sini (isinya diisi per permintaan).
-func (s *Server) readAsset(c *celeris.Context, name string) (data []byte, enc string, err error) {
-	accept := c.Header("Accept-Encoding")
+func (s *Server) readAsset(c *fiber.Ctx, name string) (data []byte, enc string, err error) {
+	accept := c.Get("Accept-Encoding")
 	for _, v := range precompressedEncodings {
 		if !acceptsEncoding(accept, v.enc) {
 			continue

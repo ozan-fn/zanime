@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"github.com/goceleris/celeris"
-	"github.com/goceleris/celeris/middleware/websocket"
+	"github.com/gofiber/contrib/websocket"
+	"github.com/gofiber/fiber/v2"
 
 	"zanime/internal/logbus"
 )
@@ -54,8 +54,8 @@ const (
 // ditulis ulang: setiap URI (playlist turun / segmen / URI= di tag)
 // didaftarkan jadi slug /s/<slug>, karena player tidak bisa meminta playlist
 // turunan langsung ke host video tanpa Referer.
-func (s *Server) streamProxy(c *celeris.Context) error {
-	slug := c.Param("slug")
+func (s *Server) streamProxy(c *fiber.Ctx) error {
+	slug := c.Params("slug")
 	raw, ok := s.res.Load(slug)
 	if !ok {
 		return errJSON(c, http.StatusNotFound, "slug tidak ada")
@@ -66,10 +66,10 @@ func (s *Server) streamProxy(c *celeris.Context) error {
 	}
 	px := "px:" + slug
 
-	req := proxyClient.R().SetContext(c.Context()).SetDoNotParseResponse(true).
+	req := proxyClient.R().SetContext(c.UserContext()).SetDoNotParseResponse(true).
 		SetHeader("User-Agent", mediaUA).
 		SetHeader("Referer", videoReferer)
-	if rng := c.Header("Range"); rng != "" {
+	if rng := c.Get("Range"); rng != "" {
 		req.SetHeader("Range", rng)
 	}
 
@@ -84,14 +84,16 @@ func (s *Server) streamProxy(c *celeris.Context) error {
 		return errJSON(c, http.StatusBadGateway, "gagal menghubungi upstream: "+err.Error())
 	}
 	body := res.RawBody()
-	defer func() { _ = body.Close() }()
+	streaming := false
+	defer func() {
+		if !streaming {
+			_ = body.Close()
+		}
+	}()
 	if res.StatusCode() < 200 || res.StatusCode() >= 400 {
 		log.Printf("%s: media ditolak server sumber · HTTP %s", px, res.Status())
 		return errJSON(c, http.StatusBadGateway, fmt.Sprintf("upstream HTTP %s", res.Status()))
 	}
-
-	out := c.StreamWriter()
-	defer func() { _ = out.Close() }()
 
 	if isPlaylist(res.Header().Get("Content-Type"), target.Path) {
 		data, err := io.ReadAll(body)
@@ -107,15 +109,9 @@ func (s *Server) streamProxy(c *celeris.Context) error {
 		if vod {
 			cache = "public, max-age=600"
 		}
-		headers := [][2]string{
-			{"Content-Type", "application/vnd.apple.mpegurl"},
-			{"Cache-Control", cache},
-		}
-		if err := out.WriteHeader(http.StatusOK, headers); err != nil {
-			return err
-		}
-		_, err = out.Write([]byte(s.rewritePlaylist(target, string(data))))
-		return err
+		c.Set("Content-Type", "application/vnd.apple.mpegurl")
+		c.Set("Cache-Control", cache)
+		return c.Status(http.StatusOK).Send([]byte(s.rewritePlaylist(target, string(data))))
 	}
 
 	// Subtitle diteruskan apa adanya: timestamp dari sumber dipakai langsung,
@@ -127,61 +123,55 @@ func (s *Server) streamProxy(c *celeris.Context) error {
 		}
 		s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelOK, Text: fmt.Sprintf(
 			"Subtitle VTT siap · %d cue", strings.Count(string(data), "-->"))})
-		if err := out.WriteHeader(http.StatusOK, [][2]string{{"Content-Type", "text/vtt; charset=utf-8"}}); err != nil {
-			return err
-		}
-		_, err = out.Write(data)
-		return err
+		c.Set("Content-Type", "text/vtt; charset=utf-8")
+		return c.Status(http.StatusOK).Send(data)
 	}
 
-	headers := make([][2]string, 0, 4)
 	for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"} {
 		if v := res.Header().Get(h); v != "" {
-			headers = append(headers, [2]string{h, v})
+			c.Set(h, v)
 		}
 	}
 	s.logs.Emit(logbus.Event{ID: px, Level: logbus.LevelOK, Text: fmt.Sprintf(
 		"Media terkirim · HTTP %s · %s", res.Status(), sizeLabel(res.Header().Get("Content-Length")))})
-	if err := out.WriteHeader(res.StatusCode(), headers); err != nil {
-		return err
-	}
+	c.Status(res.StatusCode())
 	if c.Method() == http.MethodHead {
 		return nil
 	}
-	if _, err := io.Copy(out, body); err != nil {
-		return err
+	// Body stream ditutup fasthttp setelah selesai dikirim, jadi jangan
+	// ditutup di sini.
+	size := -1
+	if n, err := strconv.Atoi(res.Header().Get("Content-Length")); err == nil {
+		size = n
 	}
-	return nil
+	streaming = true
+	return c.SendStream(body, size)
 }
 
 // logsRoute menyiarkan log realtime ke browser lewat websocket: riwayat
 // terakhir dulu, lalu baris baru. Dipakai panel log di depan player.
-func (s *Server) logsRoute() celeris.HandlerFunc {
-	return websocket.New(websocket.Config{
-		// Aplikasi satu-origin; dev Vite juga boleh menyambung lewat proxy.
-		CheckOrigin: func(*celeris.Context) bool { return true },
-		Handler: func(conn *websocket.Conn) {
-			if s.logs == nil {
-				return
-			}
-			ch, cancel := s.logs.Subscribe()
-			defer cancel()
-			// Pembaca: mendeteksi klien putus supaya langganan dilepas dan
-			// handler tidak menggantung saat server dimatikan.
-			go func() {
-				for {
-					if _, _, err := conn.ReadMessage(); err != nil {
-						cancel()
-						return
-					}
-				}
-			}()
-			for ev := range ch {
-				if err := conn.WriteJSON(ev); err != nil {
+func (s *Server) logsRoute() fiber.Handler {
+	return websocket.New(func(conn *websocket.Conn) {
+		if s.logs == nil {
+			return
+		}
+		ch, cancel := s.logs.Subscribe()
+		defer cancel()
+		// Pembaca: mendeteksi klien putus supaya langganan dilepas dan
+		// handler tidak menggantung saat server dimatikan.
+		go func() {
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					cancel()
 					return
 				}
 			}
-		},
+		}()
+		for ev := range ch {
+			if err := conn.WriteJSON(ev); err != nil {
+				return
+			}
+		}
 	})
 }
 

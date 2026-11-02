@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goceleris/celeris"
-	"github.com/goceleris/celeris/middleware/recovery"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 
 	"zanime/internal/em"
 	"zanime/internal/logbus"
@@ -46,34 +46,35 @@ func New(webRoot fs.FS) *Server {
 	return &Server{web: webRoot, tmdb: tmdb.New(), em: emc, res: res, logs: logs, sub: subdl.New(), tr: translate.New()}
 }
 
-// Register memasang seluruh route. Semua yang menyentuh jaringan ditandai
-// Async: handler inline berjalan di event loop, jadi panggilan TMDB/scrape
-// tidak boleh memblokirnya.
-func (s *Server) Register(mux *celeris.Server) {
-	mux.Use(recovery.New(), rateLimit(maxRPS))
+// Register memasang seluruh route. Fiber menjalankan tiap permintaan di
+// goroutine sendiri, jadi panggilan TMDB/scrape tidak memblokir permintaan lain.
+func (s *Server) Register(app *fiber.App) {
+	app.Use(recover.New(), rateLimit(maxRPS))
 
-	mux.GET("/", s.index)
-	mux.GET("/assets/*filepath", s.webFile)
+	app.Get("/", s.index)
+	app.Get("/assets/*", s.webFile)
 	for _, p := range staticFiles {
-		mux.GET(p, s.webFile)
+		app.Get(p, s.webFile)
 	}
+
+	app.Get("/healthz", func(c *fiber.Ctx) error { return c.SendString("ok") })
+
+	app.Get("/api/search", s.apiSearch)
+	app.Get("/api/meta/:tab/:id", s.apiMeta)
+	app.Get("/api/streams", s.apiStreams)
+	app.Get("/api/subtitles", s.apiSubtitles)
+	app.Get("/api/subtitles/file", s.apiSubtitleFile)
+	app.Get("/api/translate", s.apiTranslate)
+	app.Get("/api/translate/file", s.apiTranslateFile)
+	app.Get("/api/logs", s.logsRoute())
+
+	app.Get("/s/:slug", s.streamProxy)
+	app.Head("/s/:slug", s.streamProxy)
 	// SPA fallback: React Router punya route `/` dan `*` (404), jadi path lain
 	// tetap dapat index.html; endpoint API yang salah tulis tetap JSON 404.
-	mux.NotFound(s.spaFallback)
-
-	mux.GET("/healthz", func(c *celeris.Context) error { return c.String(http.StatusOK, "ok") })
-
-	mux.GET("/api/search", s.apiSearch).Async()
-	mux.GET("/api/meta/:tab/:id", s.apiMeta).Async()
-	mux.GET("/api/streams", s.apiStreams).Async()
-	mux.GET("/api/subtitles", s.apiSubtitles).Async()
-	mux.GET("/api/subtitles/file", s.apiSubtitleFile).Async()
-	mux.GET("/api/translate", s.apiTranslate).Async()
-	mux.GET("/api/translate/file", s.apiTranslateFile).Async()
-	mux.GET("/api/logs", s.logsRoute())
-
-	mux.GET("/s/:slug", s.streamProxy).Async()
-	mux.HEAD("/s/:slug", s.streamProxy).Async()
+	// Didaftarkan terakhir: middleware yang tidak memanggil Next menghentikan
+	// rantai, jadi route di atasnya harus sudah terpasang.
+	app.Use(s.spaFallback)
 }
 
 // staticFiles adalah berkas non-aset yang disajikan dari root web/dist.
@@ -87,13 +88,13 @@ const maxRPS = 200
 
 // rateLimit adalah token bucket sederhana: bucket penuh = rps (burst maksimal
 // satu detik), isi ulang mengikuti waktu. Kelebihan dibalas 429.
-func rateLimit(rps float64) celeris.HandlerFunc {
+func rateLimit(rps float64) fiber.Handler {
 	var (
 		mu     sync.Mutex
 		tokens = rps
 		last   = time.Now()
 	)
-	return func(c *celeris.Context) error {
+	return func(c *fiber.Ctx) error {
 		now := time.Now()
 		mu.Lock()
 		tokens += now.Sub(last).Seconds() * rps
@@ -107,7 +108,7 @@ func rateLimit(rps float64) celeris.HandlerFunc {
 		}
 		mu.Unlock()
 		if !ok {
-			c.SetHeader("Retry-After", "1")
+			c.Set("Retry-After", "1")
 			return errJSON(c, http.StatusTooManyRequests, "terlalu banyak permintaan")
 		}
 		return c.Next()
@@ -115,12 +116,12 @@ func rateLimit(rps float64) celeris.HandlerFunc {
 }
 
 // errJSON mengirim {"error": "..."} seperti gin.H{"error": ...} dulu.
-func errJSON(c *celeris.Context, status int, msg string) error {
-	return c.JSON(status, map[string]string{"error": msg})
+func errJSON(c *fiber.Ctx, status int, msg string) error {
+	return c.Status(status).JSON(map[string]string{"error": msg})
 }
 
 // fail memetakan error handler ke status 502/504.
-func (s *Server) fail(c *celeris.Context, err error) error {
+func (s *Server) fail(c *fiber.Ctx, err error) error {
 	status := http.StatusBadGateway
 	if errors.Is(err, context.DeadlineExceeded) {
 		status = http.StatusGatewayTimeout

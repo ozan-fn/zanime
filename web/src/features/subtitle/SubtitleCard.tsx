@@ -10,11 +10,11 @@ import type { Sub, Subtitle } from '@/lib/types'
  * lama. Subtitle subdl hanya dipasang saat diklik ("pakai").
  *
  * Subtitle bawaan server yang sedang diputar ikut tampil di paling atas
- * (bertanda "player") dan hilang sendiri saat ganti server, karena daftarnya
- * berasal dari stream yang aktif. Subtitle Inggris punya tombol terjemahkan:
- * permintaan dikirim ke server (`/api/translate`), hasilnya ditandai "hasil
- * translate" dan di-cache di server sehingga kembali seketika saat diminta
- * lagi. */
+ * (bertanda "player"). Saat ganti server, daftarnya dipertahankan bila stream
+ * baru tidak punya subtitle, dan digantikan bila stream baru punya. Subtitle
+ * Inggris punya tombol terjemahkan: permintaan dikirim ke server
+ * (`/api/translate`), hasilnya ditandai "hasil translate" dan di-cache di
+ * server sehingga kembali seketika saat diminta lagi. */
 
 export type SubtitleMedia = {
   tab: 'movie' | 'tv'

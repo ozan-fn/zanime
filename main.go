@@ -6,9 +6,9 @@ import (
 	"io/fs"
 	"log"
 
-	"github.com/goceleris/celeris"
+	"github.com/gofiber/fiber/v2"
 
-	"zanime/internal/app"
+	webapp "zanime/internal/app"
 	"zanime/internal/config"
 )
 
@@ -27,11 +27,11 @@ func main() {
 	addr := flag.String("addr", "0.0.0.0:"+config.String("PORT", "8080"), "HTTP listen address")
 	flag.Parse()
 
-	mux := celeris.New(celeris.Config{Addr: *addr})
-	app.New(webRoot).Register(mux)
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	webapp.New(webRoot).Register(app)
 
 	log.Printf("listening on %s", *addr)
-	if err := mux.Start(); err != nil {
+	if err := app.Listen(*addr); err != nil {
 		log.Fatal(err)
 	}
 }

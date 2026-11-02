@@ -45,7 +45,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const clearStatus = useCallback(() => setStatusRaw(null), [])
 
   const play = useCallback((p: Playing) => {
-    if (p && p.src) setPlaying(p)
+    if (!p?.src) return
+    setPlaying((prev) => {
+      // Ganti server pada konten yang sama: stream baru tanpa subtitle tidak
+      // boleh menghapus subtitle stream sebelumnya; stream baru yang punya
+      // subtitle menggantikan daftar lama. Ganti judul/episode selalu mulai
+      // dari daftar baru.
+      if (p.subs?.length || prev?.media?.tab !== p.media?.tab || prev?.media?.id !== p.media?.id ||
+          prev?.media?.season !== p.media?.season || prev?.media?.episode !== p.media?.episode) {
+        return p
+      }
+      return { ...p, subs: prev?.subs }
+    })
   }, [])
   const stop = useCallback(() => setPlaying(null), [])
 
