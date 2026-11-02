@@ -3,45 +3,24 @@
 package config
 
 import (
-	"bufio"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/joho/godotenv"
 )
 
-// LoadDotEnv reads KEY=VALUE lines from path and sets them in the process
-// environment. Variables already present in the environment win, and a
-// missing file is not an error.
+// LoadDotEnv membaca KEY=VALUE dari path lewat godotenv. Variabel yang sudah
+// ada di environment menang (godotenv tidak menimpanya), dan berkas yang tidak
+// ada bukan error.
 func LoadDotEnv(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
+	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
-	defer func() { _ = f.Close() }()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		name, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		name = strings.TrimSpace(name)
-		value = strings.Trim(strings.TrimSpace(value), `"'`)
-		if name == "" {
-			continue
-		}
-		if _, exists := os.LookupEnv(name); !exists {
-			_ = os.Setenv(name, value)
-		}
-	}
-	return scanner.Err()
+	return godotenv.Load(path)
 }
 
 // Int returns a positive integer from the environment, or fallback.

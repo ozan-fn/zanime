@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -80,6 +79,35 @@ func TestStreamsMovieHappyPath(t *testing.T) {
 	}
 	if s.headers.Get("Referer") == "" {
 		t.Fatal("resolve tanpa Referer halaman player")
+	}
+}
+
+// TestStreamsEmbedServerMarkedFailed: resolve yang mengembalikan halaman
+// pemutar HTML pihak lain (kind "embed") bukan media — server ditandai gagal,
+// tidak disajikan ke player sebagai video.
+func TestStreamsEmbedServerMarkedFailed(t *testing.T) {
+	t.Chdir(t.TempDir())
+	s := newSite(t)
+	s.setFeeds(
+		feedRow{Type: "server", SourceName: "Abyss", SourceURL: "https://src/embed"},
+		feedRow{Type: "server", SourceName: "Premium Nepu", SourceURL: "https://src/direct"},
+	)
+	s.plain = func(src string) (string, bool) {
+		if src == "https://src/embed" {
+			return `{"ok":true,"kind":"embed","url":"https://abyssplayer.com/_abc"}`, true
+		}
+		return `{"ok":true,"kind":"direct","url":"` + s.media("a.m3u8") + `","type":"hls"}`, true
+	}
+
+	servers, err := newClient(s).Streams(t.Context(), "movie", "557", nil)
+	if err != nil {
+		t.Fatalf("Streams: %v", err)
+	}
+	if servers[0].URL != "" || servers[0].Err == "" {
+		t.Fatalf("server embed harus ber-Err tanpa URL: %+v", servers[0])
+	}
+	if servers[1].URL != s.media("a.m3u8") || servers[1].Err != "" {
+		t.Fatalf("server direct harus tetap bisa diputar: %+v", servers[1])
 	}
 }
 
@@ -305,29 +333,6 @@ func TestFeedEmpty(t *testing.T) {
 	if _, err := c.feed(t.Context(), cfg, s.srv.URL); err == nil || !strings.Contains(err.Error(), "feed server kosong") {
 		t.Fatalf("error = %v", err)
 	}
-}
-
-// TestParallelWorkerPool: fn dipanggil tepat sekali untuk tiap indeks, worker
-// dibatasi, dan n == 0 tidak menjalankan apa pun.
-func TestParallelWorkerPool(t *testing.T) {
-	const n = 50
-	var mu sync.Mutex
-	seen := map[int]int{}
-	parallel(n, 4, func(i int) {
-		mu.Lock()
-		seen[i]++
-		mu.Unlock()
-	})
-	if len(seen) != n {
-		t.Fatalf("indeks terlihat = %d, want %d", len(seen), n)
-	}
-	for i, c := range seen {
-		if c != 1 {
-			t.Fatalf("indeks %d dipanggil %d kali", i, c)
-		}
-	}
-	parallel(0, 4, func(int) { t.Fatal("n=0 harus no-op") })
-	parallel(2, 8, func(int) {}) // workers > n tidak masalah
 }
 
 // TestResolveRunsInParallel: resolve.php untuk beberapa server dijalankan

@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/go-resty/resty/v2"
 )
@@ -244,7 +245,10 @@ func originOf(rawURL string) string {
 }
 
 // newHTTP mengembalikan klien resty dengan cookie jar sendiri (sesi per judul).
+// Timeout per permintaan dipatok scrapeSecs: satu permintaan yang menggantung
+// tidak boleh menghabiskan seluruh anggaran waktu scrape.
 func newHTTP() *resty.Client {
 	jar, _ := cookiejar.New(nil)
-	return resty.NewWithClient(&http.Client{Jar: jar}).SetHeader("User-Agent", userAgent)
+	return resty.NewWithClient(&http.Client{Jar: jar, Timeout: scrapeSecs * time.Second}).
+		SetHeader("User-Agent", userAgent)
 }

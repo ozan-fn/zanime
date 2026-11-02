@@ -54,4 +54,8 @@ export type Subtitle = {
   episodeFrom?: number
   episodeTo?: number
   url: string
+  // Sumber baris: bawaan stream (player) atau hasil pencarian subdl.
+  source?: 'player' | 'subdl'
+  // Hasil terjemahan server (Indonesia).
+  translated?: boolean
 }

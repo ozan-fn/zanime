@@ -8,20 +8,23 @@ Alur: **cari (Cinemeta) → pilih server (embedmaster) → putar lewat `/s/<slug
 Scraping, kredensial, dan dekripsi embedmaster di Go (`internal/em`); URL media
 panjang disembunyikan di balik slug pendek.
 
-Stack: [chi v5](https://github.com/go-chi/chi) (HTTP server),
-[resty v2](https://github.com/go-resty/resty) (HTTP client), React 19 + Vite +
+Stack: [celeris](https://github.com/goceleris/celeris) (HTTP engine + router),
+[resty v2](https://github.com/go-resty/resty) (HTTP client),
+[godotenv](https://github.com/joho/godotenv) (`.env`), React 19 + Vite +
 Vidstack (UI), hls.js (HLS).
 
 ## Struktur
 
 ```
-main.go            chi server: API, proxy /s/<slug>, embed web/dist
+main.go            embed web/dist + panggil internal/app
+internal/app       server celeris: route, handler web/api/proxy, rate limit
 internal/tmdb      Cinemeta (cari + meta), cache tmp/tmdb
 internal/em        scrape embedmaster: gerbang → kredensial → feed → resolve
 internal/subdl     subtitle subdl, cache tmp/subdl
+internal/translate terjemahan subtitle (Indonesia) lewat Google, cache tmp/translate
 internal/resolve   slug /s/<slug> → URL media, peta tmp/resolve
 internal/logbus    hub log realtime (websocket)
-internal/config    loader .env
+internal/config    loader .env (godotenv)
 web/               React + TS (Vite), features/ + pages/
 ```
 
@@ -44,15 +47,13 @@ Backend, dibaca dari `.env` (contoh: `.env.example`); env proses menang:
 | Variabel | Default | Arti |
 |----------|---------|------|
 | `PORT` | `8080` | port HTTP |
-| `GOMAXPROCS` | `30` | batas paralelisme runtime, dipakai sebagai `min(NumCPU, 30)` |
 
 Nilai bawaan yang diubah dari default library/Go, semuanya di kode:
 
 | Bagian | Nilai | Lokasi |
 |--------|-------|--------|
-| Paralelisme runtime | `GOMAXPROCS=30`, bukan semua core (batas nproc cPanel/LVE, mis. 100) | `main.go` |
-| Resolve server | 6 worker serentak per scrape | `internal/em/em.go` |
-| Batas waktu scrape | 120 dtk; HTTP keluar 20 dtk; subtitle 20 dtk; zip subtitle 30 dtk | `internal/em`, `internal/tmdb`, `internal/subdl`, `main.go` |
+| Resolve server | semua server serentak (satu goroutine per server) | `internal/em/em.go` |
+| Batas waktu scrape | total 30 dtk; HTTP keluar 20 dtk; subtitle 20 dtk; zip subtitle 30 dtk | `internal/em`, `internal/tmdb`, `internal/subdl`, `main.go` |
 | TTL cache | tmdb 24 jam, em 15 mnt, subdl 10 mnt, resolve 6 jam | `internal/*` |
 | Riwayat log | server 200 baris, klien 400 baris | `internal/logbus`, `web/src/lib/logs.ts` |
 | Transport proxy media | HTTP/2 dipaksa, 256 idle conn / 64 per host, kompresi mati | `main.go` |
@@ -113,5 +114,3 @@ error), resolve (slug, TTL, prune), logbus, kontrak API + proxy + websocket di
   mengurangi frekuensinya.
 - Slug segmen hanya di memori, jadi stream yang sedang jalan putus setelah
   server restart (browser membaca ulang playlist induk).
-- `GOMAXPROCS` membatasi paralelisme, bukan jumlah thread OS secara keras;
-  untuk batas nproc cPanel, nilai 30 dari 100 memberi jarak aman.

@@ -23,12 +23,16 @@ import (
 const (
 	// URL stream hasil resolve punya masa berlaku; cache ./tmp pegang
 	// hasilnya cuma selama ini.
-	cacheDir   = "tmp/em"
-	cacheTTL   = 15 * time.Minute
-	scrapeSecs = 120
-	// resolveWorkers: berapa permintaan resolve.php serentak. Cukup untuk
-	// menyembunyikan latensi (~400 ms/server) tanpa membanjiri embedmaster.
-	resolveWorkers = 6
+	cacheDir = "tmp/em"
+	cacheTTL = 15 * time.Minute
+	// scrapeSecs: batas total scrape (halaman → feed → resolve). Di production
+	// satu judul selesai dalam hitungan detik; 30 dtk sudah gagal-cepat, tidak
+	// membuat pengguna menunggu menit-menitan.
+	scrapeSecs = 30
+	// kindEmbed: jawaban resolve yang URL-nya halaman pemutar HTML pihak lain
+	// (bukan berkas media). <video> tidak bisa memutarnya, jadi server ditandai
+	// gagal alih-alih menyajikan HTML sebagai video.
+	kindEmbed = "embed"
 )
 
 // Base adalah host halaman embed; dapat diganti test.
@@ -151,74 +155,54 @@ func (c *Client) scrape(ctx context.Context, tab, id string, tv *TVEpisode) ([]S
 		c.logf("feed", LogErr, "feed: %v", err)
 		return nil, err
 	}
-	c.logf("feed", LogOK, "feed: %d server (resolve %d paralel)", len(rows), resolveWorkers)
+	c.logf("feed", LogOK, "feed: %d server (resolve paralel)", len(rows))
 
-	// Resolve tiap server lewat worker pool (dibatasi resolveWorkers supaya
-	// tidak membanjiri embedmaster): berurutan 15 server bisa ~6 dtk, paralel
-	// ~1 dtk. Indeks dijaga supaya urutan server di UI tetap sama seperti feed.
+	// Resolve semua server serentak: satu goroutine per server, tanpa batas
+	// worker. Indeks dijaga supaya urutan server di UI tetap sama seperti feed.
 	// Hasil resolve langsung ditampilkan (tanpa probe 128 KiB); jenis stream
 	// ditebak dari jawaban resolve + ekstensi URL.
 	servers := make([]Server, len(rows))
-	parallel(len(rows), resolveWorkers, func(i int) {
-		row := rows[i]
-		sid := fmt.Sprintf("srv:%d", i+1)
-		s := Server{Name: row.SourceName}
-		c.logf(sid+":resolve", LogInfo, "Menyiapkan server %d dari %d…", i+1, len(rows))
-		data := c.resolve(ctx, cfg, playerURL, row)
-		if !data.OK {
-			c.logf(sid+":resolve", LogErr, "Server %d gagal disiapkan", i+1)
-			s.Err = "server gagal resolve"
+	var wg sync.WaitGroup
+	for i, row := range rows {
+		wg.Add(1)
+		go func(i int, row feedRow) {
+			defer wg.Done()
+			sid := fmt.Sprintf("srv:%d", i+1)
+			s := Server{Name: row.SourceName}
+			c.logf(sid+":resolve", LogInfo, "Menyiapkan server %d dari %d…", i+1, len(rows))
+			data := c.resolve(ctx, cfg, playerURL, row)
+			if !data.OK {
+				c.logf(sid+":resolve", LogErr, "Server %d gagal disiapkan", i+1)
+				s.Err = "server gagal resolve"
+				servers[i] = s
+				return
+			}
+			if data.Kind == kindEmbed {
+				c.logf(sid+":resolve", LogErr, "Server %d hanya halaman embed (bukan media langsung)", i+1)
+				s.Err = "server berupa halaman embed"
+				servers[i] = s
+				return
+			}
+			// Ekstensi URL lebih dipercaya daripada tebakan resolve (banyak server
+			// melaporkan "progressive" padahal URL-nya playlist).
+			kind := kindOf(data.Type, data.URL)
+			c.logf(sid+":resolve", LogOK, "Server %d siap · %s", i+1, strings.ToUpper(kind))
+			s.Type = kind
+			s.Quality = data.Quality
+			s.Qualities = data.Qualities
+			s.Subs = data.Subtitles
+			s.URL = data.URL
+			c.logf(sid+":ready", LogOK, "Server %d siap diputar · %s · %d kualitas · %d subtitle",
+				i+1, strings.ToUpper(kind), len(data.Qualities), len(data.Subtitles))
 			servers[i] = s
-			return
-		}
-		// Ekstensi URL lebih dipercaya daripada tebakan resolve (banyak server
-		// melaporkan "progressive" padahal URL-nya playlist).
-		kind := kindOf(data.Type, data.URL)
-		c.logf(sid+":resolve", LogOK, "Server %d siap · %s", i+1, strings.ToUpper(kind))
-		s.Type = kind
-		s.Quality = data.Quality
-		s.Qualities = data.Qualities
-		s.Subs = data.Subtitles
-		s.URL = data.URL
-		c.logf(sid+":ready", LogOK, "Server %d siap diputar · %s · %d kualitas · %d subtitle",
-			i+1, strings.ToUpper(kind), len(data.Qualities), len(data.Subtitles))
-		servers[i] = s
-	})
+		}(i, row)
+	}
+	wg.Wait()
 
 	if len(servers) == 0 {
 		return nil, fmt.Errorf("tidak ada server yang dikembalikan")
 	}
 	return servers, nil
-}
-
-// parallel menjalankan fn(i) untuk i = 0..n-1 memakai `workers` goroutine
-// (worker pool): pekerjaan dibagi lewat channel, bukan satu goroutine per item.
-func parallel(n, workers int, fn func(i int)) {
-	if n <= 0 {
-		return
-	}
-	if workers < 1 {
-		workers = 1
-	}
-	if workers > n {
-		workers = n
-	}
-	jobs := make(chan int)
-	var wg sync.WaitGroup
-	wg.Add(workers)
-	for range workers {
-		go func() {
-			defer wg.Done()
-			for i := range jobs {
-				fn(i)
-			}
-		}()
-	}
-	for i := range n {
-		jobs <- i
-	}
-	close(jobs)
-	wg.Wait()
 }
 
 func typeOf(t string) string {

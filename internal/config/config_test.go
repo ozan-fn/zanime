@@ -12,7 +12,7 @@ func TestLoadDotEnv(t *testing.T) {
 	t.Cleanup(func() { _ = os.Unsetenv(name) })
 
 	path := filepath.Join(t.TempDir(), ".env")
-	content := "# comment\n\n" + name + "=42\nIGNORED LINE\n"
+	content := "# comment\n\n" + name + "=42\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
