@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cueCount, shiftCues, subTracks, toVtt, uniqueLabel } from './tracks'
+import { cueCount, subTracks, toVtt, uniqueLabel } from './tracks'
 
 describe('subTracks', () => {
   it('memetakan subtitle aman, track pertama default, label jatuh ke lang', () => {
@@ -52,33 +52,6 @@ describe('subTracks', () => {
 
   it('tanpa subtitle → daftar kosong', () => {
     expect(subTracks()).toEqual([])
-  })
-})
-
-describe('shiftCues', () => {
-  const cue = (startTime: number, endTime: number) => ({ startTime, endTime })
-
-  it('menggeser cue ke depan dan kembali tanpa menumpuk', () => {
-    const cues = [cue(1, 3), cue(5, 6.5)]
-    const base = new WeakMap<object, { startTime: number; endTime: number }>()
-    shiftCues(cues, 0.5, base)
-    expect(cues).toEqual([cue(1.5, 3.5), cue(5.5, 7)])
-    shiftCues(cues, 2.5, base)
-    expect(cues).toEqual([cue(3.5, 5.5), cue(7.5, 9)])
-    shiftCues(cues, 0, base)
-    expect(cues).toEqual([cue(1, 3), cue(5, 6.5)])
-  })
-
-  it('delay negatif tidak membuat waktu mulai negatif', () => {
-    const cues = [cue(1, 3), cue(0.25, 0.5)]
-    shiftCues(cues, -2, new WeakMap())
-    expect(cues).toEqual([cue(0, 1), cue(0, 0)])
-  })
-
-  it('cue baru ikut digeser walau delay sudah aktif', () => {
-    const cues = [cue(10, 12)]
-    shiftCues(cues, 1, new WeakMap())
-    expect(cues).toEqual([cue(11, 13)])
   })
 })
 

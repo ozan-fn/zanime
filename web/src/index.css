@@ -14,8 +14,8 @@
   --color-card: #111113;
   --color-primary: #fafafa;
   --color-primary-contrast: #18181b;
-  /* 8xl (96rem) belum ada di skala bawaan Tailwind 4. */
-  --container-8xl: 96rem;
+  /* 9xl (112rem) belum ada di skala bawaan Tailwind 4. */
+  --container-9xl: 112rem;
   /* Marquee teks terpotong (lib Sq, `animate-sq-slide` saat hover). */
   --animate-sq-slide: sq-slide var(--sq-dur, 6s) linear 0.5s infinite alternate;
 

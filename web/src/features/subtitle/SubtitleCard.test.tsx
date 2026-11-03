@@ -109,15 +109,28 @@ describe('SubtitleCard', () => {
         media={media}
         servers={[
           { name: 'Premium A', subs: [{ label: 'English', lang: 'en', url: '/s/a-en.vtt' }] },
-          { name: 'miruro', subs: [{ label: 'Indonesia', lang: 'id', url: '/s/m-id.vtt' }] },
+          {
+            name: 'miruro',
+            subs: [
+              { label: 'Indonesian', lang: 'id', url: '/s/m-id.vtt' },
+              { label: 'Arabic', lang: 'ar', url: '/s/m-ar.vtt' },
+            ],
+          },
         ]}
         onUse={onUse}
       />,
     )
 
     expect(screen.getByText('Premium A')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Pakai subtitle Indonesia' }))
-    expect(onUse).toHaveBeenCalledWith('/s/m-id.vtt', 'Indonesia')
+    // Bahasa selain Indonesia/Inggris tidak ditampilkan.
+    expect(screen.queryByText('Arabic')).toBeNull()
+    // Indonesia di atas Inggris.
+    const id = screen.getByRole('button', { name: 'Pakai subtitle Indonesian' })
+    const en = screen.getByRole('button', { name: 'Pakai subtitle English' })
+    expect(id.compareDocumentPosition(en) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.click(id)
+    expect(onUse).toHaveBeenCalledWith('/s/m-id.vtt', 'Indonesian')
   })
 
   it('tanpa judul tidak memanggil backend dan menampilkan petunjuk', () => {

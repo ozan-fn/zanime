@@ -100,7 +100,10 @@ func (s *Server) streamProxy(c *fiber.Ctx) error {
 		return errJSON(c, http.StatusBadGateway, fmt.Sprintf("upstream HTTP %s", res.Status()))
 	}
 
-	if isPlaylist(res.Header().Get("Content-Type"), target.Path) {
+	// Slug ikut dicek: jenis stream hasil resolve (hls) memberi ekstensi .m3u8
+	// ke slug walau URL upstream tanpa ekstensi, dan tanpa rewrite ini playlist
+	// turunan diambil langsung dari host tanpa Referer (kualitas gagal termuat).
+	if isPlaylist(res.Header().Get("Content-Type"), target.Path, slug) {
 		data, err := io.ReadAll(body)
 		if err != nil {
 			return errJSON(c, http.StatusBadGateway, err.Error())
@@ -121,7 +124,7 @@ func (s *Server) streamProxy(c *fiber.Ctx) error {
 
 	// Subtitle diteruskan apa adanya: timestamp dari sumber dipakai langsung,
 	// tidak ada normalisasi/geser di server.
-	if isSubtitle(res.Header().Get("Content-Type"), target.Path) {
+	if isSubtitle(res.Header().Get("Content-Type"), target.Path, slug) {
 		data, err := io.ReadAll(body)
 		if err != nil {
 			return errJSON(c, http.StatusBadGateway, err.Error())
@@ -215,17 +218,18 @@ func sizeLabel(n string) string {
 	return fmt.Sprintf("%.0f KB", float64(v)/1024)
 }
 
-func isPlaylist(ct, p string) bool {
-	return strings.Contains(ct, "mpegurl") || strings.HasSuffix(p, ".m3u8")
+func isPlaylist(ct, p, slug string) bool {
+	return strings.Contains(ct, "mpegurl") || strings.HasSuffix(p, ".m3u8") || strings.HasSuffix(slug, ".m3u8")
 }
 
 // isSubtitle: track teks VTT/SRT (host subtitle mengirim text/vtt, kadang
 // extension .vtt/.srt tanpa content-type yang jelas).
-func isSubtitle(ct, p string) bool {
+func isSubtitle(ct, p, slug string) bool {
 	ct = strings.ToLower(ct)
 	return strings.Contains(ct, "text/vtt") || strings.Contains(ct, "/vtt") ||
 		strings.Contains(ct, "x-subrip") || strings.Contains(ct, "/srt") ||
-		strings.HasSuffix(p, ".vtt") || strings.HasSuffix(p, ".srt")
+		strings.HasSuffix(p, ".vtt") || strings.HasSuffix(p, ".srt") ||
+		strings.HasSuffix(slug, ".vtt") || strings.HasSuffix(slug, ".srt")
 }
 
 // rewritePlaylist menulis ulang satu playlist m3u8 ke slug pool. Baris yang

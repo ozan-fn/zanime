@@ -36,26 +36,6 @@ export function cueCount(vtt: string): number {
   return (vtt.match(/^\s*\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->/gm) || []).length
 }
 
-export type Cue = { startTime: number; endTime: number }
-
-/* shiftCues menggeser waktu cue sebesar `delay` detik (positif = subtitle
- * tampil lebih lambat). Waktu asli tiap cue disimpan di `base`, jadi geseran
- * idempoten: nilai bisa dinaikkan-turunkan berulang tanpa menumpuk, dan cue
- * baru dari track yang baru dimuat ikut mengenal delay yang sedang aktif.
- * Waktu mulai tidak pernah negatif. */
-export function shiftCues(cues: readonly Cue[], delay: number, base: WeakMap<object, Cue>): void {
-  for (const cue of cues) {
-    let orig = base.get(cue)
-    if (!orig) {
-      orig = { startTime: cue.startTime, endTime: cue.endTime }
-      base.set(cue, orig)
-    }
-    const start = Math.max(0, orig.startTime + delay)
-    cue.startTime = start
-    cue.endTime = Math.max(start, orig.endTime + delay)
-  }
-}
-
 /* uniqueLabel memberi nama track yang tidak bentrok dengan track lain. Track
  * pilihan pengguna (subdl / file sendiri) sering bernama sama dengan track
  * bawaan server (sama-sama "English"); tanpa pembeda, keduanya bisa tertukar

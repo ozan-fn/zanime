@@ -37,6 +37,10 @@ type TranslateState = {
 
 // Sama dengan regex player: subtitle Inggris dikenali dari lang/label.
 const EN_RE = /\b(en|eng)\b|english/i
+const ID_RE = /\b(id|ind)\b|indonesia/i
+
+// Urutan tampil: Indonesia dulu, Inggris sesudahnya; bahasa lain dibuang.
+const rank = (s: string) => (ID_RE.test(s) ? 0 : EN_RE.test(s) ? 1 : 2)
 
 export function SubtitleCard({
   media,
@@ -70,16 +74,22 @@ export function SubtitleCard({
   }, [content])
 
   // Subtitle semua server, digabung dan dedupe per URL (server berbeda sering
-  // membawa track yang sama).
+  // membawa track yang sama), lalu disaring ke Indonesia/Inggris dan diurutkan.
   const streamSubs: { server: string; sub: Sub }[] = []
   const seen = new Set<string>()
   for (const srv of servers) {
     for (const sub of srv.subs || []) {
       if (!sub?.url || seen.has(sub.url)) continue
       seen.add(sub.url)
-      streamSubs.push({ server: srv.name, sub })
+      if (rank(`${sub.lang} ${sub.label}`) < 2) streamSubs.push({ server: srv.name, sub })
     }
   }
+  streamSubs.sort((a, b) => rank(`${a.sub.lang} ${a.sub.label}`) - rank(`${b.sub.lang} ${b.sub.label}`))
+
+  // Hasil subdl juga disaring dan diurutkan dengan aturan yang sama.
+  const searchSubs = items
+    .filter((s) => rank(`${s.lang} ${s.language} ${s.name}`) < 2)
+    .sort((a, b) => rank(`${a.lang} ${a.language} ${a.name}`) - rank(`${b.lang} ${b.language} ${b.name}`))
 
   const load = useCallback(async (signal?: AbortSignal, refresh = false) => {
     if (!media) return
@@ -154,7 +164,7 @@ export function SubtitleCard({
     inflight.current[sub.url]?.abort()
   }
 
-  const total = items.length + streamSubs.length
+  const total = searchSubs.length + streamSubs.length
 
   return (
     <div className={`rounded-lg border border-border bg-card p-2.5 sm:rounded-xl sm:p-3 ${open ? 'lg:flex lg:h-full lg:min-h-0 lg:flex-col' : ''}`}>
@@ -197,16 +207,17 @@ export function SubtitleCard({
           const english = EN_RE.test(`${s.lang} ${s.label}`)
           return (
             <div key={`stream:${i}:${s.url}`} className="border-b border-border/60 py-1.5 last:border-0 sm:py-1">
-              <div className="flex items-center gap-1.5 sm:gap-2">
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 sm:flex-nowrap sm:gap-2">
                 <span className="w-16 shrink-0 truncate text-[9px] uppercase text-zinc-500 sm:w-20 sm:text-[10px]" title={s.label}>
                   {s.lang || s.label}
                 </span>
-                <span className="min-w-0 flex-1 truncate text-[11px] text-zinc-300 sm:text-[10px]" title={s.label}>
+                <span className="min-w-0 flex-1 basis-24 truncate text-[11px] text-zinc-300 sm:text-[10px]" title={s.label}>
                   {s.label || s.lang}
                 </span>
                 <span className="max-w-16 shrink-0 truncate rounded border border-border px-1 text-[9px] text-zinc-500" title={server}>
                   {server || 'player'}
                 </span>
+                <span className="ml-auto flex shrink-0 items-center gap-1.5">
                 {english && !st?.url && (
                   <button
                     type="button"
@@ -230,6 +241,7 @@ export function SubtitleCard({
                 >
                   pakai
                 </button>
+                </span>
               </div>
 
               {/* Indikator proses translate di bawah judul subtitle. */}
@@ -277,22 +289,23 @@ export function SubtitleCard({
           <p className="py-1.5 text-zinc-600">mencari subtitle…</p>
         ) : !media ? (
           <p className="py-1.5 text-zinc-600">Pilih judul dulu untuk mencari subtitle.</p>
-        ) : !error && items.length === 0 && streamSubs.length === 0 ? (
+        ) : !error && searchSubs.length === 0 && streamSubs.length === 0 ? (
           <p className="py-1.5 text-zinc-600">Tidak ada subtitle untuk judul/episode ini.</p>
         ) : (
-          items.map((s) => {
+          searchSubs.map((s) => {
             const st = tr[s.url]
             const english = EN_RE.test(`${s.lang} ${s.language} ${s.name}`)
             return (
               <div key={s.id} className="border-b border-border/60 py-1.5 last:border-0 sm:py-1">
-                <div className="flex items-center gap-1.5 sm:gap-2">
+                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 sm:flex-nowrap sm:gap-2">
                   <span className="w-16 shrink-0 truncate text-[9px] uppercase text-zinc-500 sm:w-20 sm:text-[10px]" title={s.language}>
                     {s.language || s.lang}
                   </span>
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-zinc-300 sm:text-[10px]" title={s.name}>
+                  <span className="min-w-0 flex-1 basis-24 truncate text-[11px] text-zinc-300 sm:text-[10px]" title={s.name}>
                     {s.name}
                   </span>
                   <span className="shrink-0 text-zinc-600 max-[360px]:hidden">{s.downloads}</span>
+                  <span className="ml-auto flex shrink-0 items-center gap-1.5">
                   {english && !st?.url && (
                     <button
                       type="button"
@@ -316,6 +329,7 @@ export function SubtitleCard({
                   >
                     pakai
                   </button>
+                  </span>
                 </div>
 
                 {st?.busy && (

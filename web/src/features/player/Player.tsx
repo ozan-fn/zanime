@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import '@vidstack/react/player/styles/default/theme.css'
 import '@vidstack/react/player/styles/default/layouts/video.css'
 import {
@@ -18,19 +18,13 @@ import { Sq } from '@/features/text/Sq'
 import { useApp } from '@/features/app/AppProvider'
 import { LogPanel } from '@/features/log/LogPanel'
 import type { SubtitleMedia } from '@/features/subtitle/SubtitleCard'
-import { cueCount, shiftCues, subTracks, toVtt, uniqueLabel } from './tracks'
+import { cueCount, subTracks, toVtt, uniqueLabel } from './tracks'
 
 /* Pemutar: Vidstack Default Layout di atas <video> native, dengan HLS lewat
  * hls.js yang dibundel lokal (default Vidstack mengambilnya dari CDN, jadi
  * library dipasang sendiri di provider-change). Subtitle dipasang sebagai
  * <track> same-origin `/s/<slug>`; proxy server sudah menormalkan VTT, jadi
  * tidak ada URL host video yang menyentuh browser. */
-
-// Delay subtitle: langkah 0,5 detik, maksimal 10 detik ke dua arah.
-const DELAY_STEP = 0.5
-const DELAY_MAX = 10
-
-const delayLabel = (d: number) => `Sub ${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d).toFixed(1)}s`
 
 // Track subtitle tambahan (hasil kartu subdl / file sendiri).
 export type PlayerSubtitle = { src: string; label: string }
@@ -68,36 +62,6 @@ export function Player({
     at.current = 0
     if (player.current) player.current.currentTime = 0
   }, [content])
-
-  // Delay subtitle digeser langsung di cue track (bukan lewat file), jadi
-  // berlaku untuk subtitle server maupun file kiriman pengguna. Waktu asli
-  // cue disimpan terpisah supaya geseran bisa dinaik-turunkan.
-  const [delay, setDelay] = useState(0)
-  const delayRef = useRef(0)
-  const cueBase = useRef(new WeakMap<object, { startTime: number; endTime: number }>())
-  const wired = useRef(new WeakSet<object>())
-
-  const applyDelay = useCallback(() => {
-    const p = player.current
-    if (!p) return
-    for (const track of p.textTracks) {
-      if (track.readyState !== 2) continue
-      shiftCues(track.cues, delayRef.current, cueBase.current)
-    }
-  }, [])
-
-  // Track dimuat belakangan (dan cue bisa datang bertahap): pasang ulang delay
-  // setiap track selesai dimuat atau menerima cue baru.
-  const wireTracks = useCallback(() => {
-    const p = player.current
-    if (!p) return
-    for (const track of p.textTracks) {
-      if (wired.current.has(track)) continue
-      wired.current.add(track)
-      track.addEventListener('load', applyDelay)
-      track.addEventListener('add-cue', applyDelay)
-    }
-  }, [applyDelay])
 
   // Subtitle tambahan dipegang HomePage (kartunya di bawah panel server);
   // player hanya merawat blob unggahan yang dibuatnya sendiri.
@@ -161,16 +125,6 @@ export function Player({
       ]
     : auto
 
-  const prevDelay = useRef(0)
-  useEffect(() => {
-    delayRef.current = delay
-    if (delay !== prevDelay.current) {
-      prevDelay.current = delay
-      log.info(delay ? `Subtitle delay ${delay > 0 ? '+' : '−'}${Math.abs(delay).toFixed(1)}s` : 'Subtitle delay kembali normal', 'player:delay')
-    }
-    applyDelay()
-  }, [delay, applyDelay])
-
   // Klik "pakai" (kartu subtitle atau file sendiri) = track langsung tampil.
   // Atribut `default` pada <Track> hanya berlaku saat elemen dipasang, jadi
   // mode-nya diset eksplisit. Track dicari lewat `src` yang diklik (bukan
@@ -189,13 +143,11 @@ export function Player({
   }, [showSub, current])
 
   // Elemen player di-mount ulang saat ganti server, jadi track dan player-nya
-  // baru: pasang ulang pendengar delay pada instance yang sekarang.
+  // baru: pasang mode subtitle pengguna pada instance yang sekarang.
   useEffect(() => {
     const tracks = player.current?.textTracks
     if (!tracks) return
     const onAdd = () => {
-      wireTracks()
-      applyDelay()
       // Track subtitle pengguna bisa terdaftar belakangan; pasang mode-nya
       // begitu track itu muncul, bukan hanya saat `subtitle` berubah.
       showSub()
@@ -203,11 +155,7 @@ export function Player({
     tracks.addEventListener('add', onAdd)
     onAdd()
     return () => tracks.removeEventListener('add', onAdd)
-  }, [current, wireTracks, applyDelay, showSub])
-
-  const bumpDelay = useCallback((step: number) => {
-    setDelay((v) => Math.max(-DELAY_MAX, Math.min(DELAY_MAX, Math.round((v + step) * 10) / 10)))
-  }, [])
+  }, [current, showSub])
 
   // hls.js dari bundle, bukan jsDelivr.
   const handleProviderChange = useCallback((provider: MediaProviderAdapter | null) => {
@@ -294,36 +242,6 @@ export function Player({
               />
             )}
           </div>
-          {playing && (
-            <div className="flex shrink-0 items-center rounded-full border border-border bg-zinc-900 text-[11px] text-zinc-300">
-              <button
-                type="button"
-                aria-label="Subtitle 0,5 detik lebih cepat"
-                onClick={() => bumpDelay(-DELAY_STEP)}
-                disabled={delay <= -DELAY_MAX}
-                className="grid h-8 w-8 place-items-center rounded-full transition hover:bg-zinc-800 disabled:opacity-40 sm:h-6 sm:w-6"
-              >
-                −
-              </button>
-              <button
-                type="button"
-                title="Klik untuk mengembalikan delay ke 0"
-                onClick={() => setDelay(0)}
-                className="min-w-[58px] tabular-nums transition hover:text-white sm:min-w-[62px]"
-              >
-                {delayLabel(delay)}
-              </button>
-              <button
-                type="button"
-                aria-label="Subtitle 0,5 detik lebih lambat"
-                onClick={() => bumpDelay(DELAY_STEP)}
-                disabled={delay >= DELAY_MAX}
-                className="grid h-8 w-8 place-items-center rounded-full transition hover:bg-zinc-800 disabled:opacity-40 sm:h-6 sm:w-6"
-              >
-                +
-              </button>
-            </div>
-          )}
           {playing && (
           <label
             title={subtitle?.src.startsWith('blob:') ? 'Ganti subtitle sendiri' : 'Subtitle sendiri'}
