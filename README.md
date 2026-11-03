@@ -50,7 +50,7 @@ Backend, dibaca dari `.env` (contoh: `.env.example`); env proses menang:
 |----------|---------|------|
 | `PORT` | `8080` | port HTTP |
 | `WORKERS` | `20` | batas pekerja paralel (resolve server, terjemahan cue) |
-| `PROXY_URL` | – | proxy HTTP/SOCKS5 untuk subdl + embedmaster; kosong = langsung |
+| `PROXY_URL` | – | proxy HTTP/SOCKS5 untuk subdl + embedmaster; kosong = langsung. Proxy webshare bersufiks `-n` otomatis diputar `-1`…`-10` (paralel) saat diblokir, dan yang lolos ditulis balik ke `.env` |
 
 Nilai bawaan yang diubah dari default library/Go, semuanya di kode:
 

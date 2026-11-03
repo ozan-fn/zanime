@@ -102,6 +102,12 @@ func (c *Client) playerPage(ctx context.Context, embed string) (string, string, 
 		html = res.String()
 		playerURL = res.RawResponse.Request.URL.String()
 	}
+	if strings.Contains(html, "challenges.cloudflare.com") {
+		// Halaman 200 tapi isinya challenge Turnstile: IP (proxy) ditantang,
+		// jadi skrip kredensial tidak pernah dikirim.
+		c.logf("page", LogErr, "Halaman player ditantang Cloudflare Turnstile")
+		return "", "", proxy.Blocked(fmt.Errorf("halaman player diblokir Cloudflare Turnstile (IP proxy ditantang)"))
+	}
 	c.logf("page", LogOK, "Halaman player siap")
 	return playerURL, html, nil
 }
@@ -203,6 +209,28 @@ func (c *Client) resolve(ctx context.Context, cfg credCfg, playerURL string, row
 	return resolved{}
 }
 
+// probe memastikan kandidat proxy tembus ke halaman player: bukan 403 dan
+// bukan challenge Turnstile. Dipakai rotasi proxy.
+func (c *Client) probe(ctx context.Context, proxyURL, embed string) error {
+	client := resty.New().SetTimeout(probeSecs*time.Second).SetHeader("User-Agent", userAgent)
+	if err := proxy.Fixed(client, proxyURL); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, probeSecs*time.Second)
+	defer cancel()
+	res, err := client.R().SetContext(ctx).SetHeader("Referer", embedReferer).Get(embed)
+	if err != nil {
+		return err
+	}
+	if res.StatusCode() >= 400 {
+		return fmt.Errorf("halaman embed HTTP %s", res.Status())
+	}
+	if strings.Contains(res.String(), "challenges.cloudflare.com") {
+		return fmt.Errorf("halaman embed ditantang Cloudflare Turnstile")
+	}
+	return nil
+}
+
 // get mengirim GET dengan User-Agent + header tambahan.
 func (c *Client) get(ctx context.Context, endpoint string, headers map[string]string) (*resty.Response, error) {
 	return c.exec(c.http.R().SetContext(ctx), http.MethodGet, endpoint, headers)
@@ -222,7 +250,12 @@ func (c *Client) exec(req *resty.Request, method, endpoint string, headers map[s
 		return nil, err
 	}
 	if res.StatusCode() < 200 || res.StatusCode() >= 400 {
-		return nil, fmt.Errorf("server sumber HTTP %s", res.Status())
+		err := fmt.Errorf("server sumber HTTP %s", res.Status())
+		switch res.StatusCode() {
+		case http.StatusForbidden, http.StatusProxyAuthRequired, http.StatusTooManyRequests:
+			return nil, proxy.Blocked(err) // IP/proxy ditolak: Retry boleh ganti proxy
+		}
+		return nil, err
 	}
 	return res, nil
 }
