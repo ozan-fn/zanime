@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Captions, ChevronDown, ChevronUp, Languages, RefreshCw } from 'lucide-react'
 import { api } from '@/lib/api'
 import { log } from '@/lib/logs'
@@ -9,10 +9,9 @@ import type { Sub, Subtitle } from '@/lib/types'
  * tautan unduh yang dipakai adalah hasil resolve halaman terbaru, bukan cache
  * lama. Subtitle subdl hanya dipasang saat diklik ("pakai").
  *
- * Subtitle bawaan server yang sedang diputar ikut tampil di paling atas
- * (bertanda "player"). Saat ganti server, daftarnya dipertahankan bila stream
- * baru tidak punya subtitle, dan digantikan bila stream baru punya. Subtitle
- * Inggris punya tombol terjemahkan: permintaan dikirim ke server
+ * Subtitle bawaan semua server stream langsung tampil (bertanda nama server),
+ * tanpa perlu memutar server-nya lebih dulu. Subtitle Inggris punya tombol
+ * terjemahkan: permintaan dikirim ke server
  * (`/api/translate`), hasilnya ditandai "hasil translate" dan di-cache di
  * server sehingga kembali seketika saat diminta lagi. */
 
@@ -25,12 +24,8 @@ export type SubtitleMedia = {
   episode?: number
 }
 
-// Subtitle bawaan stream yang sedang diputar (dari embedmaster).
-export type PlayerSubs = {
-  server?: string
-  src?: string
-  subs?: Sub[]
-}
+// Subtitle bawaan satu server stream (dari embedmaster/miruro).
+export type ServerSubs = { name: string; subs: Sub[] }
 
 type TranslateState = {
   busy: boolean
@@ -45,12 +40,12 @@ const EN_RE = /\b(en|eng)\b|english/i
 
 export function SubtitleCard({
   media,
-  player,
+  servers = [],
   onUse,
   onOpenChange,
 }: {
   media?: SubtitleMedia
-  player?: PlayerSubs
+  servers?: ServerSubs[]
   onUse: (src: string, label: string) => void
   /** Diberitahu setiap kali kartu dibuka/ditutup (dipakai layout desktop). */
   onOpenChange?: (open: boolean) => void
@@ -64,16 +59,27 @@ export function SubtitleCard({
   // batal dan pembersihan saat ganti server.
   const inflight = useRef<Record<string, AbortController>>({})
 
-  // Ganti server (src player berubah) = subtitle player dan hasil terjemahannya
-  // tidak relevan lagi; terjemahan yang masih jalan ikut dibatalkan. Hasil yang
-  // pernah dibuat tetap ada di cache server dan kembali seketika kalau diminta.
+  // Ganti judul/episode = subtitle server dan hasil terjemahannya tidak relevan
+  // lagi; terjemahan yang masih jalan ikut dibatalkan. Hasil yang pernah dibuat
+  // tetap ada di cache server dan kembali seketika kalau diminta.
+  const content = media ? `${media.tab}:${media.id}:${media.season ?? ''}:${media.episode ?? ''}` : ''
   useEffect(() => {
     for (const c of Object.values(inflight.current)) c.abort()
     inflight.current = {}
     setTr({})
-  }, [player?.src])
+  }, [content])
 
-  const playerSubs = useMemo(() => player?.subs ?? [], [player?.subs])
+  // Subtitle semua server, digabung dan dedupe per URL (server berbeda sering
+  // membawa track yang sama).
+  const streamSubs: { server: string; sub: Sub }[] = []
+  const seen = new Set<string>()
+  for (const srv of servers) {
+    for (const sub of srv.subs || []) {
+      if (!sub?.url || seen.has(sub.url)) continue
+      seen.add(sub.url)
+      streamSubs.push({ server: srv.name, sub })
+    }
+  }
 
   const load = useCallback(async (signal?: AbortSignal, refresh = false) => {
     if (!media) return
@@ -148,7 +154,7 @@ export function SubtitleCard({
     inflight.current[sub.url]?.abort()
   }
 
-  const total = items.length + playerSubs.length
+  const total = items.length + streamSubs.length
 
   return (
     <div className={`rounded-lg border border-border bg-card p-2.5 sm:rounded-xl sm:p-3 ${open ? 'lg:flex lg:h-full lg:min-h-0 lg:flex-col' : ''}`}>
@@ -185,12 +191,12 @@ export function SubtitleCard({
 
       {open && (
       <div className="mt-1 max-h-40 overflow-y-auto font-mono text-[10px] sm:max-h-32 lg:max-h-none lg:min-h-0 lg:flex-1">
-        {/* Subtitle dari stream yang sedang diputar, selalu di atas. */}
-        {playerSubs.map((s, i) => {
+        {/* Subtitle bawaan tiap server, langsung tampil tanpa diputar dulu. */}
+        {streamSubs.map(({ server, sub: s }, i) => {
           const st = tr[s.url]
           const english = EN_RE.test(`${s.lang} ${s.label}`)
           return (
-            <div key={`player:${i}:${s.url}`} className="border-b border-border/60 py-1.5 last:border-0 sm:py-1">
+            <div key={`stream:${i}:${s.url}`} className="border-b border-border/60 py-1.5 last:border-0 sm:py-1">
               <div className="flex items-center gap-1.5 sm:gap-2">
                 <span className="w-16 shrink-0 truncate text-[9px] uppercase text-zinc-500 sm:w-20 sm:text-[10px]" title={s.label}>
                   {s.lang || s.label}
@@ -198,8 +204,8 @@ export function SubtitleCard({
                 <span className="min-w-0 flex-1 truncate text-[11px] text-zinc-300 sm:text-[10px]" title={s.label}>
                   {s.label || s.lang}
                 </span>
-                <span className="shrink-0 rounded border border-border px-1 text-[9px] uppercase text-zinc-500" title="Subtitle bawaan server stream">
-                  player
+                <span className="max-w-16 shrink-0 truncate rounded border border-border px-1 text-[9px] text-zinc-500" title={server}>
+                  {server || 'player'}
                 </span>
                 {english && !st?.url && (
                   <button
@@ -271,7 +277,7 @@ export function SubtitleCard({
           <p className="py-1.5 text-zinc-600">mencari subtitle…</p>
         ) : !media ? (
           <p className="py-1.5 text-zinc-600">Pilih judul dulu untuk mencari subtitle.</p>
-        ) : !error && items.length === 0 && playerSubs.length === 0 ? (
+        ) : !error && items.length === 0 && streamSubs.length === 0 ? (
           <p className="py-1.5 text-zinc-600">Tidak ada subtitle untuk judul/episode ini.</p>
         ) : (
           items.map((s) => {

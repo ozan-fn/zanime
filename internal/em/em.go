@@ -61,7 +61,8 @@ type Sub struct {
 // Server adalah satu sumber stream ter-resolve.
 type Server struct {
 	Name      string    `json:"name"`
-	Type      string    `json:"type"` // mp4 (progressive) | hls (m3u8)
+	Source    string    `json:"source,omitempty"` // kosong = embedmaster
+	Type      string    `json:"type"`             // mp4 (progressive) | hls (m3u8)
 	Quality   string    `json:"quality"`
 	Qualities []Quality `json:"qualities,omitempty"`
 	Subs      []Sub     `json:"subs,omitempty"`

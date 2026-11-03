@@ -209,3 +209,21 @@ func TestRegisterSchedulesTidy(t *testing.T) {
 		t.Fatal("entri basi harus sudah dipangkas")
 	}
 }
+
+// TestHeaders: header per slug (Referer/Origin sumber miruro) ikut tersimpan
+// di memori dan di file, dan tetap nil untuk sumber lama tanpa header.
+func TestHeaders(t *testing.T) {
+	t.Chdir(t.TempDir())
+	p := New()
+	headers := map[string]string{"Referer": "https://megaplay.buzz/", "Origin": "https://ultracloud.cc"}
+	slug := p.RegisterHeaders("https://host/a.m3u8", "miruro-a", ".m3u8", headers)
+	if got := p.Headers(slug); got["Referer"] != headers["Referer"] || got["Origin"] != headers["Origin"] {
+		t.Fatalf("Headers = %v, want %v", got, headers)
+	}
+	if got := New().Headers(slug); got["Referer"] != headers["Referer"] {
+		t.Fatalf("header tidak persisten: %v", got)
+	}
+	if got := p.Headers(p.Register("https://host/b.mp4", "plain")); got != nil {
+		t.Fatalf("Headers tanpa header = %v, want nil", got)
+	}
+}

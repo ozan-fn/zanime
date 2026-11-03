@@ -38,32 +38,40 @@ type Pool struct {
 }
 
 type item struct {
-	url    string
-	at     time.Time
-	onDisk bool // punya file di ./tmp/resolve (TTL-nya mengikuti mtime file)
+	url     string
+	headers map[string]string // header wajib ke host video (mis. Referer/Origin)
+	at      time.Time
+	onDisk  bool // punya file di ./tmp/resolve (TTL-nya mengikuti mtime file)
 }
 
 func New() *Pool { return &Pool{urls: map[string]*item{}} }
 
 type entry struct {
-	URL string `json:"url"`
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Register mendaftarkan URL sebagai slug persisten: file ./tmp/resolve/<slug>.json
 // ditulis agar server restart masih bisa memutar slug lama. hint membentuk slug
 // yang terbaca manusia; bila bentrok (dalam proses ini) ditambah hash pendek.
 func (p *Pool) Register(rawURL, hint string) string {
-	return p.RegisterKind(rawURL, hint, "")
+	return p.RegisterHeaders(rawURL, hint, "", nil)
 }
 
 // RegisterKind seperti Register, tapi ekstensi slug dipaksa `kind` (mis.
 // ".m3u8") untuk stream yang hasil verifikasinya HLS walau URL-nya tanpa
 // ekstensi. kind kosong = pakai ekstensi dari URL.
 func (p *Pool) RegisterKind(rawURL, hint, kind string) string {
+	return p.RegisterHeaders(rawURL, hint, kind, nil)
+}
+
+// RegisterHeaders seperti RegisterKind, tapi ikut menyimpan header yang wajib
+// dikirim proxy ke host video (miruro memakai Referer/Origin sendiri).
+func (p *Pool) RegisterHeaders(rawURL, hint, kind string, headers map[string]string) string {
 	p.mu.Lock()
-	slug := p.assignLocked(rawURL, hint, kind)
+	slug := p.assignLocked(rawURL, hint, kind, headers)
 	p.mu.Unlock()
-	p.persist(slug, rawURL)
+	p.persist(slug, rawURL, headers)
 	p.tidyIfDue()
 	return slug
 }
@@ -73,9 +81,15 @@ func (p *Pool) RegisterKind(rawURL, hint, kind string) string {
 // diturunkan langsung dari URL (stabil antar permintaan, jadi playlist hasil
 // rewrite bisa di-cache browser tanpa slug bergeser).
 func (p *Pool) RegisterTemp(rawURL string) string {
+	return p.RegisterTempHeaders(rawURL, nil)
+}
+
+// RegisterTempHeaders seperti RegisterTemp; header dibawa ke playlist
+// turunan/segmen supaya host video tetap menerima request proxy.
+func (p *Pool) RegisterTempHeaders(rawURL string, headers map[string]string) string {
 	slug := "seg-" + short(rawURL) + extOf(rawURL)
 	p.mu.Lock()
-	p.urls[slug] = &item{url: rawURL, at: time.Now()}
+	p.urls[slug] = &item{url: rawURL, headers: headers, at: time.Now()}
 	p.mu.Unlock()
 	return slug
 }
@@ -83,7 +97,7 @@ func (p *Pool) RegisterTemp(rawURL string) string {
 // assignLocked menyimpan URL di bawah slug; pemanggil memegang p.mu. Ekstensi
 // media ditambahkan ke slug supaya player mengenali jenis sumbernya; `kind`
 // (bila tidak kosong) menimpa ekstensi hasil URL.
-func (p *Pool) assignLocked(rawURL, hint, kind string) string {
+func (p *Pool) assignLocked(rawURL, hint, kind string, headers map[string]string) string {
 	ext := kind
 	if ext == "" {
 		ext = extOf(rawURL)
@@ -92,17 +106,17 @@ func (p *Pool) assignLocked(rawURL, hint, kind string) string {
 	if existing, ok := p.urls[slug]; ok && existing.url != rawURL {
 		slug = p.slug(hint) + "-" + short(rawURL) + ext
 	}
-	p.urls[slug] = &item{url: rawURL, at: time.Now()}
+	p.urls[slug] = &item{url: rawURL, headers: headers, at: time.Now()}
 	return slug
 }
 
 // persist menulis satu file slug; gagal tulis tidak fatal (slug tetap jalan
 // selama proses hidup).
-func (p *Pool) persist(slug, rawURL string) {
+func (p *Pool) persist(slug, rawURL string, headers map[string]string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
-	data, err := json.Marshal(entry{URL: rawURL})
+	data, err := json.Marshal(entry{URL: rawURL, Headers: headers})
 	if err != nil {
 		return
 	}
@@ -148,9 +162,33 @@ func (p *Pool) Load(slug string) (string, bool) {
 		return "", false
 	}
 	p.mu.Lock()
-	p.urls[slug] = &item{url: e.URL, at: time.Now(), onDisk: true}
+	p.urls[slug] = &item{url: e.URL, headers: e.Headers, at: time.Now(), onDisk: true}
 	p.mu.Unlock()
 	return e.URL, true
+}
+
+// Headers mengembalikan header milik slug (nil bila tidak ada). Slug yang
+// belum ada di memori dibaca dari file seperti Load.
+func (p *Pool) Headers(slug string) map[string]string {
+	slug = strings.Trim(slug, "/")
+	if slug == "" || strings.ContainsAny(slug, "/\\") {
+		return nil
+	}
+	p.mu.RLock()
+	it := p.urls[slug]
+	p.mu.RUnlock()
+	if it == nil {
+		if _, ok := p.Load(slug); !ok {
+			return nil
+		}
+		p.mu.RLock()
+		it = p.urls[slug]
+		p.mu.RUnlock()
+	}
+	if it == nil {
+		return nil
+	}
+	return it.headers
 }
 
 func (p *Pool) tidyIfDue() {

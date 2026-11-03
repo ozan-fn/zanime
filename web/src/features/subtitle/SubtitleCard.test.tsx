@@ -101,6 +101,25 @@ describe('SubtitleCard', () => {
     expect(vi.mocked(fetch).mock.calls.length).toBe(1)
   })
 
+  it('menampilkan subtitle semua server tanpa perlu diputar', () => {
+    vi.stubGlobal('fetch', stubFetch())
+    const onUse = vi.fn()
+    render(
+      <SubtitleCard
+        media={media}
+        servers={[
+          { name: 'Premium A', subs: [{ label: 'English', lang: 'en', url: '/s/a-en.vtt' }] },
+          { name: 'miruro', subs: [{ label: 'Indonesia', lang: 'id', url: '/s/m-id.vtt' }] },
+        ]}
+        onUse={onUse}
+      />,
+    )
+
+    expect(screen.getByText('Premium A')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Pakai subtitle Indonesia' }))
+    expect(onUse).toHaveBeenCalledWith('/s/m-id.vtt', 'Indonesia')
+  })
+
   it('tanpa judul tidak memanggil backend dan menampilkan petunjuk', () => {
     const fetchStub = vi.fn()
     vi.stubGlobal('fetch', fetchStub)

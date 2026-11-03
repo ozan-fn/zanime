@@ -13,6 +13,7 @@ import (
 
 	"zanime/internal/em"
 	"zanime/internal/logbus"
+	"zanime/internal/miruro"
 	"zanime/internal/resolve"
 	"zanime/internal/subdl"
 	"zanime/internal/tmdb"
@@ -30,6 +31,7 @@ type Server struct {
 	web  fs.FS
 	tmdb *tmdb.Client
 	em   Streamer
+	mir  *miruro.Client
 	sub  *subdl.Client
 	res  *resolve.Pool
 	logs *logbus.Hub
@@ -43,7 +45,7 @@ func New(webRoot fs.FS) *Server {
 	logs := logbus.New()
 	emc := em.New()
 	emc.SetLogger(hubLogger{hub: logs})
-	return &Server{web: webRoot, tmdb: tmdb.New(), em: emc, res: res, logs: logs, sub: subdl.New(), tr: translate.New()}
+	return &Server{web: webRoot, tmdb: tmdb.New(), em: emc, mir: miruro.New(), res: res, logs: logs, sub: subdl.New(), tr: translate.New()}
 }
 
 // Register memasang seluruh route. Fiber menjalankan tiap permintaan di

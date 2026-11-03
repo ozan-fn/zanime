@@ -16,6 +16,7 @@ type View = 'results' | 'episodes'
 // Baris stream = satu pilihan yang bisa diklik di sidebar server.
 export type StreamRow = {
   name: string
+  source?: string
   type: string
   quality: string
   subs: Sub[]
@@ -41,21 +42,21 @@ const TABS: Array<{ label: string; tab: Tab }> = [
   { label: 'TV', tab: 'tv' },
 ]
 
-// Satu server → satu baris per kualitas; server gagal resolve dibuang dan
-// hanya server premium yang ditampilkan.
+// Satu server → satu baris (kualitas tertinggi). Resolusi lain tidak dipecah
+// jadi baris: player hanya punya menu resolusi untuk HLS, sedangkan server
+// progresif menyimpan tiap resolusi sebagai berkas terpisah.
 const flt = (servers: Server[]): StreamRow[] =>
-  servers.filter((s) => /premium/i.test(s.name)).flatMap((s) => {
+  servers.filter((s) => s.source === 'miruro' || /premium/i.test(s.name)).flatMap((s) => {
     if (s.err || !s.url) return []
-    const mk = (url: string, q: string): StreamRow => ({
+    const quality = s.quality || s.qualities?.[0]?.label || ''
+    return [{
       name: s.name,
+      source: s.source,
       type: s.type,
-      quality: q,
+      quality: quality.toLowerCase(),
       subs: (s.subs || []).map((x) => ({ label: x.label, lang: x.lang, url: x.url })),
-      url,
-    })
-    return s.qualities && s.qualities.length
-      ? s.qualities.map((q) => mk(q.url, q.label))
-      : [mk(s.url!, s.quality ? String(s.quality).toLowerCase() : '')]
+      url: s.url,
+    }]
   })
 
 // slug: nama judul untuk URL yang bisa dibaca (spider-man-no-way-home).
@@ -172,6 +173,8 @@ export function BrowsePanel({ onStreams }: { onStreams: (s: Streams) => void }) 
     try {
       let url = `/api/streams?tab=${useTab}&id=${encodeURIComponent(m.tmdb)}`
       if (ep) url += `&s=${ep.season}&e=${ep.episode}`
+      // imdb dipakai backend mencocokkan judul di miruro (sumber kedua).
+      if (m.id) url += `&imdb=${encodeURIComponent(m.id)}`
       const body = await api<{ servers: Server[] }>(url, signal)
       if (!latest(signal)) return
       const rows = flt(body.servers || [])

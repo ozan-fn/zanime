@@ -18,6 +18,7 @@ import (
 
 	"zanime/internal/em"
 	"zanime/internal/logbus"
+	"zanime/internal/miruro"
 	"zanime/internal/resolve"
 	"zanime/internal/translate"
 )
@@ -79,11 +80,61 @@ func (s *Server) apiStreams(c *fiber.Ctx) error {
 		}
 		tv = &em.TVEpisode{Season: ses, Episode: epi}
 	}
-	res, err := s.em.Streams(c.UserContext(), tab, id, tv)
-	if err != nil {
-		log.Printf("api:streams gagal: %v", err)
-		return s.fail(c, err)
+
+	// embedmaster dan miruro diambil serentak: miruro best-effort, kegagalannya
+	// tidak boleh menutup sumber utama. miruro tidak menerima id, jadi imdb
+	// dari klien dipakai untuk mencocokkan hasil pencarian berjudul sama.
+	imdb := strings.TrimSpace(c.Query("imdb"))
+	if !strings.HasPrefix(imdb, "tt") {
+		imdb = ""
 	}
+	useMiruro := imdb != "" && s.mir != nil
+
+	emCh := make(chan struct {
+		servers []em.Server
+		err     error
+	}, 1)
+	go func() {
+		servers, err := s.em.Streams(c.UserContext(), tab, id, tv)
+		emCh <- struct {
+			servers []em.Server
+			err     error
+		}{servers, err}
+	}()
+	mirCh := make(chan []miruro.Server, 1)
+	if useMiruro {
+		go func() {
+			meta, err := s.tmdb.Meta(c.UserContext(), tab, imdb)
+			if err != nil {
+				log.Printf("api:streams miruro meta: %v", err)
+				mirCh <- nil
+				return
+			}
+			season, episode := 0, 0
+			if tv != nil {
+				season, episode = tv.Season, tv.Episode
+			}
+			servers, err := s.mir.Streams(c.UserContext(), tab, imdb, id, meta.Name, season, episode)
+			if err != nil {
+				log.Printf("api:streams miruro: %v", err)
+				mirCh <- nil
+				return
+			}
+			mirCh <- servers
+		}()
+	}
+
+	got := <-emCh
+	var mir []miruro.Server
+	if useMiruro {
+		mir = <-mirCh
+	}
+	if got.err != nil && len(mir) == 0 {
+		log.Printf("api:streams gagal: %v", got.err)
+		return s.fail(c, got.err)
+	}
+	res := got.servers
+
 	// Semua URL didaftarkan ke pool slug; player/subtitle hanya melihat
 	// /s/<slug> pendek, tidak ada URL ter-encode panjang di network tab.
 	// Ekstensi slug mengikuti jenis hasil verifikasi (hls→.m3u8) supaya player
@@ -107,6 +158,28 @@ func (s *Server) apiStreams(c *fiber.Ctx) error {
 				sb.URL = "/s/" + s.res.Register(sb.URL, hint+"-sub-"+sb.Lang)
 			}
 		}
+	}
+	// miruro membawa header sendiri (Referer/Origin) yang wajib ikut proxy,
+	// termasuk untuk file subtitle-nya. Subtitle didaftarkan berekstensi .vtt
+	// supaya proxy menyajikannya sebagai text/vtt (host bisa mengirim
+	// application/octet-stream atau .jpeg).
+	for _, m := range mir {
+		subs := make([]em.Sub, 0, len(m.Subs))
+		for _, sb := range m.Subs {
+			subs = append(subs, em.Sub{
+				Label: sb.Label,
+				Lang:  sb.Lang,
+				URL:   "/s/" + s.res.RegisterHeaders(sb.URL, "miruro-sub-"+m.Name+"-"+sb.Lang, ".vtt", m.Headers),
+			})
+		}
+		res = append(res, em.Server{
+			Name:    m.Name,
+			Source:  "miruro",
+			Type:    m.Type,
+			Quality: m.Quality,
+			Subs:    subs,
+			URL:     "/s/" + s.res.RegisterHeaders(m.URL, "miruro-"+m.Name, resolve.ExtForKind(m.Type), m.Headers),
+		})
 	}
 	playable := 0
 	for i := range res {
@@ -226,7 +299,7 @@ func (s *Server) apiTranslate(c *fiber.Ctx) error {
 	from := c.Query("from", "en")
 	ctx, cancel := context.WithTimeout(c.UserContext(), 2*time.Minute)
 	defer cancel()
-	body, err := fetchSubtitleText(ctx, raw)
+	body, err := fetchSubtitleText(ctx, raw, s.res.Headers(slug))
 	if err != nil {
 		log.Printf("api:translate sumber gagal: %v", err)
 		return errJSON(c, http.StatusBadGateway, err.Error())
@@ -273,10 +346,16 @@ func (s *Server) apiTranslateFile(c *fiber.Ctx) error {
 }
 
 // fetchSubtitleText mengambil subtitle dari host video lewat slug pool sebagai
-// teks (dipakai jalur terjemahan).
-func fetchSubtitleText(ctx context.Context, raw string) (string, error) {
-	res, err := proxyClient.R().SetContext(ctx).SetDoNotParseResponse(true).
-		SetHeader("User-Agent", mediaUA).SetHeader("Referer", videoReferer).Get(raw)
+// teks (dipakai jalur terjemahan). Header milik slug (mis. Referer/Origin
+// miruro) ikut dikirim, sama seperti proxy, supaya host yang butuh kredensial
+// tidak menolak permintaan.
+func fetchSubtitleText(ctx context.Context, raw string, headers map[string]string) (string, error) {
+	req := proxyClient.R().SetContext(ctx).SetDoNotParseResponse(true).
+		SetHeader("User-Agent", mediaUA).SetHeader("Referer", videoReferer)
+	for k, v := range headers {
+		req.SetHeader(k, v)
+	}
+	res, err := req.Get(raw)
 	if err != nil {
 		return "", fmt.Errorf("gagal menghubungi sumber subtitle: %w", err)
 	}
@@ -288,6 +367,12 @@ func fetchSubtitleText(ctx context.Context, raw string) (string, error) {
 	data, err := io.ReadAll(io.LimitReader(body, 20<<20))
 	if err != nil {
 		return "", err
+	}
+	// Subdl mengirim zip: terjemahan butuh teks .srt/.vtt di dalamnya.
+	if bytes.HasPrefix(data, []byte("PK")) {
+		if text, err := firstSubFile(data); err == nil {
+			return text, nil
+		}
 	}
 	return string(data), nil
 }

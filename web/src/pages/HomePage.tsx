@@ -124,7 +124,7 @@ export function HomePage() {
             <div className={subOpen ? 'lg:min-h-0 lg:flex-1' : 'lg:flex-none'}>
               <SubtitleCard
                 media={streams?.media}
-                player={playing ? { server: playing.server, src: playing.src, subs: playing.subs } : undefined}
+                servers={streams?.rows.map((r) => ({ name: r.name, subs: r.subs })) ?? []}
                 onOpenChange={setSubOpen}
                 onUse={(src, label) => setSubtitle({ src, label })}
               />

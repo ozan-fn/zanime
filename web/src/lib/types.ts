@@ -32,9 +32,10 @@ export type Meta = {
 export type Quality = { label: string; url: string }
 export type Sub = { label: string; lang: string; url: string }
 
-// Satu sumber stream ter-resolve (embedmaster).
+// Satu sumber stream ter-resolve (embedmaster atau miruro).
 export type Server = {
   name: string
+  source?: string // kosong = embedmaster, 'miruro' = sumber anime miruro
   type: string // mp4 | hls
   quality?: string
   qualities?: Quality[]

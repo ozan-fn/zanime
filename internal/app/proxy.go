@@ -69,6 +69,11 @@ func (s *Server) streamProxy(c *fiber.Ctx) error {
 	req := proxyClient.R().SetContext(c.UserContext()).SetDoNotParseResponse(true).
 		SetHeader("User-Agent", mediaUA).
 		SetHeader("Referer", videoReferer)
+	// Sebagian sumber (miruro) membawa header sendiri; itu menang atas default.
+	hops := s.res.Headers(slug)
+	for k, v := range hops {
+		req.SetHeader(k, v)
+	}
 	if rng := c.Get("Range"); rng != "" {
 		req.SetHeader("Range", rng)
 	}
@@ -111,7 +116,7 @@ func (s *Server) streamProxy(c *fiber.Ctx) error {
 		}
 		c.Set("Content-Type", "application/vnd.apple.mpegurl")
 		c.Set("Cache-Control", cache)
-		return c.Status(http.StatusOK).Send([]byte(s.rewritePlaylist(target, string(data))))
+		return c.Status(http.StatusOK).Send([]byte(s.rewritePlaylist(target, string(data), hops)))
 	}
 
 	// Subtitle diteruskan apa adanya: timestamp dari sumber dipakai langsung,
@@ -226,7 +231,7 @@ func isSubtitle(ct, p string) bool {
 // rewritePlaylist menulis ulang satu playlist m3u8 ke slug pool. Baris yang
 // bukan komentar dan bukan tag (#) adalah URI; URI="..." di dalam tag
 // (#EXT-X-KEY, #EXT-X-MEDIA) juga ditulis ulang.
-func (s *Server) rewritePlaylist(base *url.URL, body string) string {
+func (s *Server) rewritePlaylist(base *url.URL, body string, headers map[string]string) string {
 	lines := strings.Split(body, "\n")
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -235,12 +240,12 @@ func (s *Server) rewritePlaylist(base *url.URL, body string) string {
 				rest := trimmed[idx+len(`URI="`):]
 				if end := strings.Index(rest, `"`); end > 0 {
 					abs := resolveRef(base, rest[:end])
-					lines[i] = trimmed[:idx] + `URI="` + "/s/" + s.res.RegisterTemp(abs) + `"` + rest[end+1:]
+					lines[i] = trimmed[:idx] + `URI="` + "/s/" + s.res.RegisterTempHeaders(abs, headers) + `"` + rest[end+1:]
 				}
 			}
 			continue
 		}
-		lines[i] = "/s/" + s.res.RegisterTemp(resolveRef(base, trimmed))
+		lines[i] = "/s/" + s.res.RegisterTempHeaders(resolveRef(base, trimmed), headers)
 	}
 	return strings.Join(lines, "\n")
 }

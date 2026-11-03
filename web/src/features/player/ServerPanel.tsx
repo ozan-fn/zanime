@@ -111,7 +111,10 @@ export function ServerPanel({
                 }`}>
                 <span className="flex flex-wrap items-baseline gap-x-2 text-[11px]">
                   <span className="font-medium text-zinc-100">{s.quality || s.type.toUpperCase()}</span>
-                  <span className="text-zinc-400">{s.type === 'hls' ? 'HLS' : 'MP4'}</span>
+                  {s.quality && <span className="text-zinc-400">{s.type === 'hls' ? 'HLS' : 'MP4'}</span>}
+                  {s.source === 'miruro' && (
+                    <span className="rounded border border-border px-1 text-[9px] uppercase text-zinc-400">miruro</span>
+                  )}
                   {s.subs.length > 0 && <span className="ml-auto text-zinc-500">{s.subs.length} sub</span>}
                 </span>
                 <Sq text={s.name} className="mt-0.5 text-[10px] text-zinc-500" />

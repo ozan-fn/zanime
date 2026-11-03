@@ -101,7 +101,10 @@ describe('BrowsePanel', () => {
     expect(payload.title).toBe('Spider-Man')
     // Kartu subtitle memakai meta/imdb id (`tt…`), bukan id TMDB numerik.
     expect(payload.media).toMatchObject({ tab: 'movie', id: 'tt0145487', name: 'Spider-Man' })
-    expect(payload.rows.map((r: { quality: string }) => r.quality)).toEqual(['1080p', '480p'])
+    // Satu baris per server: kualitas tidak dipecah (player yang memilih).
+    expect(payload.rows).toHaveLength(1)
+    expect(payload.rows[0].quality).toBe('full hd')
+    expect(payload.rows[0].url).toBe('https://host/1080.mp4')
     expect(payload.rows[0].subs).toEqual([{ label: 'Indonesia', lang: 'id', url: 'https://sub/id.vtt' }])
   })
 

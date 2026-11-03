@@ -4,9 +4,10 @@ Streaming server Go + SPA React: cari judul, pilih server, tonton. Browser tidak
 pernah menghubungi host video maupun sumber katalog — semua lewat server.
 Tanpa proses eksternal (`bun`, `node`, `ffmpeg`) saat runtime.
 
-Alur: **cari (Cinemeta) → pilih server (embedmaster) → putar lewat `/s/<slug>`**.
-Scraping, kredensial, dan dekripsi embedmaster di Go (`internal/em`); URL media
-panjang disembunyikan di balik slug pendek.
+Alur: **cari (Cinemeta) → pilih server (embedmaster + miruro) → putar lewat
+`/s/<slug>`**. Scraping, kredensial, dan dekripsi embedmaster di Go
+(`internal/em`); anime juga diambil dari miruro (`internal/miruro`, dicocokkan
+lewat imdb/TMDB). URL media panjang disembunyikan di balik slug pendek.
 
 Stack: [fiber v2](https://github.com/gofiber/fiber) (HTTP engine + router),
 [resty v2](https://github.com/go-resty/resty) (HTTP client),
@@ -20,6 +21,7 @@ main.go            embed web/dist + panggil internal/app
 internal/app       server fiber: route, handler web/api/proxy, rate limit
 internal/tmdb      Cinemeta (cari + meta), cache tmp/tmdb
 internal/em        scrape embedmaster: gerbang → kredensial → feed → resolve
+internal/miruro    stream anime miruro: cari judul → cocokkan id → sources
 internal/subdl     subtitle subdl, cache tmp/subdl
 internal/translate terjemahan subtitle (Indonesia) lewat Google, cache tmp/translate
 internal/resolve   slug /s/<slug> → URL media, peta tmp/resolve
@@ -73,7 +75,7 @@ Frontend (`web/`):
 |------|--------|
 | `GET /api/search?q=&tab=movie\|tv` | cari judul (Cinemeta) |
 | `GET /api/meta/{tab}/{id}` | detail judul; tv menyertakan episode |
-| `GET /api/streams?tab=&id=&s=&e=` | daftar server (`url` sudah berupa `/s/<slug>`) |
+| `GET /api/streams?tab=&id=&s=&e=&imdb=` | daftar server (`url` sudah berupa `/s/<slug>`; `imdb` opsional untuk sumber miruro) |
 | `GET/HEAD /s/{slug}` | proxy media; playlist m3u8 ditulis ulang ke slug |
 | `GET /api/subtitles?tab=&id=&s=&e=&refresh=` | subtitle subdl (Indonesian + English) |
 | `GET /api/subtitles/file?u=<slug>` | zip → VTT siap dipasang |

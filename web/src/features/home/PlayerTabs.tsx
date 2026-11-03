@@ -52,7 +52,11 @@ export function PlayerTabs({
           <ServerPanel streams={streams} />
         </div>
         <div className={tab === 'Subtitle' ? '' : 'hidden'}>
-          <SubtitleCard media={media} onUse={onUse} />
+          <SubtitleCard
+            media={media}
+            servers={streams?.rows.map((r) => ({ name: r.name, subs: r.subs })) ?? []}
+            onUse={onUse}
+          />
         </div>
         <div className={tab === 'Log' ? '' : 'hidden'}>
           <LogPanel className="rounded-lg border border-border" panelClassName="rounded-lg" maxHeight="max-h-64" />
