@@ -1,5 +1,5 @@
-/* Log realtime di luar React: baris datang dari server lewat websocket
- * /api/logs, ditambah baris lokal dari player/dialog. Store kecil + langganan
+/* Log realtime di luar React: baris datang dari server lewat SSE /api/logs,
+ * ditambah baris lokal dari player/dialog. Store kecil + langganan
  * (useSyncExternalStore) supaya komponen apa pun bisa menampilkannya tanpa
  * context. Satu baris dengan `id` yang sama menggantikan baris sebelumnya,
  * jadi langkah yang sama bisa tampil "[sedang…]" lalu berubah "[OK]". */
@@ -72,7 +72,7 @@ export function useLogs(): LogEntry[] {
   return useSyncExternalStore(subscribeLogs, getLogs, getLogs)
 }
 
-// ---- jumlah worker (ikut socket /api/logs) ----
+// ---- jumlah worker (ikut stream /api/logs) ----
 
 let workers = 0
 const workerListeners = new Set<() => void>()
@@ -90,7 +90,7 @@ export function useWorkers(): number {
   return useSyncExternalStore(subscribeWorkers, getWorkers, getWorkers)
 }
 
-// pushServerMessage menerima satu pesan websocket: {"workers":n} atau baris log.
+// pushServerMessage menerima satu pesan SSE: {"workers":n} atau baris log.
 export function pushServerMessage(data: string): void {
   try {
     const msg = JSON.parse(data)
@@ -107,35 +107,22 @@ export function pushServerMessage(data: string): void {
   }
 }
 
-// ---- koneksi websocket ----
+// ---- koneksi SSE ----
 
-let socket: WebSocket | null = null
-let retry: number | undefined
+let source: EventSource | null = null
 
-// connectLogs membuka /api/logs dan menyiarkan baris server + jumlah worker ke
-// store. Aman dipanggil berkali-kali; putus → coba lagi. Diabaikan bila
-// WebSocket tak ada (mis. test tanpa jsdom WebSocket).
+// connectLogs membuka /api/logs (SSE) dan menyiarkan baris server + jumlah
+// worker ke store. Aman dipanggil berkali-kali; EventSource menyambung ulang
+// sendiri bila putus. Diabaikan bila EventSource tak ada (mis. test).
 export function connectLogs(): void {
-  if (typeof WebSocket === 'undefined' || typeof location === 'undefined' || socket) return
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  const ws = new WebSocket(`${proto}://${location.host}/api/logs`)
-  socket = ws
-  ws.onmessage = (e) => pushServerMessage(String(e.data))
-  ws.onclose = () => {
-    socket = null
-    retry = window.setTimeout(connectLogs, 1500)
-  }
-  ws.onerror = () => ws.close()
+  if (typeof EventSource === 'undefined' || source) return
+  const es = new EventSource('/api/logs')
+  source = es
+  es.onmessage = (e) => pushServerMessage(String(e.data))
 }
 
 // disconnectLogs menutup koneksi (dipakai test / unmount).
 export function disconnectLogs(): void {
-  if (retry !== undefined) window.clearTimeout(retry)
-  retry = undefined
-  const ws = socket
-  socket = null
-  if (ws) {
-    ws.onclose = null
-    ws.close()
-  }
+  source?.close()
+  source = null
 }

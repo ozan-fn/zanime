@@ -10,9 +10,8 @@ export default defineConfig({
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },
   },
-  // Dev: API/HWS/playlist dan hasil HLS tetap di server Go (same-origin,
-  // WebSocket Upgrade ikut diteruskan), supaya alur Vite dev identik dengan
-  // build embed.
+  // Dev: API/SSE/playlist dan hasil HLS tetap di server Go (same-origin),
+  // supaya alur Vite dev identik dengan build embed.
   server: {
     proxy: {
       '/api': 'http://localhost:8080',

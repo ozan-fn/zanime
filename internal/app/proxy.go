@@ -1,7 +1,9 @@
 package app
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,7 +16,6 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
 
 	"zanime/internal/logbus"
@@ -157,41 +158,51 @@ func (s *Server) streamProxy(c *fiber.Ctx) error {
 	return c.SendStream(body, size)
 }
 
-// logsRoute menyiarkan log realtime ke browser lewat websocket: riwayat
-// terakhir dulu, lalu baris baru. Dipakai panel log di depan player.
+// logsRoute menyiarkan log realtime + jumlah worker ke browser lewat SSE
+// (/api/logs): riwayat terakhir dulu, lalu baris baru. Dipakai panel log di
+// depan player.
 func (s *Server) logsRoute() fiber.Handler {
-	return websocket.New(func(conn *websocket.Conn) {
+	return func(c *fiber.Ctx) error {
 		if s.logs == nil {
-			return
+			return c.SendStatus(http.StatusServiceUnavailable)
 		}
 		ch, cancel := s.logs.Subscribe()
-		defer cancel()
-		tick := time.NewTicker(700 * time.Millisecond)
-		defer tick.Stop()
-		// Pembaca: mendeteksi klien putus supaya langganan dilepas dan
-		// handler tidak menggantung saat server dimatikan.
-		go func() {
+		c.Set("Content-Type", "text/event-stream")
+		c.Set("Cache-Control", "no-cache")
+		// Reverse proxy (nginx/cPanel) jangan menahan event sampai buffer penuh.
+		c.Set("X-Accel-Buffering", "no")
+		c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+			// Langganan dilepas saat stream berhenti, bukan saat handler
+			// kembali (handler kembali sebelum body ditulis).
+			defer cancel()
+			tick := time.NewTicker(700 * time.Millisecond)
+			defer tick.Stop()
+			send := func(v any) error {
+				data, err := json.Marshal(v)
+				if err != nil {
+					return err
+				}
+				if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+					return err
+				}
+				return w.Flush() // error = klien putus → hentikan stream
+			}
 			for {
-				if _, _, err := conn.ReadMessage(); err != nil {
-					cancel()
-					return
+				select {
+				case ev := <-ch:
+					if send(ev) != nil {
+						return
+					}
+				case <-tick.C:
+					// Angka worker ikut di stream yang sama.
+					if send(map[string]int64{"workers": pool.Get().RunningWorkers()}) != nil {
+						return
+					}
 				}
 			}
-		}()
-		for {
-			select {
-			case ev := <-ch:
-				if err := conn.WriteJSON(ev); err != nil {
-					return
-				}
-			case <-tick.C:
-				// Angka worker ikut di socket log (tanpa koneksi kedua).
-				if err := conn.WriteJSON(map[string]int64{"workers": pool.Get().RunningWorkers()}); err != nil {
-					return
-				}
-			}
-		}
-	})
+		})
+		return nil
+	}
 }
 
 // playlistStats menghitung rendition (master), segmen (#EXTINF), dan apakah

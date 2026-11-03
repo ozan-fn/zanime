@@ -56,6 +56,9 @@ func (s *Server) index(c *fiber.Ctx) error {
 		data = []byte(strings.ReplaceAll(string(data), v.ph, html.EscapeString(v.val)))
 	}
 	c.Set("Content-Type", "text/html; charset=utf-8")
+	// HTML diisi per permintaan (OG + nama aset ber-hash), jadi jangan pernah
+	// disimpan cache: versi lama akan menunjuk aset yang sudah tidak ada.
+	c.Set("Cache-Control", "no-store")
 	return c.Status(http.StatusOK).Send(data)
 }
 
@@ -131,6 +134,13 @@ func (s *Server) webFile(c *fiber.Ctx) error {
 		c.Set("Content-Encoding", enc)
 	}
 	c.Set("Content-Type", contentType(name))
+	// Nama aset Vite ber-hash: aman di-cache selamanya. Berkas statis lain
+	// (favicon, ikon, manifest) tidak ber-hash, jadi cukup sebentar.
+	if strings.HasPrefix(name, "assets/") {
+		c.Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		c.Set("Cache-Control", "public, max-age=3600")
+	}
 	return c.Status(http.StatusOK).Send(data)
 }
 

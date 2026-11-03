@@ -2,6 +2,7 @@ package app
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -15,7 +16,6 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/gorilla/websocket"
 
 	"zanime/internal/em"
 	"zanime/internal/logbus"
@@ -465,6 +465,9 @@ func TestWebFilePrecompressed(t *testing.T) {
 		if !strings.Contains(res.Header().Get("Vary"), "Accept-Encoding") {
 			t.Fatalf("Accept-Encoding %q: Vary %q", tc.accept, res.Header().Get("Vary"))
 		}
+		if cc := res.Header().Get("Cache-Control"); !strings.Contains(cc, "immutable") {
+			t.Fatalf("Accept-Encoding %q: Cache-Control %q, want immutable", tc.accept, cc)
+		}
 		if ct := res.Header().Get("Content-Type"); !strings.Contains(ct, "text/javascript") {
 			t.Fatalf("Accept-Encoding %q: Content-Type %q", tc.accept, ct)
 		}
@@ -479,6 +482,9 @@ func TestWebFilePrecompressed(t *testing.T) {
 	if res.Body.String() != "<svg/>" || res.Header().Get("Content-Encoding") != "" {
 		t.Fatalf("favicon: %q enc=%q", res.Body.String(), res.Header().Get("Content-Encoding"))
 	}
+	if cc := res.Header().Get("Cache-Control"); strings.Contains(cc, "immutable") || !strings.Contains(cc, "max-age") {
+		t.Fatalf("favicon Cache-Control %q, want max-age tanpa immutable", cc)
+	}
 
 	res = httptest.NewRecorder()
 	req = httptest.NewRequest("GET", "/judul/apa-saja", nil)
@@ -486,6 +492,9 @@ func TestWebFilePrecompressed(t *testing.T) {
 	r.ServeHTTP(res, req)
 	if res.Body.String() != "<html>zanime</html>" || res.Header().Get("Content-Encoding") != "" {
 		t.Fatalf("SPA fallback: %q enc=%q", res.Body.String(), res.Header().Get("Content-Encoding"))
+	}
+	if cc := res.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("SPA fallback Cache-Control %q, want no-store", cc)
 	}
 }
 
@@ -570,8 +579,8 @@ func TestStreamProxyLogs(t *testing.T) {
 	}
 }
 
-// TestAPILogsWebSocket: klien websocket menerima riwayat lalu baris baru.
-func TestAPILogsWebSocket(t *testing.T) {
+// TestAPILogsSSE: klien SSE menerima riwayat, baris baru, dan angka worker.
+func TestAPILogsSSE(t *testing.T) {
 	logs := logbus.New()
 	srv := &Server{web: fakeWebFS(), tmdb: tmdb.New(), em: fakeEM(), res: resolve.New(), logs: logs}
 	r := startTestApp(t, srv, func(app *fiber.App) { app.Get("/api/logs", srv.logsRoute()) })
@@ -579,50 +588,57 @@ func TestAPILogsWebSocket(t *testing.T) {
 	// Ditulis sebelum klien menyambung: harus dikirim sebagai riwayat.
 	logs.Emit(logbus.Event{ID: "srv:X:verify", Level: logbus.LevelInfo, Text: "uji X…"})
 
-	conn, _, err := websocket.DefaultDialer.Dial(r.wsURL("/api/logs"), nil)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	// Tunggu handler benar-benar berlangganan sebelum Emit berikutnya.
-	deadline := time.Now().Add(2 * time.Second)
-	for logs.Subscribers() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if logs.Subscribers() == 0 {
-		t.Fatal("handler websocket tidak berlangganan")
-	}
-
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	var got logbus.Event
-	if err := conn.ReadJSON(&got); err != nil {
-		t.Fatalf("baca riwayat: %v", err)
-	}
-	if got.Text != "uji X…" || got.Level != logbus.LevelInfo {
-		t.Fatalf("riwayat = %+v", got)
-	}
-
-	logs.OK("live")
-	if err := conn.ReadJSON(&got); err != nil {
-		t.Fatalf("baca live: %v", err)
-	}
-	if got.Text != "live" || got.Level != logbus.LevelOK {
-		t.Fatalf("live = %+v", got)
-	}
-
-	// Angka worker ikut di socket yang sama, tiap 0,7 dtk.
+	// Satu worker sibuk supaya angka > 0 pasti terkirim.
 	release := make(chan struct{})
 	defer close(release)
 	pool.Get().Submit(func() { <-release })
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	var tick struct {
-		Workers *int64 `json:"workers"`
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.base+"/api/logs", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := conn.ReadJSON(&tick); err != nil {
-		t.Fatalf("baca worker: %v", err)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/logs: %v", err)
 	}
-	if tick.Workers == nil || *tick.Workers < 1 {
-		t.Fatalf("worker saat sibuk = %+v, want >= 1", tick.Workers)
+	defer func() { _ = resp.Body.Close() }()
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
 	}
+
+	// Handler sudah berlangganan sebelum header dikirim.
+	logs.OK("live")
+
+	var sawHistory, sawLive, sawWorkers bool
+	sc := bufio.NewScanner(resp.Body)
+	for sc.Scan() {
+		data, ok := strings.CutPrefix(sc.Text(), "data: ")
+		if !ok {
+			continue
+		}
+		var msg struct {
+			Text    string `json:"text"`
+			Workers *int64 `json:"workers"`
+		}
+		if err := json.Unmarshal([]byte(data), &msg); err != nil {
+			t.Fatalf("data %q: %v", data, err)
+		}
+		switch {
+		case msg.Workers != nil:
+			if *msg.Workers < 1 {
+				t.Fatalf("worker saat sibuk = %d, want >= 1", *msg.Workers)
+			}
+			sawWorkers = true
+		case msg.Text == "uji X…":
+			sawHistory = true
+		case msg.Text == "live":
+			sawLive = true
+		}
+		if sawHistory && sawLive && sawWorkers {
+			return
+		}
+	}
+	t.Fatalf("SSE belum lengkap: history=%v live=%v workers=%v", sawHistory, sawLive, sawWorkers)
 }

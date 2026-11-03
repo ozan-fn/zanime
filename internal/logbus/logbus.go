@@ -1,4 +1,4 @@
-// Package logbus menyiarkan baris log server ke klien web lewat websocket:
+// Package logbus menyiarkan baris log server ke klien web lewat SSE:
 // satu Hub fan-out ke banyak klien (riwayat terakhir ikut di-replay ke klien
 // baru), dan pengiriman non-blocking supaya logging tidak pernah memperlambat
 // jalur stream.

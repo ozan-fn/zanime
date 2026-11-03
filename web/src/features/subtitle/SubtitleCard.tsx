@@ -219,19 +219,22 @@ export function SubtitleCard({
                   {server || 'player'}
                 </span>
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                {english && !st?.url && (
-                  <button
-                    type="button"
-                    aria-label={`Terjemahkan subtitle ${s.label} ke Indonesia`}
-                    disabled={st?.busy}
-                    onClick={() => void translate(s)}
-                    className="inline-flex shrink-0 items-center gap-1 rounded border border-border px-2 py-1 text-[10px] text-zinc-300 transition hover:border-zinc-600 hover:bg-zinc-800 disabled:opacity-40"
-                  >
-                    <Languages className="h-2.5 w-2.5" />
-                    {st?.busy ? 'menerjemahkan…' : 'terjemahkan'}
-                  </button>
-                )}
+              {/* Kolom tombol tetap: "pakai" selalu di posisi yang sama. */}
+              <div className="mt-1 grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-1.5">
+                <div className="flex min-w-0 justify-end">
+                  {english && !st?.url && (
+                    <button
+                      type="button"
+                      aria-label={`Terjemahkan subtitle ${s.label} ke Indonesia`}
+                      disabled={st?.busy}
+                      onClick={() => void translate(s)}
+                      className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[10px] text-zinc-300 transition hover:border-zinc-600 hover:bg-zinc-800 disabled:opacity-40"
+                    >
+                      <Languages className="h-2.5 w-2.5" />
+                      {st?.busy ? 'menerjemahkan…' : 'terjemahkan'}
+                    </button>
+                  )}
+                </div>
                 <button
                   type="button"
                   aria-label={`Pakai subtitle ${s.label}`}
@@ -239,7 +242,7 @@ export function SubtitleCard({
                     onUse(s.url, s.label || s.lang)
                     log.ok(`Subtitle dipakai · ${s.label}`, 'sub:pick')
                   }}
-                  className="shrink-0 rounded bg-zinc-200 px-2.5 py-1 text-[10px] font-medium text-zinc-900 transition hover:bg-white"
+                  className="w-full rounded bg-zinc-200 px-2 py-1 text-center text-[10px] font-medium text-zinc-900 transition hover:bg-white"
                 >
                   pakai
                 </button>
@@ -260,13 +263,15 @@ export function SubtitleCard({
               )}
               {st?.error && <p className="mt-1 text-[9px] text-rose-400">{st.error}</p>}
               {st?.url && (
-                <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                  <span className="shrink-0 rounded border border-emerald-800 bg-emerald-950/40 px-1 text-[9px] uppercase text-emerald-300">
-                    hasil translate
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-[10px] text-zinc-400">
-                    Indonesia · {st.cues} cue{st.cached ? ' · cache server' : ''}
-                  </span>
+                <div className="mt-1 grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-1.5">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="shrink-0 rounded border border-emerald-800 bg-emerald-950/40 px-1 text-[9px] uppercase text-emerald-300">
+                      hasil translate
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[10px] text-zinc-400">
+                      Indonesia · {st.cues} cue{st.cached ? ' · cache server' : ''}
+                    </span>
+                  </div>
                   <button
                     type="button"
                     aria-label="Pakai hasil terjemahan Indonesia"
@@ -274,7 +279,7 @@ export function SubtitleCard({
                       onUse(st.url!, 'Indonesia (terjemahan)')
                       log.ok('Subtitle terjemahan dipakai', 'sub:pick')
                     }}
-                    className="shrink-0 rounded bg-zinc-200 px-2.5 py-1 text-[10px] font-medium text-zinc-900 transition hover:bg-white"
+                    className="w-full rounded bg-zinc-200 px-2 py-1 text-center text-[10px] font-medium text-zinc-900 transition hover:bg-white"
                   >
                     pakai
                   </button>
@@ -306,19 +311,22 @@ export function SubtitleCard({
                   </span>
                   <span className="shrink-0 text-[10px] text-zinc-600 max-[360px]:hidden">{s.downloads}</span>
                 </div>
-                <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                  {english && !st?.url && (
-                    <button
-                      type="button"
-                      aria-label={`Terjemahkan subtitle ${s.name} ke Indonesia`}
-                      disabled={st?.busy}
-                      onClick={() => void translate(s)}
-                      className="inline-flex shrink-0 items-center gap-1 rounded border border-border px-2 py-1 text-[10px] text-zinc-300 transition hover:border-zinc-600 hover:bg-zinc-800 disabled:opacity-40"
-                    >
-                      <Languages className="h-2.5 w-2.5" />
-                      {st?.busy ? 'menerjemahkan…' : 'terjemahkan'}
-                    </button>
-                  )}
+                {/* Kolom tombol tetap: "pakai" selalu di posisi yang sama. */}
+                <div className="mt-1 grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-1.5">
+                  <div className="flex min-w-0 justify-end">
+                    {english && !st?.url && (
+                      <button
+                        type="button"
+                        aria-label={`Terjemahkan subtitle ${s.name} ke Indonesia`}
+                        disabled={st?.busy}
+                        onClick={() => void translate(s)}
+                        className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[10px] text-zinc-300 transition hover:border-zinc-600 hover:bg-zinc-800 disabled:opacity-40"
+                      >
+                        <Languages className="h-2.5 w-2.5" />
+                        {st?.busy ? 'menerjemahkan…' : 'terjemahkan'}
+                      </button>
+                    )}
+                  </div>
                   <button
                     type="button"
                     aria-label={`Pakai subtitle ${s.name}`}
@@ -326,7 +334,7 @@ export function SubtitleCard({
                       onUse(s.url, s.language || s.lang)
                       log.ok(`Subtitle dipakai · ${s.name}`, 'sub:pick')
                     }}
-                    className="shrink-0 rounded bg-zinc-200 px-2.5 py-1 text-[10px] font-medium text-zinc-900 transition hover:bg-white"
+                    className="w-full rounded bg-zinc-200 px-2 py-1 text-center text-[10px] font-medium text-zinc-900 transition hover:bg-white"
                   >
                     pakai
                   </button>
@@ -346,13 +354,15 @@ export function SubtitleCard({
                 )}
                 {st?.error && <p className="mt-1 text-[9px] text-rose-400">{st.error}</p>}
                 {st?.url && (
-                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                    <span className="shrink-0 rounded border border-emerald-800 bg-emerald-950/40 px-1 text-[9px] uppercase text-emerald-300">
-                      hasil translate
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-[10px] text-zinc-400">
-                      Indonesia · {st.cues} cue{st.cached ? ' · cache server' : ''}
-                    </span>
+                  <div className="mt-1 grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-1.5">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="shrink-0 rounded border border-emerald-800 bg-emerald-950/40 px-1 text-[9px] uppercase text-emerald-300">
+                        hasil translate
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-[10px] text-zinc-400">
+                        Indonesia · {st.cues} cue{st.cached ? ' · cache server' : ''}
+                      </span>
+                    </div>
                     <button
                       type="button"
                       aria-label="Pakai hasil terjemahan Indonesia"
@@ -360,7 +370,7 @@ export function SubtitleCard({
                         onUse(st.url!, 'Indonesia (terjemahan)')
                         log.ok('Subtitle terjemahan dipakai', 'sub:pick')
                       }}
-                      className="shrink-0 rounded bg-zinc-200 px-2.5 py-1 text-[10px] font-medium text-zinc-900 transition hover:bg-white"
+                      className="w-full rounded bg-zinc-200 px-2 py-1 text-center text-[10px] font-medium text-zinc-900 transition hover:bg-white"
                     >
                       pakai
                     </button>

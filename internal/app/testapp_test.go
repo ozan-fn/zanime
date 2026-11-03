@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -83,9 +82,4 @@ func (a *testApp) ServeHTTP(res *httptest.ResponseRecorder, req *http.Request) {
 	}
 	res.Code = resp.StatusCode
 	_, _ = res.Body.Write(body)
-}
-
-// wsURL mengubah base http → ws untuk test websocket.
-func (a *testApp) wsURL(path string) string {
-	return "ws" + strings.TrimPrefix(a.base, "http") + path
 }

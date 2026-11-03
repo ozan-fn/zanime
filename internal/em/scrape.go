@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -18,6 +19,9 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+
+	"zanime/internal/config"
+	"zanime/internal/proxy"
 )
 
 const (
@@ -249,6 +253,12 @@ func originOf(rawURL string) string {
 // tidak boleh menghabiskan seluruh anggaran waktu scrape.
 func newHTTP() *resty.Client {
 	jar, _ := cookiejar.New(nil)
-	return resty.NewWithClient(&http.Client{Jar: jar, Timeout: scrapeSecs * time.Second}).
+	c := resty.NewWithClient(&http.Client{Jar: jar, Timeout: scrapeSecs * time.Second}).
 		SetHeader("User-Agent", userAgent)
+	if proxyURL := config.ProxyURL(); proxyURL != "" {
+		if err := proxy.Configure(c, proxyURL); err != nil {
+			log.Printf("proxy embedmaster: %v", err)
+		}
+	}
+	return c
 }

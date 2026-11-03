@@ -4,8 +4,10 @@ import (
 	"context"
 	"embed"
 	"flag"
+	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -29,7 +31,7 @@ func main() {
 	addr := flag.String("addr", "0.0.0.0:"+config.String("PORT", "8080"), "HTTP listen address")
 	flag.Parse()
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	// /off = soft kill tanpa kredensial: balas dulu, lalu hentikan listener
 	// secara graceful (permintaan yang sedang jalan diberi waktu selesai).
 	// Didaftarkan sebelum Register supaya tidak kena rate limit/SPA fallback.
@@ -46,8 +48,35 @@ func main() {
 	})
 	webapp.New(webRoot).Register(app)
 
-	log.Printf("listening on %s", *addr)
-	if err := app.Listen(*addr); err != nil {
+	// Banner Fiber dicetak dari ln.Addr(); laporkan localhost supaya bisa
+	// diklik, sementara socket tetap mendengarkan di alamat asli (0.0.0.0).
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := app.Listener(localhostAddr(ln)); err != nil {
 		log.Fatal(err)
 	}
 }
+
+// localhostAddr membungkus listener agar Addr() melaporkan localhost:<port>,
+// bukan alamat bind sebenarnya.
+func localhostAddr(ln net.Listener) net.Listener {
+	tcp, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return ln
+	}
+	return &addrListener{Listener: ln, addr: textAddr(fmt.Sprintf("localhost:%d", tcp.Port))}
+}
+
+type addrListener struct {
+	net.Listener
+	addr net.Addr
+}
+
+func (l *addrListener) Addr() net.Addr { return l.addr }
+
+type textAddr string
+
+func (a textAddr) Network() string { return "tcp" }
+func (a textAddr) String() string  { return string(a) }

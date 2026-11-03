@@ -23,9 +23,9 @@ internal/tmdb      Cinemeta (cari + meta), cache tmp/tmdb
 internal/em        scrape embedmaster: gerbang → kredensial → feed → resolve
 internal/miruro    stream anime miruro: cari judul → cocokkan id → sources
 internal/subdl     subtitle subdl, cache tmp/subdl
-internal/translate terjemahan subtitle (Indonesia) lewat Google, cache tmp/translate
+internal/translate terjemahan subtitle (Indonesia) lewat Google batchexecute, cache tmp/translate
 internal/resolve   slug /s/<slug> → URL media, peta tmp/resolve
-internal/logbus    hub log realtime (websocket)
+internal/logbus    hub log realtime (SSE)
 internal/config    loader .env (godotenv)
 web/               React + TS (Vite), features/ + pages/
 ```
@@ -50,6 +50,7 @@ Backend, dibaca dari `.env` (contoh: `.env.example`); env proses menang:
 |----------|---------|------|
 | `PORT` | `8080` | port HTTP |
 | `WORKERS` | `20` | batas pekerja paralel (resolve server, terjemahan cue) |
+| `PROXY_URL` | – | proxy HTTP/SOCKS5 untuk subdl + embedmaster; kosong = langsung |
 
 Nilai bawaan yang diubah dari default library/Go, semuanya di kode:
 
@@ -80,7 +81,7 @@ Frontend (`web/`):
 | `GET/HEAD /s/{slug}` | proxy media; playlist m3u8 ditulis ulang ke slug |
 | `GET /api/subtitles?tab=&id=&s=&e=&refresh=` | subtitle subdl (Indonesian + English) |
 | `GET /api/subtitles/file?u=<slug>` | zip → VTT siap dipasang |
-| `WS /api/logs` | log realtime `{id,at,level,text}` |
+| `GET /api/logs` | stream SSE: log `{id,at,level,text}` + `{workers:n}` tiap 0,7 dtk |
 | `GET /healthz` | `ok` |
 
 ## Catatan desain
@@ -92,8 +93,8 @@ Frontend (`web/`):
   ekstensi media supaya player memilih jalur HLS yang benar.
 - **Kripto** embedmaster diporting ke Go (obfuscation kredensial, dekripsi
   SHA256-XOR). Golden test `TestDecryptKnownVector` memakai vektor asli.
-- **Log** dikirim per tahap (scrape, resolve, playlist, pemutaran) lewat
-  websocket; teks tidak memuat URL/host.
+- **Log** dikirim per tahap (scrape, resolve, playlist, pemutaran) lewat SSE;
+  teks tidak memuat URL/host.
 
 ## Test
 
@@ -106,7 +107,7 @@ cd web && pnpm lint && pnpm test
 
 Cakupan: pipeline em di atas `httptest` (gerbang → feed → resolve, cache,
 retry, ctx batal), kripto (vektor asli + roundtrip), tmdb/subdl (parsing, cache,
-error), resolve (slug, TTL, prune), logbus, kontrak API + proxy + websocket di
+error), resolve (slug, TTL, prune), logbus, kontrak API + proxy + SSE di
 `main`, dan komponen/store frontend.
 
 ## Batasan

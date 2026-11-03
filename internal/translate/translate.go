@@ -1,5 +1,10 @@
-// Package translate menerjemahkan subtitle VTT lewat endpoint publik Google
-// Translate (yang juga dipakai subtitlewise: translate_a/single, client=gtx).
+// Package translate menerjemahkan subtitle VTT lewat Google Translate.
+//
+// Jalur utama adalah RPC internal translate.google.com (batchexecute, rpcid
+// MkEWBc), sama seperti yang dipakai web Translate sendiri. Tanpa login cukup
+// POST ke batchexecute — tidak perlu cookie, at, maupun token halaman. Bila RPC
+// gagal, dipakai endpoint publik lama (translate_a/single) sebagai cadangan.
+//
 // Hasilnya di-cache di ./tmp/translate supaya subtitle yang sama tidak
 // diterjemahkan dua kali.
 package translate
@@ -24,19 +29,24 @@ import (
 const (
 	// dir: cache terjemahan per konten subtitle + bahasa tujuan.
 	dir = "tmp/translate"
-	// defaultBase: endpoint terjemahan Google (dipakai subtitlewise).
+	// defaultBase: endpoint publik lama, dipakai bila RPC gagal.
 	defaultBase = "https://translate.googleapis.com/translate_a/single"
 	// client: dict-chrome-ex dipakai, bukan gtx — endpoint yang sama tapi gtx
 	// kini dibalas halaman "Sorry..." untuk permintaan non-browser.
 	clientParam = "dict-chrome-ex"
+	// defaultOrigin: host web Translate (batchexecute).
+	defaultOrigin = "https://translate.google.com"
 	// ua: Google menolak permintaan tanpa UA browser yang wajar.
 	ua = "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0"
+	// rpcID: RPC terjemahan di TranslateWebserverUi.
+	rpcID = "MkEWBc"
 )
 
-// Client menerjemahkan subtitle. Base dapat ditimpa test.
+// Client menerjemahkan subtitle. Base dan Origin dapat ditimpa test.
 type Client struct {
-	Base string
-	http *resty.Client
+	Base   string // endpoint publik lama
+	Origin string // host batchexecute
+	http   *resty.Client
 }
 
 // Result adalah hasil satu terjemahan.
@@ -49,8 +59,9 @@ type Result struct {
 
 func New() *Client {
 	return &Client{
-		Base: defaultBase,
-		http: resty.New().SetTimeout(20*time.Second).SetHeader("User-Agent", ua),
+		Base:   defaultBase,
+		Origin: defaultOrigin,
+		http:   resty.New().SetTimeout(20*time.Second).SetHeader("User-Agent", ua),
 	}
 }
 
@@ -181,8 +192,59 @@ func splitBlocks(body string) [][]string {
 	return blocks
 }
 
-// text menerjemahkan satu potongan teks (satu cue) lewat endpoint Google.
+// text menerjemahkan satu potongan teks (satu cue). RPC batchexecute dipakai
+// lebih dulu; bila gagal, endpoint publik jadi cadangan.
 func (c *Client) text(ctx context.Context, from, to, s string) (string, error) {
+	out, rpcErr := c.textRPC(ctx, from, to, s)
+	if rpcErr == nil {
+		return out, nil
+	}
+	out, pubErr := c.textPublic(ctx, from, to, s)
+	if pubErr == nil {
+		return out, nil
+	}
+	return "", fmt.Errorf("batchexecute: %w; publik: %v", rpcErr, pubErr)
+}
+
+// textRPC memanggil batchexecute MkEWBc tanpa cookie/at.
+func (c *Client) textRPC(ctx context.Context, from, to, s string) (string, error) {
+	inner, err := json.Marshal([]any{[]any{s, from, to, 1, nil, 1}, []any{}})
+	if err != nil {
+		return "", err
+	}
+	req, err := json.Marshal([]any{[]any{[]any{rpcID, string(inner), nil, "generic"}}})
+	if err != nil {
+		return "", err
+	}
+	res, err := c.http.R().SetContext(ctx).
+		SetHeader("Origin", c.Origin).
+		SetHeader("Referer", c.Origin+"/").
+		SetQueryParams(map[string]string{
+			"rpcids":       rpcID,
+			"source-path":  "/",
+			"hl":           "en-US",
+			"soc-app":      "1",
+			"soc-platform": "1",
+			"soc-device":   "1",
+			"rt":           "c",
+		}).
+		SetFormData(map[string]string{"f.req": string(req)}).
+		Post(c.rpcURL())
+	if err != nil {
+		return "", err
+	}
+	if res.StatusCode() != 200 {
+		return "", fmt.Errorf("batchexecute HTTP %s", res.Status())
+	}
+	return parseBatch(res.Body())
+}
+
+func (c *Client) rpcURL() string {
+	return c.Origin + "/_/TranslateWebserverUi/data/batchexecute"
+}
+
+// textPublic memakai endpoint publik lama (translate_a/single).
+func (c *Client) textPublic(ctx context.Context, from, to, s string) (string, error) {
 	var last error
 	for attempt := 0; attempt < 2; attempt++ {
 		res, err := c.http.R().SetContext(ctx).
@@ -209,6 +271,84 @@ func (c *Client) text(ctx context.Context, from, to, s string) (string, error) {
 		return out, nil
 	}
 	return "", last
+}
+
+// parseBatch membaca jawaban batchexecute: baris `[["wrb.fr", ...]]` membawa
+// string JSON yang harus di-parse sekali lagi.
+func parseBatch(body []byte) (string, error) {
+	var payload []byte
+	for _, ln := range strings.Split(string(body), "\n") {
+		ln = strings.TrimSpace(ln)
+		if strings.HasPrefix(ln, `[["wrb.fr"`) {
+			payload = []byte(ln)
+			break
+		}
+	}
+	if payload == nil {
+		return "", fmt.Errorf("jawaban batchexecute tidak dikenal")
+	}
+	var messages []json.RawMessage
+	if err := json.Unmarshal(payload, &messages); err != nil {
+		return "", fmt.Errorf("jawaban batchexecute rusak: %w", err)
+	}
+	for _, raw := range messages {
+		var msg []json.RawMessage
+		if json.Unmarshal(raw, &msg) != nil || len(msg) < 3 {
+			continue
+		}
+		var id string
+		if json.Unmarshal(msg[1], &id) != nil || id != rpcID {
+			continue
+		}
+		var inner string
+		if json.Unmarshal(msg[2], &inner) != nil || inner == "" {
+			continue
+		}
+		return parseInner([]byte(inner))
+	}
+	return "", fmt.Errorf("hasil %s tidak ada", rpcID)
+}
+
+// parseInner mengambil teks hasil dari payload MkEWBc:
+// [..., [[[null,...,[["hasil",...]],...]],"id",1,"en",...]].
+func parseInner(data []byte) (string, error) {
+	var inner []any
+	if err := json.Unmarshal(data, &inner); err != nil || len(inner) < 2 {
+		return "", fmt.Errorf("hasil terjemahan tidak dikenal")
+	}
+	outer, _ := inner[1].([]any)
+	if len(outer) == 0 {
+		return "", fmt.Errorf("hasil terjemahan kosong")
+	}
+	group, _ := outer[0].([]any)
+	if len(group) == 0 {
+		return "", fmt.Errorf("hasil terjemahan kosong")
+	}
+	head, _ := group[0].([]any)
+	if len(head) <= 5 {
+		return "", fmt.Errorf("hasil terjemahan tanpa kalimat")
+	}
+	sentences, _ := head[5].([]any)
+	var sb strings.Builder
+	for _, item := range sentences {
+		sentence, ok := item.([]any)
+		if !ok || len(sentence) == 0 {
+			continue
+		}
+		text, ok := sentence[0].(string)
+		if !ok || text == "" {
+			continue
+		}
+		// Kalimat Google tidak membawa spasi antarkalimat.
+		if sb.Len() > 0 && !strings.HasSuffix(sb.String(), " ") && !strings.HasPrefix(text, " ") {
+			sb.WriteString(" ")
+		}
+		sb.WriteString(text)
+	}
+	if sb.Len() == 0 {
+		return "", fmt.Errorf("terjemahan kosong")
+	}
+	return sb.String(), nil
 }
 
 // parseSingle membaca jawaban translate_a/single: [[["hasil","asal",...],...],...]

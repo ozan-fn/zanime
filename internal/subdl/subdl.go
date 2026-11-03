@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,6 +23,9 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+
+	"zanime/internal/config"
+	"zanime/internal/proxy"
 )
 
 const (
@@ -69,7 +73,13 @@ type Client struct {
 }
 
 func New() *Client {
-	return &Client{site: defaultSite, api: defaultAPI, http: resty.New().SetTimeout(httpTimeout)}
+	c := resty.New().SetTimeout(httpTimeout)
+	if proxyURL := config.ProxyURL(); proxyURL != "" {
+		if err := proxy.Configure(c, proxyURL); err != nil {
+			log.Printf("proxy subdl: %v", err)
+		}
+	}
+	return &Client{site: defaultSite, api: defaultAPI, http: c}
 }
 
 // SetBase menimpa kedua host (site + API); dipakai test dengan httptest.Server.

@@ -12,7 +12,7 @@ LDFLAGS := -s -w
 # build tetap selesai dan hanya memberi pesan.
 build:
 	pnpm --dir web build
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(BINARY) .
+	CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS)" -o $(BINARY) .
 	@if command -v upx >/dev/null 2>&1; then \
 		upx --best --lzma ./$(BINARY); \
 	else \
