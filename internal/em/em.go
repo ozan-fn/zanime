@@ -14,10 +14,11 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/go-resty/resty/v2"
+
+	"zanime/internal/pool"
 )
 
 const (
@@ -158,16 +159,14 @@ func (c *Client) scrape(ctx context.Context, tab, id string, tv *TVEpisode) ([]S
 	}
 	c.logf("feed", LogOK, "feed: %d server (resolve paralel)", len(rows))
 
-	// Resolve semua server serentak: satu goroutine per server, tanpa batas
-	// worker. Indeks dijaga supaya urutan server di UI tetap sama seperti feed.
-	// Hasil resolve langsung ditampilkan (tanpa probe 128 KiB); jenis stream
-	// ditebak dari jawaban resolve + ekstensi URL.
+	// Resolve semua server paralel di worker pool global. Indeks dijaga supaya
+	// urutan server di UI tetap sama seperti feed. Hasil resolve langsung
+	// ditampilkan (tanpa probe 128 KiB); jenis stream ditebak dari jawaban
+	// resolve + ekstensi URL.
 	servers := make([]Server, len(rows))
-	var wg sync.WaitGroup
+	group := pool.Get().NewGroupContext(ctx)
 	for i, row := range rows {
-		wg.Add(1)
-		go func(i int, row feedRow) {
-			defer wg.Done()
+		group.Submit(func() {
 			sid := fmt.Sprintf("srv:%d", i+1)
 			s := Server{Name: row.SourceName}
 			c.logf(sid+":resolve", LogInfo, "Menyiapkan server %d dari %d…", i+1, len(rows))
@@ -196,9 +195,9 @@ func (c *Client) scrape(ctx context.Context, tab, id string, tv *TVEpisode) ([]S
 			c.logf(sid+":ready", LogOK, "Server %d siap diputar · %s · %d kualitas · %d subtitle",
 				i+1, strings.ToUpper(kind), len(data.Qualities), len(data.Subtitles))
 			servers[i] = s
-		}(i, row)
+		})
 	}
-	wg.Wait()
+	_ = group.Wait()
 
 	if len(servers) == 0 {
 		return nil, fmt.Errorf("tidak ada server yang dikembalikan")

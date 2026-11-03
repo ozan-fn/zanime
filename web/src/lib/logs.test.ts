@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { clearLogs, getLogs, log, push, pushEvent, subscribeLogs } from './logs'
+import { clearLogs, getLogs, getWorkers, log, push, pushEvent, pushServerMessage, subscribeLogs } from './logs'
 
 afterEach(() => clearLogs())
 
@@ -60,5 +60,21 @@ describe('logs store', () => {
     push('info', 'x')
     clearLogs()
     expect(getLogs()).toHaveLength(0)
+  })
+
+  it('pushServerMessage memisahkan angka worker dari baris log', () => {
+    pushServerMessage('{"workers":7}')
+    expect(getWorkers()).toBe(7)
+    expect(getLogs()).toHaveLength(0)
+
+    pushServerMessage('{"workers":"bukan angka"}')
+    expect(getWorkers()).toBe(7)
+
+    pushServerMessage('{"at":"12:00:00.000","level":"ok","text":"halo"}')
+    expect(getLogs()).toHaveLength(1)
+    expect(getLogs()[0]).toMatchObject({ level: 'ok', text: 'halo' })
+
+    pushServerMessage('bukan json')
+    expect(getLogs()).toHaveLength(1)
   })
 })

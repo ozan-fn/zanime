@@ -3,6 +3,7 @@ module zanime
 go 1.27.0
 
 require (
+	github.com/alitto/pond/v2 v2.7.3
 	github.com/go-resty/resty/v2 v2.17.2
 	github.com/gofiber/contrib/websocket v1.3.4
 	github.com/gofiber/fiber/v2 v2.52.16

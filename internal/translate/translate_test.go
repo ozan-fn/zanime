@@ -6,8 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"zanime/internal/pool"
 )
 
 // TestTranslateVTTPreservesTimingAndCaches: tiap cue diterjemahkan, timestamp
@@ -61,6 +65,42 @@ func TestTranslateVTTPreservesTimingAndCaches(t *testing.T) {
 	if cached, ok := Cached(res.Key); !ok || cached != res.VTT {
 		t.Fatal("Cached tidak mengembalikan hasil tersimpan")
 	}
+}
+
+// TestTranslateCuesRunInWorkerPool: cue yang sedang diterjemahkan terlihat
+// sebagai worker aktif (dipakai badge jumlah worker di web).
+func TestTranslateCuesRunInWorkerPool(t *testing.T) {
+	t.Chdir(t.TempDir())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(entered) })
+		<-release
+		_ = json.NewEncoder(w).Encode([]any{[]any{[]any{"halo"}}})
+	}))
+	defer up.Close()
+
+	c := New()
+	c.Base = up.URL
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = c.TranslateVTT(context.Background(), "WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nHello\n", "en", "id")
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("permintaan terjemahan tidak masuk worker pool")
+	}
+	if got := pool.Get().RunningWorkers(); got < 1 {
+		t.Fatalf("worker aktif saat menerjemahkan = %d, want >= 1", got)
+	}
+
+	close(release)
+	<-done
 }
 
 // TestCachedRejectsBadKey: kunci yang bukan hex 40 karakter tidak dibaca dari

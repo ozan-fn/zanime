@@ -72,26 +72,55 @@ export function useLogs(): LogEntry[] {
   return useSyncExternalStore(subscribeLogs, getLogs, getLogs)
 }
 
+// ---- jumlah worker (ikut socket /api/logs) ----
+
+let workers = 0
+const workerListeners = new Set<() => void>()
+
+export function getWorkers(): number {
+  return workers
+}
+
+export function subscribeWorkers(fn: () => void): () => void {
+  workerListeners.add(fn)
+  return () => workerListeners.delete(fn)
+}
+
+export function useWorkers(): number {
+  return useSyncExternalStore(subscribeWorkers, getWorkers, getWorkers)
+}
+
+// pushServerMessage menerima satu pesan websocket: {"workers":n} atau baris log.
+export function pushServerMessage(data: string): void {
+  try {
+    const msg = JSON.parse(data)
+    if (msg && 'workers' in msg) {
+      if (typeof msg.workers === 'number' && msg.workers !== workers) {
+        workers = msg.workers
+        for (const fn of workerListeners) fn()
+      }
+      return
+    }
+    pushEvent(msg)
+  } catch {
+    /* baris rusak: abaikan */
+  }
+}
+
 // ---- koneksi websocket ----
 
 let socket: WebSocket | null = null
 let retry: number | undefined
 
-// connectLogs membuka /api/logs dan menyiarkan baris server ke store. Aman
-// dipanggil berkali-kali; putus → coba lagi. Diabaikan bila WebSocket tak ada
-// (mis. test tanpa jsdom WebSocket).
+// connectLogs membuka /api/logs dan menyiarkan baris server + jumlah worker ke
+// store. Aman dipanggil berkali-kali; putus → coba lagi. Diabaikan bila
+// WebSocket tak ada (mis. test tanpa jsdom WebSocket).
 export function connectLogs(): void {
   if (typeof WebSocket === 'undefined' || typeof location === 'undefined' || socket) return
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   const ws = new WebSocket(`${proto}://${location.host}/api/logs`)
   socket = ws
-  ws.onmessage = (e) => {
-    try {
-      pushEvent(JSON.parse(String(e.data)))
-    } catch {
-      /* baris rusak: abaikan */
-    }
-  }
+  ws.onmessage = (e) => pushServerMessage(String(e.data))
   ws.onclose = () => {
     socket = null
     retry = window.setTimeout(connectLogs, 1500)

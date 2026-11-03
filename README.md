@@ -49,12 +49,13 @@ Backend, dibaca dari `.env` (contoh: `.env.example`); env proses menang:
 | Variabel | Default | Arti |
 |----------|---------|------|
 | `PORT` | `8080` | port HTTP |
+| `WORKERS` | `20` | batas pekerja paralel (resolve server, terjemahan cue) |
 
 Nilai bawaan yang diubah dari default library/Go, semuanya di kode:
 
 | Bagian | Nilai | Lokasi |
 |--------|-------|--------|
-| Resolve server | semua server serentak (satu goroutine per server) | `internal/em/em.go` |
+| Resolve server & terjemahan | worker pool global, batas `WORKERS` | `internal/pool` |
 | Batas waktu scrape | total 30 dtk; HTTP keluar 20 dtk; subtitle 20 dtk; zip subtitle 30 dtk | `internal/em`, `internal/tmdb`, `internal/subdl`, `main.go` |
 | TTL cache | tmdb 24 jam, em 15 mnt, subdl 10 mnt, resolve 6 jam | `internal/*` |
 | Riwayat log | server 200 baris, klien 400 baris | `internal/logbus`, `web/src/lib/logs.ts` |

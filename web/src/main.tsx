@@ -7,8 +7,8 @@ import { HomePage } from '@/pages/HomePage'
 import { NotFound } from '@/pages/NotFound'
 import './index.css'
 
-// Buka websocket log sekali untuk seluruh aplikasi (bukan di komponen supaya
-// test yang me-render komponen tidak ikut menyambung jaringan).
+// Buka websocket log + worker sekali untuk seluruh aplikasi (bukan di
+// komponen supaya test yang me-render komponen tidak ikut menyambung jaringan).
 connectLogs()
 
 createRoot(document.getElementById('root')!).render(

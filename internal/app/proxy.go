@@ -18,6 +18,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"zanime/internal/logbus"
+	"zanime/internal/pool"
 )
 
 // proxyClient streams remote media through RAM — no overall timeout, playback
@@ -165,6 +166,8 @@ func (s *Server) logsRoute() fiber.Handler {
 		}
 		ch, cancel := s.logs.Subscribe()
 		defer cancel()
+		tick := time.NewTicker(700 * time.Millisecond)
+		defer tick.Stop()
 		// Pembaca: mendeteksi klien putus supaya langganan dilepas dan
 		// handler tidak menggantung saat server dimatikan.
 		go func() {
@@ -175,9 +178,17 @@ func (s *Server) logsRoute() fiber.Handler {
 				}
 			}
 		}()
-		for ev := range ch {
-			if err := conn.WriteJSON(ev); err != nil {
-				return
+		for {
+			select {
+			case ev := <-ch:
+				if err := conn.WriteJSON(ev); err != nil {
+					return
+				}
+			case <-tick.C:
+				// Angka worker ikut di socket log (tanpa koneksi kedua).
+				if err := conn.WriteJSON(map[string]int64{"workers": pool.Get().RunningWorkers()}); err != nil {
+					return
+				}
 			}
 		}
 	})

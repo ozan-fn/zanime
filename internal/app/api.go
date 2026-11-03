@@ -90,6 +90,9 @@ func (s *Server) apiStreams(c *fiber.Ctx) error {
 	}
 	useMiruro := imdb != "" && s.mir != nil
 
+	// Dua goroutine ini sengaja tidak lewat pool global: masing-masing
+	// menunggu sub-task pool (resolve/terjemahan), jadi menaruhnya di pool
+	// bisa deadlock saat semua worker sibuk menunggu.
 	emCh := make(chan struct {
 		servers []em.Server
 		err     error

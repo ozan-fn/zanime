@@ -4,6 +4,7 @@ import { useApp } from '@/features/app/AppProvider'
 import { Player, type PlayerSubtitle } from '@/features/player/Player'
 import { SubtitleCard } from '@/features/subtitle/SubtitleCard'
 import { PlayerTabs } from '@/features/home/PlayerTabs'
+import { WorkerBadge } from '@/features/home/WorkerBadge'
 import { ServerPanel } from '@/features/player/ServerPanel'
 import { Footer } from '@/features/home/Footer'
 import { BrowsePanel, type Streams } from '@/features/search/BrowsePanel'
@@ -67,13 +68,16 @@ export function HomePage() {
             <Sq text={playing.title} className="max-w-[24rem] text-xs text-zinc-400" />
           </div>
         )}
-        <button
-          type="button"
-          onClick={focusSearch}
-          className="shrink-0 rounded-lg border border-border bg-card px-2.5 py-1.5 text-[11px] text-zinc-300 transition hover:border-zinc-600 hover:bg-zinc-800 hover:text-white lg:hidden"
-        >
-          Cari
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <WorkerBadge />
+          <button
+            type="button"
+            onClick={focusSearch}
+            className="shrink-0 rounded-lg border border-border bg-card px-2.5 py-1.5 text-[11px] text-zinc-300 transition hover:border-zinc-600 hover:bg-zinc-800 hover:text-white lg:hidden"
+          >
+            Cari
+          </button>
+        </div>
       </header>
 
       <main className="mt-3 flex min-h-0 flex-1 flex-col gap-3 sm:mt-4 md:grid md:grid-cols-[17rem_minmax(0,1fr)] md:items-start md:gap-3 lg:grid-cols-[18rem_minmax(0,1fr)_16rem] lg:grid-rows-[minmax(0,1fr)] lg:gap-5">

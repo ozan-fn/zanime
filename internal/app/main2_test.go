@@ -19,6 +19,7 @@ import (
 
 	"zanime/internal/em"
 	"zanime/internal/logbus"
+	"zanime/internal/pool"
 	"zanime/internal/resolve"
 	"zanime/internal/subdl"
 	"zanime/internal/tmdb"
@@ -608,5 +609,20 @@ func TestAPILogsWebSocket(t *testing.T) {
 	}
 	if got.Text != "live" || got.Level != logbus.LevelOK {
 		t.Fatalf("live = %+v", got)
+	}
+
+	// Angka worker ikut di socket yang sama, tiap 0,7 dtk.
+	release := make(chan struct{})
+	defer close(release)
+	pool.Get().Submit(func() { <-release })
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var tick struct {
+		Workers *int64 `json:"workers"`
+	}
+	if err := conn.ReadJSON(&tick); err != nil {
+		t.Fatalf("baca worker: %v", err)
+	}
+	if tick.Workers == nil || *tick.Workers < 1 {
+		t.Fatalf("worker saat sibuk = %+v, want >= 1", tick.Workers)
 	}
 }

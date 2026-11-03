@@ -14,10 +14,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/go-resty/resty/v2"
+
+	"zanime/internal/pool"
 )
 
 const (
@@ -124,19 +125,17 @@ func (c *Client) translateVTT(ctx context.Context, vtt, from, to string) (string
 		return "", 0, fmt.Errorf("subtitle tanpa cue teks")
 	}
 
-	// Semua cue diterjemahkan serentak (satu goroutine per cue, tanpa batas
-	// worker): satu cue = satu permintaan, jadi ini yang menentukan durasi.
+	// Semua cue diterjemahkan paralel di worker pool global: satu cue = satu
+	// permintaan, jadi ini yang menentukan durasi.
 	out := make([]string, len(cues))
 	errs := make([]error, len(cues))
-	var wg sync.WaitGroup
+	group := pool.Get().NewGroupContext(ctx)
 	for i := range cues {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+		group.Submit(func() {
 			out[i], errs[i] = c.text(ctx, from, to, cues[i].text)
-		}(i)
+		})
 	}
-	wg.Wait()
+	_ = group.Wait()
 	for i, err := range errs {
 		if err != nil {
 			return "", 0, fmt.Errorf("cue %d: %w", i+1, err)
