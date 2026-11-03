@@ -7,7 +7,6 @@ require (
 	github.com/go-resty/resty/v2 v2.17.2
 	github.com/gofiber/fiber/v2 v2.52.16
 	github.com/joho/godotenv v1.5.1
-	golang.org/x/net v0.58.0
 )
 
 require (
@@ -21,5 +20,6 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.52.0 // indirect
 	github.com/valyala/tcplisten v1.0.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )

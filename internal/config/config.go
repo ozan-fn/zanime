@@ -43,7 +43,3 @@ func String(name, fallback string) string {
 	}
 	return fallback
 }
-
-// ProxyURL returns PROXY_URL (mis. http://user:pass@host:80), atau "" bila
-// kosong — artinya koneksi langsung tanpa proxy.
-func ProxyURL() string { return String("PROXY_URL", "") }

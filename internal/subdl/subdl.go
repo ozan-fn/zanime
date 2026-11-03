@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,18 +22,14 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-
-	"zanime/internal/config"
-	"zanime/internal/proxy"
 )
 
 const (
-	defaultSite  = "https://subdl.com"
-	defaultAPI   = "https://api3.subdl.com"
-	userAgent    = "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0"
-	httpTimeout  = 20 * time.Second
-	probeTimeout = 10 * time.Second
-	maxPage      = 8 << 20
+	defaultSite = "https://subdl.com"
+	defaultAPI  = "https://api3.subdl.com"
+	userAgent   = "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0"
+	httpTimeout = 20 * time.Second
+	maxPage     = 8 << 20
 	// Daftar subtitle jarang berubah dalam hitungan menit; cache menahan
 	// autocomplete + halaman judul agar pindah tab/kartu tidak menembak ulang.
 	cacheDir = "tmp/subdl"
@@ -75,11 +70,6 @@ type Client struct {
 
 func New() *Client {
 	c := resty.New().SetTimeout(httpTimeout)
-	if proxyURL := config.ProxyURL(); proxyURL != "" {
-		if err := proxy.Configure(c, proxyURL); err != nil {
-			log.Printf("proxy subdl: %v", err)
-		}
-	}
 	return &Client{site: defaultSite, api: defaultAPI, http: c}
 }
 
@@ -90,48 +80,12 @@ func (c *Client) SetBase(site, api string) { c.site, c.api = site, api }
 // tv memakai season/episode untuk memilih halaman musim dan menyaring baris
 // episode; movie mengabaikannya.
 func (c *Client) Search(ctx context.Context, tab, name, year string, season, episode int) ([]Subtitle, error) {
-	return c.withFailover(ctx, name, func() ([]Subtitle, error) {
-		return c.search(ctx, tab, name, year, season, episode, false)
-	})
+	return c.search(ctx, tab, name, year, season, episode, false)
 }
 
 // SearchFresh sama seperti Search tapi melewati cache (tombol "cari ulang").
 func (c *Client) SearchFresh(ctx context.Context, tab, name, year string, season, episode int) ([]Subtitle, error) {
-	return c.withFailover(ctx, name, func() ([]Subtitle, error) {
-		return c.search(ctx, tab, name, year, season, episode, true)
-	})
-}
-
-// withFailover mengulang pencarian lewat proxy lain bila proxy aktif diblokir
-// (proxy.Retry: 1–10 paralel untuk webshare, sekali saja untuk proxy biasa).
-func (c *Client) withFailover(ctx context.Context, name string, fn func() ([]Subtitle, error)) ([]Subtitle, error) {
-	var subs []Subtitle
-	err := proxy.Retry(ctx, func() error {
-		var err error
-		subs, err = fn()
-		return err
-	}, func(ctx context.Context, candidate string) error {
-		return c.probe(ctx, candidate, name)
-	})
-	return subs, err
-}
-
-// probe memakai autocomplete sebagai uji murah: 200 berarti kandidat lolos.
-func (c *Client) probe(ctx context.Context, proxyURL, query string) error {
-	client := resty.New().SetTimeout(probeTimeout)
-	if err := proxy.Fixed(client, proxyURL); err != nil {
-		return err
-	}
-	res, err := client.R().SetContext(ctx).
-		SetHeader("User-Agent", userAgent).
-		Get(strings.TrimSuffix(c.api, "/") + "/auto?query=" + url.QueryEscape(query))
-	if err != nil {
-		return err
-	}
-	if res.StatusCode() != http.StatusOK {
-		return fmt.Errorf("subdl HTTP %s", res.Status())
-	}
-	return nil
+	return c.search(ctx, tab, name, year, season, episode, true)
 }
 
 func (c *Client) search(ctx context.Context, tab, name, year string, season, episode int, fresh bool) ([]Subtitle, error) {
@@ -363,12 +317,7 @@ func (c *Client) get(ctx context.Context, endpoint string) (string, error) {
 		return "", err
 	}
 	if res.StatusCode() != http.StatusOK {
-		err := fmt.Errorf("subdl HTTP %s", res.Status())
-		switch res.StatusCode() {
-		case http.StatusForbidden, http.StatusProxyAuthRequired, http.StatusTooManyRequests:
-			return "", proxy.Blocked(err) // IP/proxy ditolak: Retry boleh ganti proxy
-		}
-		return "", err
+		return "", fmt.Errorf("subdl HTTP %s", res.Status())
 	}
 	return res.String(), nil
 }

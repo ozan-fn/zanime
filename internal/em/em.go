@@ -19,7 +19,6 @@ import (
 	"github.com/go-resty/resty/v2"
 
 	"zanime/internal/pool"
-	"zanime/internal/proxy"
 )
 
 const (
@@ -31,8 +30,6 @@ const (
 	// satu judul selesai dalam hitungan detik; 30 dtk sudah gagal-cepat, tidak
 	// membuat pengguna menunggu menit-menitan.
 	scrapeSecs = 30
-	// probeSecs: batas satu uji kandidat proxy (halaman player).
-	probeSecs = 15
 	// kindEmbed: jawaban resolve yang URL-nya halaman pemutar HTML pihak lain
 	// (bukan berkas media). <video> tidak bisa memutarnya, jadi server ditandai
 	// gagal alih-alih menyajikan HTML sebagai video.
@@ -106,18 +103,11 @@ func (c *Client) Streams(ctx context.Context, tab, id string, tv *TVEpisode) ([]
 	// Sesi sendiri per permintaan (cookie gerbang tidak boleh bocor antar judul).
 	client := &Client{Base: c.Base, http: newHTTP(), log: c.log}
 
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scrapeSecs*time.Second)
+	defer cancel()
+
 	c.logf("scrape", LogInfo, "Mulai mengambil daftar server…")
-	var servers []Server
-	// Tiap percobaan (termasuk setelah ganti proxy) dapat anggaran waktu sendiri.
-	err := proxy.Retry(ctx, func() error {
-		runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scrapeSecs*time.Second)
-		defer cancel()
-		var err error
-		servers, err = client.scrape(runCtx, tab, id, tv)
-		return err
-	}, func(ctx context.Context, candidate string) error {
-		return client.probe(ctx, candidate, client.embedURL(tab, id, tv))
-	})
+	servers, err := client.scrape(runCtx, tab, id, tv)
 	if err != nil {
 		c.logf("scrape", LogErr, "scrape gagal: %v", err)
 		return nil, fmt.Errorf("pipeline scrape: %w", err)
