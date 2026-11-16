@@ -27,6 +27,10 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        ndk {
+            // Force one ABI: plugins otherwise ship every ABI in a fat APK.
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildTypes {
