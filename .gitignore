@@ -12,6 +12,9 @@
 .swiftpm/
 migrate_working_dir/
 
+# Local HAR captures (large, machine-specific)
+test1.har
+
 # IntelliJ related
 *.iml
 *.ipr

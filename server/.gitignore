@@ -1,0 +1,4 @@
+# Air hot-reload output
+tmp/
+build-errors.log
+main
