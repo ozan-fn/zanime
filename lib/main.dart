@@ -1,6 +1,15 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
+
+const _videoUrl =
+    'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
   runApp(const MyApp());
 }
 
@@ -104,6 +113,7 @@ class _MyHomePageState extends State<MyHomePage> {
           // wireframe for each widget.
           mainAxisAlignment: .center,
           children: [
+            const VideoPlayerWidget(url: _videoUrl),
             const Text('You have pushed the button this many times:'),
             Text(
               '$_counter',
@@ -117,6 +127,63 @@ class _MyHomePageState extends State<MyHomePage> {
         tooltip: 'Increment',
         child: const Icon(Icons.add),
       ),
+    );
+  }
+}
+
+class VideoPlayerWidget extends StatefulWidget {
+  const VideoPlayerWidget({super.key, required this.url});
+
+  final String url;
+
+  @override
+  State<VideoPlayerWidget> createState() => _VideoPlayerWidgetState();
+}
+
+class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
+  Player? _player;
+  VideoController? _videoController;
+  StreamSubscription<String>? _errorSubscription;
+  bool _failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    try {
+      final player = Player();
+      _player = player;
+      _videoController = VideoController(player);
+      player.open(Media(widget.url));
+      _errorSubscription = player.stream.error.listen((_) {
+        if (mounted) setState(() => _failed = true);
+      });
+    } catch (e) {
+      // No libmpv available (e.g. widget test) or player setup failed.
+      debugPrint('video init failed: $e');
+      _failed = true;
+    }
+  }
+
+  @override
+  void dispose() {
+    _errorSubscription?.cancel();
+    _player?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = _videoController;
+    return AspectRatio(
+      aspectRatio: 16 / 9,
+      child: controller == null || _failed
+          ? Center(
+              child: Text(
+                'Video gagal dimuat',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            )
+          : Video(controller: controller, fit: BoxFit.contain),
     );
   }
 }
