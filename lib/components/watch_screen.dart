@@ -2,7 +2,6 @@ import 'package:material_ui/material_ui.dart';
 
 import '../models/models.dart';
 import '../services/api.dart';
-import '../services/proxy.dart';
 import 'video_player_widget.dart';
 
 class WatchScreen extends StatefulWidget {
@@ -88,11 +87,9 @@ class _WatchScreenState extends State<WatchScreen> {
     final subtitle = _subtitleFor(data);
     return VideoPlayerWidget(
       key: ValueKey(server.url),
-      url: proxiedUrl(server.url, headers: server.headers),
+      url: server.url,
       headers: server.headers,
-      subtitleUrl: subtitle == null
-          ? null
-          : proxiedUrl(subtitle, headers: server.headers),
+      subtitleUrl: subtitle,
       subtitleHeaders: server.headers,
     );
   }

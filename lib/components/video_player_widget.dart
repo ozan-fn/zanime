@@ -5,6 +5,10 @@ import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
+import '../services/http_client.dart';
+
+final http.Client _client = createHttpClient();
+
 /// media_kit video player. Pass an mp4/HLS (.m3u8) URL.
 class VideoPlayerWidget extends StatefulWidget {
   const VideoPlayerWidget({
@@ -70,7 +74,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     try {
       // Subtitle CDNs reject bare requests; media_kit's URI track cannot send
       // the provider's Origin/Referer, so fetch the VTT ourselves.
-      final response = await http.get(
+      final response = await _client.get(
         Uri.parse(url),
         headers: {
           'accept': '*/*',
