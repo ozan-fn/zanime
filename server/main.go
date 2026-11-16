@@ -13,7 +13,11 @@ import (
 func main() {
 	addr := os.Getenv("ADDR")
 	if addr == "" {
-		addr = "127.0.0.1:8080"
+		if port := os.Getenv("PORT"); port != "" {
+			addr = "0.0.0.0:" + port
+		} else {
+			addr = "127.0.0.1:8080"
+		}
 	}
 	app := api.New(anilist.New(), miruro.New(), proxy.New())
 	log.Printf("miruro proxy listening on http://%s", addr)

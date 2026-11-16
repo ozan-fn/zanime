@@ -30,6 +30,21 @@ device or emulator, forward the port instead of changing the URL:
 adb reverse tcp:8080 tcp:8080
 ```
 
+## Deploy to Vercel (Docker)
+
+`server/` is self-contained: `Dockerfile` (Alpine runtime) + `vercel.json`
+(`framework: container`). In the Vercel project set **Root Directory** to
+`server`, add `PORT=8080`, then deploy from that folder:
+
+```sh
+cd server
+vercel deploy --prod
+```
+
+The container listens on `ADDR`/`PORT` and runs as a non-root user. Vercel
+Functions scale to zero and have request limits, so long video streams may be
+cut off; the proxy is meant for local/dev use.
+
 ## Endpoints
 
 - `GET /health`
