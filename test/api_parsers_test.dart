@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:test1/models/models.dart';
 import 'package:test1/services/api.dart';
 
 void main() {
@@ -61,6 +62,7 @@ void main() {
             'season_year': 2023,
             'episode_count': 28,
             'average_score': 91,
+            'external_ids': {'anilist': 154587},
           },
           {
             'id': 'id2',
@@ -76,6 +78,7 @@ void main() {
 
       expect(results.first.title, 'Frieren');
       expect(results.first.animeId, 'id1');
+      expect(results.first.aniListId, 154587);
       expect(results.first.subtitle, 'TV · 2023 · 28 eps · ★ 91');
       expect(results.first.url, 'https://miruro.cx/watch/id1');
       expect(results.last.title, 'Only Romaji');
@@ -85,10 +88,56 @@ void main() {
     test('returns an empty list when items are missing', () {
       expect(parseSearchResults(const {}), isEmpty);
     });
+
+    test('reads list-form AniList ids and tolerates missing fields', () {
+      final results = parseSearchResults({
+        'items': [
+          {
+            'id': 'id3',
+            'title': {'english': null, 'romaji': 'Romaji only'},
+            'cover_url': null,
+            'external_ids': {
+              'anilist': ['7'],
+            },
+          },
+        ],
+      });
+
+      expect(results.single.title, 'Romaji only');
+      expect(results.single.imageUrl, isEmpty);
+      expect(results.single.aniListId, 7);
+    });
+  });
+
+  group('pickMiruroAnimeId', () {
+    const results = [
+      SearchResult(
+        animeId: 'other',
+        title: 'Frieren',
+        imageUrl: '',
+        aniListId: 1,
+      ),
+      SearchResult(
+        animeId: 'frieren-id',
+        title: 'Frieren',
+        imageUrl: '',
+        aniListId: 154587,
+      ),
+    ];
+
+    test('matches the AniList id, not the first result', () {
+      expect(pickMiruroAnimeId(results, 154587), 'frieren-id');
+    });
+
+    test('returns null when Miruro has no matching AniList id', () {
+      expect(pickMiruroAnimeId(results, 99), isNull);
+      expect(pickMiruroAnimeId(const [], 1), isNull);
+    });
   });
 
   group('parseWatchData', () {
     Map<String, dynamic> payload({bool includeCurrentEpisode = true}) => {
+      'anilistId': 154587,
       'media': {
         'title': {'romaji': 'Sousou no Frieren'},
         'coverImage': {'extraLarge': 'https://img/cover.jpg'},
@@ -124,8 +173,7 @@ void main() {
       'sourcesData': {
         'tracks': [
           {
-            'track': 'ssub',
-            'providers': [
+            'track': 'ssub',            'providers': [
               {
                 'provider': 'sun',
                 'servers': [
@@ -162,6 +210,7 @@ void main() {
       expect(data.episodes, hasLength(2));
       expect(data.episodes.last.title, '', reason: 'null title becomes empty');
       expect(data.currentEpisode, 2);
+      expect(data.aniListId, 154587);
 
       expect(data.servers, hasLength(1));
       expect(data.servers.single.provider, 'sun');

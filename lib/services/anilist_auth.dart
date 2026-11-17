@@ -66,7 +66,7 @@ AniListProfile? parseAniListProfile(String body) {
   );
 }
 
-/// One anime on the user's CURRENT/REPEATING list.
+/// One anime on the user's AniList list.
 class WatchingAnime {
   const WatchingAnime({
     required this.mediaId,
@@ -77,6 +77,8 @@ class WatchingAnime {
     this.nextEpisode,
     this.format,
     this.year,
+    this.status,
+    this.updatedAt = 0,
   });
 
   final int mediaId;
@@ -87,12 +89,33 @@ class WatchingAnime {
   final int? nextEpisode;
   final String? format;
   final int? year;
+  final String? status;
+  final int updatedAt;
 
   int get nextWatchEpisode => nextEpisode ?? (progress + 1);
 }
 
-/// Extracts entries from a MediaListCollection payload, newest update first.
-List<WatchingAnime> parseAniListWatching(String body) {
+/// AniList list statuses in display order.
+const aniListStatusOrder = [
+  'CURRENT',
+  'COMPLETED',
+  'PLANNING',
+  'REPEATING',
+  'PAUSED',
+  'DROPPED',
+];
+
+const aniListStatusLabels = {
+  'CURRENT': 'Watching',
+  'PLANNING': 'Planning',
+  'COMPLETED': 'Completed',
+  'REPEATING': 'Repeating',
+  'PAUSED': 'Paused',
+  'DROPPED': 'Dropped',
+};
+
+/// Sorted newest update first, one entry per media.
+List<(int, WatchingAnime)> _aniListEntries(String body) {
   final root = jsonDecode(body) as Map<String, dynamic>;
   final collection = (root['data'] as Map<String, dynamic>?)?[
       'MediaListCollection'] as Map<String, dynamic>?;
@@ -104,7 +127,7 @@ List<WatchingAnime> parseAniListWatching(String body) {
     for (final entry in (list['entries'] as List? ?? const [])
         .cast<Map<String, dynamic>>()) {
       final status = entry['status'] as String?;
-      if (status != 'CURRENT' && status != 'REPEATING') continue;
+      if (status == null) continue;
       final media = entry['media'] as Map<String, dynamic>?;
       if (media == null) continue;
       final mediaId = (media['id'] as num?)?.toInt() ?? 0;
@@ -113,8 +136,9 @@ List<WatchingAnime> parseAniListWatching(String body) {
       final cover = media['coverImage'] as Map<String, dynamic>? ?? const {};
       final next =
           (media['nextAiringEpisode'] as Map<String, dynamic>?)?['episode'];
+      final updated = (entry['updatedAt'] as num?)?.toInt() ?? 0;
       entries.add((
-        (entry['updatedAt'] as num?)?.toInt() ?? 0,
+        updated,
         WatchingAnime(
           mediaId: mediaId,
           title: ((titles['english'] ?? titles['romaji']) as String?) ?? '',
@@ -124,12 +148,33 @@ List<WatchingAnime> parseAniListWatching(String body) {
           nextEpisode: (next as num?)?.toInt(),
           format: media['format'] as String?,
           year: (media['seasonYear'] as num?)?.toInt(),
+          status: status,
+          updatedAt: updated,
         ),
       ));
     }
   }
   entries.sort((a, b) => b.$1.compareTo(a.$1));
-  return [for (final entry in entries) entry.$2];
+  return entries;
+}
+
+/// Extracts entries from a MediaListCollection payload grouped by status,
+/// newest update first.
+Map<String, List<WatchingAnime>> parseAniListLists(String body) {
+  final grouped = <String, List<WatchingAnime>>{};
+  for (final (_, anime) in _aniListEntries(body)) {
+    grouped.putIfAbsent(anime.status!, () => []).add(anime);
+  }
+  return grouped;
+}
+
+/// Extracts CURRENT/REPEATING entries from a MediaListCollection payload,
+/// newest update first.
+List<WatchingAnime> parseAniListWatching(String body) {
+  return [
+    for (final (_, anime) in _aniListEntries(body))
+      if (anime.status == 'CURRENT' || anime.status == 'REPEATING') anime,
+  ];
 }
 
 Uri aniListAuthorizeUrl() => Uri.https(
@@ -187,31 +232,91 @@ Future<AniListProfile?> loadAniListProfile() async {
   }
 }
 
+/// All of the user's AniList anime lists grouped by status, or null when not
+/// logged in.
+Future<Map<String, List<WatchingAnime>>?> fetchAniListLists() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString(_tokenKey);
+    if (token == null || token.isEmpty) return null;
+
+    final viewer = await _aniListQuery(token, 'query { Viewer { id } }');
+    if (viewer == null) return null;
+    final userId =
+        (((viewer['data'] as Map<String, dynamic>?)?['Viewer']
+                    as Map<String, dynamic>?)?['id']
+                as num?)
+            ?.toInt();
+    if (userId == null) return const {};
+
+    final collection = await _aniListQuery(
+      token,
+      _listCollectionQuery,
+      {'userId': userId},
+    );
+    if (collection == null) return const {};
+    return parseAniListLists(jsonEncode(collection));
+  } catch (_) {
+    return null;
+  }
+}
+
 /// The user's CURRENT/REPEATING anime list, or null when not logged in.
 Future<List<WatchingAnime>?> fetchAniListWatching() async {
-  final prefs = await SharedPreferences.getInstance();
-  final token = prefs.getString(_tokenKey);
-  if (token == null || token.isEmpty) return null;
+  final lists = await fetchAniListLists();
+  if (lists == null) return null;
+  return [...?lists['CURRENT'], ...?lists['REPEATING']]
+    ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+}
 
-  final viewer = await _aniListQuery(token, 'query { Viewer { id } }');
-  if (viewer == null) return null;
-  final userId =
-      (((viewer['data'] as Map<String, dynamic>?)?['Viewer']
-                  as Map<String, dynamic>?)?['id']
-              as num?)
-          ?.toInt();
-  if (userId == null) return const [];
-
-  final collection = await _aniListQuery(
-    token,
+const _listCollectionQuery =
     'query (\$userId: Int!) { MediaListCollection(userId: \$userId, '
     'type: ANIME) { lists { entries { status progress updatedAt media { '
     'id title { romaji english } coverImage { large } episodes format '
-    'seasonYear nextAiringEpisode { episode } } } } } }',
-    {'userId': userId},
-  );
-  if (collection == null) return const [];
-  return parseAniListWatching(jsonEncode(collection));
+    'seasonYear nextAiringEpisode { episode } } } } } }';
+
+/// The viewer's list status for [mediaId], or null when logged out or not
+/// on their list.
+Future<String?> fetchAniListStatus(int mediaId) async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString(_tokenKey);
+    if (token == null || token.isEmpty) return null;
+    final result = await _aniListQuery(
+      token,
+      'query (\$mediaId: Int) { Media(id: \$mediaId, type: ANIME) { '
+      'mediaListEntry { status } } }',
+      {'mediaId': mediaId},
+    );
+    final media =
+        ((result?['data'] as Map<String, dynamic>?)?['Media']
+            as Map<String, dynamic>?);
+    return (media?['mediaListEntry'] as Map<String, dynamic>?)?['status']
+        as String?;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Creates or updates the viewer's list entry for [mediaId].
+/// Returns false when logged out, rejected, or offline.
+Future<bool> saveAniListEntry(int mediaId, String status) async {  final prefs = await SharedPreferences.getInstance();
+  final token = prefs.getString(_tokenKey);
+  if (token == null || token.isEmpty) return false;
+  try {
+    final result = await _aniListQuery(
+      token,
+      'mutation (\$mediaId: Int!, \$status: MediaListStatus) { '
+      'SaveMediaListEntry(mediaId: \$mediaId, status: \$status) { '
+      'id status } }',
+      {'mediaId': mediaId, 'status': status},
+    );
+    return (result?['data'] as Map<String, dynamic>?)?
+            ['SaveMediaListEntry'] !=
+        null;
+  } catch (_) {
+    return false;
+  }
 }
 
 /// Returns the decoded GraphQL body; null when the token was rejected.

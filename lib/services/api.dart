@@ -197,18 +197,40 @@ List<SearchResult> parseSearchResults(Map<String, dynamic> root) {
   return ((root['items'] as List?) ?? const [])
       .cast<Map<String, dynamic>>()
       .map((item) {
-        final title = item['title'] as Map<String, dynamic>;
+        final title = item['title'] as Map<String, dynamic>? ?? const {};
         return SearchResult(
           animeId: item['id'] as String,
-          title: (title['english'] ?? title['romaji']) as String,
-          imageUrl: item['cover_url'] as String,
+          title: (title['english'] ?? title['romaji'] as String?) ?? '',
+          imageUrl: (item['cover_url'] as String?) ?? '',
           format: item['format'] as String?,
           year: item['season_year'] as int?,
           episodes: item['episode_count'] as int?,
           score: item['average_score'] as int?,
+          aniListId: _aniListId(item['external_ids']),
         );
       })
       .toList();
+}
+
+/// Miruro stores external ids as lists (`anilist:[21]`); older payloads use a
+/// plain number.
+int? _aniListId(Object? externalIds) {
+  final ids = (externalIds as Map?)?['anilist'];
+  if (ids is num) return ids.toInt();
+  if (ids is List && ids.isNotEmpty) return int.tryParse('${ids.first}');
+  return null;
+}
+
+/// Miruro ids are opaque hashes, so an AniList entry is resolved by title and
+/// matched on its AniList id. Null when Miruro does not list the anime.
+Future<String?> resolveMiruroAnimeId(String title, int aniListId) async =>
+    pickMiruroAnimeId(await searchAnime(title), aniListId);
+
+String? pickMiruroAnimeId(List<SearchResult> results, int aniListId) {
+  for (final result in results) {
+    if (result.aniListId == aniListId) return result.animeId;
+  }
+  return null;
 }
 
 /// Watch page data for one episode: anime info, full episode list and servers.
@@ -345,6 +367,7 @@ WatchData parseWatchData(Map<String, dynamic> root, int episode) {
         ((episodesData['currentEpisode'] as Map<String, dynamic>?)?['number']
             as int?) ??
         episode,
+    aniListId: (root['anilistId'] as num?)?.toInt(),
   );
 }
 

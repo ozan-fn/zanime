@@ -85,6 +85,7 @@ class SearchResult {
     this.year,
     this.episodes,
     this.score,
+    this.aniListId,
   });
 
   factory SearchResult.fromJson(Map<String, dynamic> json) {
@@ -96,6 +97,7 @@ class SearchResult {
       year: json['year'] as int?,
       episodes: json['episodes'] as int?,
       score: json['score'] as int?,
+      aniListId: json['aniListId'] as int?,
     );
   }
 
@@ -106,6 +108,9 @@ class SearchResult {
   final int? year;
   final int? episodes;
   final int? score;
+
+  /// AniList media id, used to match AniList entries to a Miruro id.
+  final int? aniListId;
 
   String get subtitle => [
     ?format,
@@ -292,6 +297,7 @@ class WatchData {
     required this.servers,
     required this.currentEpisode,
     this.subtitles = const [],
+    this.aniListId,
   });
 
   factory WatchData.fromJson(Map<String, dynamic> json) {
@@ -310,6 +316,7 @@ class WatchData {
           .cast<Map<String, dynamic>>()
           .map(WatchSubtitle.fromJson)
           .toList(),
+      aniListId: (json['aniListId'] as num?)?.toInt(),
     );
   }
 
@@ -318,6 +325,9 @@ class WatchData {
   final List<WatchServer> servers;
   final int currentEpisode;
   final List<WatchSubtitle> subtitles;
+
+  /// AniList media id, used to save list entries.
+  final int? aniListId;
 
   WatchEpisode? get episode {
     for (final item in episodes) {

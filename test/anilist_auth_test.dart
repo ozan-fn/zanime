@@ -104,4 +104,41 @@ void main() {
     expect(list.first.nextWatchEpisode, 3);
     expect(list.last.totalEpisodes, 12);
   });
+
+  test('parseAniListLists groups every status, newest first', () {
+    Map<String, dynamic> entry(int id, String status, int updated) => {
+      'status': status,
+      'progress': 1,
+      'updatedAt': updated,
+      'media': {
+        'id': id,
+        'title': {'romaji': 'Romaji $id'},
+        'coverImage': {'large': 'https://example.com/$id.jpg'},
+        'episodes': 12,
+        'format': 'TV',
+        'seasonYear': 2025,
+      },
+    };
+    final lists = parseAniListLists(
+      jsonEncode({
+        'data': {
+          'MediaListCollection': {
+            'lists': [
+              {
+                'entries': [
+                  entry(1, 'COMPLETED', 100),
+                  entry(2, 'PAUSED', 300),
+                  entry(3, 'PLANNING', 200),
+                ],
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    expect(lists.keys.toSet(), {'COMPLETED', 'PAUSED', 'PLANNING'});
+    expect(lists['PAUSED']!.single.mediaId, 2);
+    expect(lists['COMPLETED']!.single.status, 'COMPLETED');
+  });
 }

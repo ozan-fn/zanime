@@ -18,6 +18,20 @@ final http.Client _client = sharedHttpClient;
 /// per-mode sizes are only possible through media_kit's own scaling.)
 const _subtitleFontSize = 92.0;
 
+/// Nudges the center play/pause button down to sit visually centered.
+final List<Widget> _primaryButtonBar = [
+  Spacer(flex: 2),
+  MaterialSkipPreviousButton(),
+  Spacer(),
+  Transform.translate(
+    offset: Offset(0, 10),
+    child: MaterialPlayOrPauseButton(iconSize: 48.0),
+  ),
+  Spacer(),
+  MaterialSkipNextButton(),
+  Spacer(flex: 2),
+];
+
 /// Axis-aligned shadows leave blocky corners on round glyphs; two staggered
 /// rings with a little blur read as a smooth outline.
 final List<Shadow> _subtitleShadows = [
@@ -305,6 +319,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       child: MaterialVideoControlsTheme(
         normal: kDefaultMaterialVideoControlsThemeData.copyWith(
           topButtonBar: [_qualityButton(), _subtitleButton()],
+          primaryButtonBar: _primaryButtonBar,
           seekGesture: true,
           seekOnDoubleTap: true,
         ),
@@ -318,6 +333,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           controller: controller,
           fit: BoxFit.contain,
           subtitleViewConfiguration: SubtitleViewConfiguration(
+            // Slightly higher than media_kit's default bottom padding.
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
             // No textScaler: media_kit then scales the font by the player box,
             // which is what makes subtitles larger in fullscreen.
             style: TextStyle(

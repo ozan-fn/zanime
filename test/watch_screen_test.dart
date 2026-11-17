@@ -29,6 +29,7 @@ WatchData _data(int episode) => WatchData(
   ],
   servers: const [],
   currentEpisode: episode,
+  aniListId: 21,
 );
 
 WatchData _dataWithServers(int episode) => WatchData(
@@ -51,6 +52,7 @@ WatchData _dataWithServers(int episode) => WatchData(
     WatchSubtitle(label: 'Indonesian', url: 'https://example.com/id.vtt'),
   ],
   currentEpisode: episode,
+  aniListId: 21,
 );
 
 void main() {
@@ -70,6 +72,7 @@ void main() {
             calls.add(episode);
             return _data(episode);
           },
+          statusLoader: (_) async => null,
         ),
       ),
     );
@@ -104,6 +107,7 @@ void main() {
           home: WatchScreen(
             animeId: 'x',
             loader: (_, episode) async => _dataWithServers(episode),
+            statusLoader: (_) async => null,
           ),
         ),
       );
@@ -132,6 +136,7 @@ void main() {
       home: WatchScreen(
         animeId: 'x',
         loader: (_, episode) async => _dataWithServers(episode),
+        statusLoader: (_) async => null,
       ),
     );
 
@@ -173,6 +178,7 @@ void main() {
         home: WatchScreen(
           animeId: 'x',
           loader: (_, episode) async => _data(episode),
+          statusLoader: (_) async => null,
         ),
       ),
     );
@@ -182,5 +188,63 @@ void main() {
     await tester.tap(find.text('Show more'));
     await tester.pumpAndSettle();
     expect(find.text('Show less'), findsOneWidget);
+  });
+
+  testWidgets('WatchScreen saves an AniList status from the add dialog', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final saved = <(int, String)>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: WatchScreen(
+          animeId: 'x',
+          loader: (_, episode) async => _data(episode),
+          saver: (mediaId, status) async {
+            saved.add((mediaId, status));
+            return true;
+          },
+          statusLoader: (_) async => null,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pumpAndSettle();
+    expect(find.text('AniList status'), findsOneWidget);
+    expect(find.text('Watching'), findsOneWidget);
+    expect(find.text('Completed'), findsOneWidget);
+
+    await tester.tap(find.text('Completed'));
+    await tester.pumpAndSettle();
+
+    expect(saved, [(21, 'COMPLETED')]);
+    expect(find.byIcon(Icons.check), findsOneWidget, reason: 'status icon');
+    expect(find.text('Status: Completed'), findsOneWidget);
+    expect(find.text('Add'), findsNothing, reason: 'icon-only button');
+  });
+
+  testWidgets('WatchScreen shows the saved list status icon', (tester) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: WatchScreen(
+          animeId: 'x',
+          loader: (_, episode) async => _data(episode),
+          statusLoader: (_) async => 'CURRENT',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byIcon(Icons.play_arrow), findsOneWidget);
+    expect(find.byIcon(Icons.add), findsNothing);
   });
 }

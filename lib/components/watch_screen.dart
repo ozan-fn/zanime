@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../models/models.dart';
+import '../services/anilist_auth.dart';
 import '../services/api.dart';
 import '../services/sokuja.dart';
 import 'upcoming_countdown.dart';
@@ -11,12 +12,24 @@ import 'video_player_widget.dart';
 /// for the rest of the session. Falls back to the first server.
 String? _lastProvider;
 
+/// AniList status icons shown in the add/update button.
+const _aniListStatusIcons = {
+  'CURRENT': Icons.play_arrow,
+  'PLANNING': Icons.bookmark_outline,
+  'COMPLETED': Icons.check,
+  'REPEATING': Icons.replay,
+  'PAUSED': Icons.pause,
+  'DROPPED': Icons.close,
+};
+
 class WatchScreen extends StatefulWidget {
   const WatchScreen({
     super.key,
     required this.animeId,
     this.episode = 1,
     this.loader,
+    this.saver,
+    this.statusLoader,
   });
 
   final String animeId;
@@ -24,6 +37,12 @@ class WatchScreen extends StatefulWidget {
 
   /// Injected in tests; defaults to [fetchWatchData].
   final Future<WatchData> Function(String animeId, int episode)? loader;
+
+  /// Injected in tests; defaults to [saveAniListEntry].
+  final Future<bool> Function(int mediaId, String status)? saver;
+
+  /// Injected in tests; defaults to [fetchAniListStatus].
+  final Future<String?> Function(int mediaId)? statusLoader;
 
   @override
   State<WatchScreen> createState() => _WatchScreenState();
@@ -33,11 +52,23 @@ class _WatchScreenState extends State<WatchScreen> {
   late int _episode = widget.episode;
   late Future<WatchData> _future = _load();
   String? _provider;
+  String? _listStatus;
   bool _expanded = false;
 
-  Future<WatchData> _load() => widget.loader != null
-      ? widget.loader!(widget.animeId, _episode)
-      : fetchWatchData(widget.animeId, episode: _episode);
+  Future<WatchData> _load() async {
+    final data = await (widget.loader != null
+        ? widget.loader!(widget.animeId, _episode)
+        : fetchWatchData(widget.animeId, episode: _episode));
+    _syncStatus(data.aniListId);
+    return data;
+  }
+
+  Future<void> _syncStatus(int? mediaId) async {
+    if (mediaId == null) return;
+    final status = await (widget.statusLoader ?? fetchAniListStatus)(mediaId);
+    if (!mounted || status == _listStatus) return;
+    setState(() => _listStatus = status);
+  }
 
   void _selectEpisode(int number) {
     if (number == _episode) return;
@@ -47,6 +78,95 @@ class _WatchScreenState extends State<WatchScreen> {
       _expanded = false;
       _future = _load();
     });
+  }
+
+  Future<void> _pickStatus(WatchData data) async {
+    final status = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('AniList status'),
+        contentPadding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+        content: SizedBox(
+          width: 280,
+          child: GridView.count(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisCount: 2,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+            childAspectRatio: 2.8,
+            children: [
+              for (final entry in aniListStatusLabels.entries)
+                _statusOption(context, entry.key, entry.value),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (status == null || !mounted) return;
+    final saved = await (widget.saver ?? saveAniListEntry)(
+      data.aniListId!,
+      status,
+    );
+    if (!mounted) return;
+    if (saved) setState(() => _listStatus = status);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          saved
+              ? 'Status: ${aniListStatusLabels[status]}'
+              : 'Login AniList di Setting dulu',
+        ),
+      ),
+    );
+  }
+
+  Widget _statusOption(BuildContext context, String status, String label) {
+    final selected = status == _listStatus;
+    final icon = Icon(_aniListStatusIcons[status], size: 16);
+    final text = Text(label, maxLines: 1, overflow: TextOverflow.ellipsis);
+    const style = ButtonStyle(
+      padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 8)),
+      minimumSize: WidgetStatePropertyAll(Size.zero),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
+    void pressed() => Navigator.pop(context, status);
+    return selected
+        ? FilledButton.icon(
+            onPressed: pressed,
+            icon: icon,
+            label: text,
+            style: style,
+          )
+        : OutlinedButton.icon(
+            onPressed: pressed,
+            icon: icon,
+            label: text,
+            style: style,
+          );
+  }
+
+  Widget _listButton(WatchData data) {
+    final status = _listStatus;
+    final theme = Theme.of(context);
+    return IconButton(
+      onPressed: () => _pickStatus(data),
+      tooltip: status == null
+          ? 'Add to AniList'
+          : 'AniList: ${aniListStatusLabels[status]}',
+      icon: Icon(
+        status == null ? Icons.add : _aniListStatusIcons[status]!,
+        size: 18,
+      ),
+      style: IconButton.styleFrom(
+        fixedSize: const Size(40, 40),
+        padding: EdgeInsets.zero,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(3),
+          side: BorderSide(color: theme.colorScheme.outlineVariant),
+        ),
+      ),
+    );
   }
 
   @override
@@ -285,6 +405,10 @@ class _WatchScreenState extends State<WatchScreen> {
                   ],
                 ),
               ),
+              if (data.aniListId != null) ...[
+                const SizedBox(width: 8),
+                _listButton(data),
+              ],
             ],
           ),
           const SizedBox(height: 16),
