@@ -71,27 +71,37 @@ jobs:
           cache: true
 
       # Deteksi otomatis: path SDK dari runner, versi NDK dari build.gradle
-      # aplikasi, atau default Flutter jika tidak diset di sana.
+      # aplikasi (atau default Flutter), versi CMake dari build.gradle/plugin.
       - name: Detect toolchain
         id: toolchain
         run: |
+          flutter_root="${FLUTTER_ROOT:-$(dirname "$(dirname "$(command -v flutter)")")}"
+
           ndk=$(grep -rhoE 'ndkVersion[ =]+"[0-9.]+"' android/app/build.gradle* 2>/dev/null \
             | grep -oE '[0-9][0-9.]+' | head -1 || true)
           if [ -z "$ndk" ]; then
-            flutter_root="${FLUTTER_ROOT:-$(dirname "$(dirname "$(command -v flutter)")")}"
             ndk=$(sed -n 's/.*ndkVersion: String = "\([0-9.]*\)".*/\1/p' \
               "$flutter_root/packages/flutter_tools/gradle/src/main/kotlin/FlutterExtension.kt" \
               | head -1 || true)
           fi
+
+          # CMake 3.22.1 bukan bawaan image runner, jadi diunduh Gradle.
+          # Kalau proyek menetapkan versi sendiri, pakai itu.
+          cmake=$(grep -rhoE 'version[ =]+"[0-9]+\.[0-9]+\.[0-9]+"' android/app/build.gradle* 2>/dev/null \
+            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+          cmake="${cmake:-3.22.1}"
+
           echo "sdk=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" >> "$GITHUB_OUTPUT"
           echo "ndk=$ndk" >> "$GITHUB_OUTPUT"
-          echo "Detected NDK: ${ndk:-<none>}"
+          echo "cmake=$cmake" >> "$GITHUB_OUTPUT"
+          echo "Detected NDK: ${ndk:-<none>}, CMake: $cmake"
 
       # Cache Gradle user home, wrapper, dan build cache.
       - uses: gradle/actions/setup-gradle@v6
 
-      # NDK & CMake dipasang oleh Android SDK manager (di luar cache Gradle),
-      # jadi tanpa cache ini akan diunduh ulang di setiap run.
+      # NDK & CMake dipasang oleh Android SDK manager (di luar cache Gradle).
+      # Hanya versi yang dipakai proyek yang di-cache, bukan seluruh folder
+      # cmake/ milik image runner (itu milik root dan membuat restore gagal).
       - uses: actions/cache@v6
         if: steps.toolchain.outputs.ndk != ''
         with:
@@ -100,9 +110,8 @@ jobs:
 
       - uses: actions/cache@v6
         with:
-          path: ${{ steps.toolchain.outputs.sdk }}/cmake
-          key: android-cmake-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
-          restore-keys: android-cmake-${{ runner.os }}-
+          path: ${{ steps.toolchain.outputs.sdk }}/cmake/${{ steps.toolchain.outputs.cmake }}
+          key: android-cmake-${{ runner.os }}-${{ steps.toolchain.outputs.cmake }}
 
       # Plugin media_kit mengunduh jar libmpv ke build dir; cache agar tidak
       # diunduh ulang di runner baru.
