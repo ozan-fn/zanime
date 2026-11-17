@@ -30,12 +30,6 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        ndk {
-            // Hapus filter otomatis dari Flutter
-            abiFilters.clear()
-            // Tambahkan filter kustom Anda
-            abiFilters.addAll(listOf("arm64-v8a"))
-        }
     }
 
     buildTypes {

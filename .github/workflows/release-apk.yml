@@ -1,4 +1,4 @@
-name: Release APK (arm64)
+name: Release APK (split ABI)
 
 on:
   push:
@@ -115,24 +115,26 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
 
-      # abiFilters in android/app/build.gradle.kts already forces arm64-v8a.
-      # Pass the derived version explicitly so the APK matches the release tag.
-      - name: Build arm64 APK
+      # Flutter configures AGP splits when --split-per-abi is set, so each APK
+      # contains one ABI and gets its own versionCode offset. Pass the derived
+      # version explicitly so every APK matches the release tag.
+      - name: Build split APKs
         run: >
-          flutter build apk --release
-          --target-platform android-arm64
+          flutter build apk --release --split-per-abi
           --build-name "${{ steps.version.outputs.name }}"
           --build-number "${{ steps.version.outputs.code }}"
 
-      - name: Name APK after the version
+      - name: Name APKs after the version
         run: |
           mkdir -p dist
-          cp build/app/outputs/flutter-apk/app-release.apk \
-            "dist/zanime-v${{ steps.version.outputs.tag }}-arm64.apk"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            cp "build/app/outputs/flutter-apk/app-$abi-release.apk" \
+              "dist/zanime-v${{ steps.version.outputs.tag }}-$abi.apk"
+          done
 
       - uses: actions/upload-artifact@v7
         with:
-          name: zanime-arm64-${{ steps.version.outputs.tag }}
+          name: zanime-split-${{ steps.version.outputs.tag }}
           path: dist/*.apk
           if-no-files-found: error
           retention-days: 14

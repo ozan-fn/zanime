@@ -21,8 +21,8 @@ AniList, halaman tonton dari miruro.cx, dan server tambahan dari sokuja.
 - Cache gambar (`cached_network_image` + `flutter_cache_manager`) dengan
   pengaturan ukuran dan hapus cache.
 - Hitung mundur episode berikutnya yang belum tayang.
-- APK release dibatasi ke `arm64-v8a` lewat `abiFilters` di
-  `android/app/build.gradle.kts`.
+- APK release dipecah per ABI (`arm64-v8a`, `armeabi-v7a`, `x86_64`) dengan
+  `flutter build apk --split-per-abi`.
 
 ## Struktur
 
@@ -89,14 +89,15 @@ flutter analyze
 flutter test
 ```
 
-Build APK release (hanya arm64):
+Build APK release per ABI:
 
 ```bash
-flutter build apk --release
+flutter build apk --release --split-per-abi
 ```
 
-`--target-platform android-arm64` tidak diperlukan; `abiFilters` sudah memaksa
-satu ABI meski plugin membawa native library semua ABI.
+Menghasilkan `app-arm64-v8a-release.apk`, `app-armeabi-v7a-release.apk`, dan
+`app-x86_64-release.apk` di `build/app/outputs/flutter-apk/`. Tanpa
+`--split-per-abi`, Flutter membuat satu APK universal berisi semua ABI.
 
 ### Rilis otomatis
 
@@ -109,12 +110,12 @@ satu ABI meski plugin membawa native library semua ABI.
   (contoh: `v1.0.0+1`, `v1.0.0+2`, lalu `v1.1.0+3` bila pubspec jadi `1.1.0`).
 - Versi yang lebih tua dari tag terakhir akan menggagalkan workflow.
 
-APK dibangun dengan `--build-name`/`--build-number` dari versi tersebut, dinamai
-`zanime-v<versi>+<build>-arm64.apk`, diunggah sebagai artifact, lalu otomatis
-dibuatkan GitHub Release. Workflow memakai aksi pihak ketiga
-(`subosito/flutter-action`, `gradle/actions/setup-gradle`,
-`softprops/action-gh-release`) dengan cache Flutter SDK, cache pub, dan cache
-Gradle; tidak ada `apt install`.
+APK dibangun dengan `--build-name`/`--build-number` dari versi tersebut dan
+`--split-per-abi`, dinamai `zanime-v<versi>+<build>-<abi>.apk` untuk tiap ABI,
+diunggah sebagai artifact, lalu otomatis dibuatkan GitHub Release. Workflow
+memakai aksi pihak ketiga (`subosito/flutter-action`,
+`gradle/actions/setup-gradle`, `softprops/action-gh-release`) dengan cache
+Flutter SDK, cache pub, dan cache Gradle; tidak ada `apt install`.
 
 ## Login AniList
 
