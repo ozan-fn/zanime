@@ -223,9 +223,48 @@ void main() {
       expect(data.servers.single.headers['Referer'], 'https://miruro.cx/');
 
       expect(data.subtitles.map((subtitle) => subtitle.label), [
-        'English',
-        'Indonesian',
-      ], reason: 'Indonesia/Indonesian collapse, others dropped');
+        'English · sun',
+        'Indonesian · sun',
+        'Indonesia · sun',
+        'Arabic · sun',
+        'Subtitle 1 · sun',
+      ], reason: 'every track is listed, tagged with its provider, none blank');
+      expect(data.subtitles.first.isDefault, isTrue);
+    });
+
+    test('subtitles from other providers dedupe by file', () {
+      final payload2 = payload();
+      (((payload2['sourcesData']['tracks'] as List)[0]
+                  as Map<String, Object>)['providers']
+              as List)
+          .add(<String, Object>{
+            'provider': 'bee',
+            'servers': [
+              {
+                'streams': [
+                  {'url': 'https://bee/a.m3u8'},
+                ],
+              },
+            ],
+            'subtitles': [
+              // Same file as sun's English track: no duplicate row.
+              {'label': 'English', 'file': 'en.vtt', 'default': true},
+              {'label': 'Spanish', 'file': 'es.vtt'},
+            ],
+          });
+      // Round-trip through JSON so every nested map is Map<String, dynamic>.
+      final normalized =
+          jsonDecode(jsonEncode(payload2)) as Map<String, dynamic>;
+      final data = parseWatchData(normalized, 1);
+
+      expect(data.subtitles.map((subtitle) => subtitle.label), [
+        'English · sun',
+        'Indonesian · sun',
+        'Indonesia · sun',
+        'Arabic · sun',
+        'Subtitle 1 · sun',
+        'Spanish · bee',
+      ]);
       expect(data.subtitles.first.isDefault, isTrue);
     });
 

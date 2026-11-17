@@ -66,21 +66,39 @@ void main() {
     expect(find.text('Video gagal dimuat'), findsOneWidget);
   });
 
-  test('subtitle picker puts Indonesian first and defaults to it', () {
+  test('subtitle picker shows only Indonesian and English', () {
     const subtitles = [
-      WatchSubtitle(label: 'English', url: 'en.vtt', isDefault: true),
-      WatchSubtitle(label: 'Indonesian', url: 'id.vtt'),
+      WatchSubtitle(label: 'English · bee', url: 'en.vtt', isDefault: true),
+      WatchSubtitle(label: 'Indonesian · sum', url: 'id.vtt'),
+      WatchSubtitle(label: 'Arabic · sun', url: 'ar.vtt'),
     ];
 
-    expect(subtitleOrder(subtitles), [1, 0]);
+    expect(subtitleOrder(subtitles), [1, 0], reason: 'Arabic is hidden');
     expect(defaultSubtitleIndex(subtitles), 1);
     expect(
       defaultSubtitleIndex(const [
         WatchSubtitle(label: 'English', url: 'en.vtt', isDefault: true),
+        WatchSubtitle(label: 'Arabic', url: 'ar.vtt'),
       ]),
       0,
       reason: 'falls back to the provider default when no Indonesian track',
     );
+    expect(
+      defaultSubtitleIndex(const [
+        WatchSubtitle(label: 'Arabic', url: 'ar.vtt', isDefault: true),
+      ]),
+      isNull,
+      reason: 'a default track in a hidden language does not auto-select',
+    );
     expect(defaultSubtitleIndex(const []), isNull);
+    expect(
+      subtitleOrder(const [
+        WatchSubtitle(label: 'Bahasa Indonesia · bee', url: 'id.vtt'),
+        WatchSubtitle(label: 'Subtitle 1 · sun', url: 'x.vtt'),
+      ]),
+      [0],
+      reason:
+          'language names inside a longer label still count; blanks stay out',
+    );
   });
 }

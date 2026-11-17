@@ -52,29 +52,37 @@ final List<Shadow> _subtitleShadows = [
 ];
 
 bool _isIndonesian(WatchSubtitle subtitle) =>
-    subtitle.label.toLowerCase().startsWith('indonesia');
+    RegExp(r'\bindonesian?\b').hasMatch(subtitle.label.toLowerCase());
 
-/// Picker order: Indonesian tracks first, then the provider's order.
+bool _isEnglish(WatchSubtitle subtitle) =>
+    RegExp(r'\benglish\b').hasMatch(subtitle.label.toLowerCase());
+
+/// Only Indonesian and English tracks are shown in the picker.
+bool _isShownSubtitle(WatchSubtitle subtitle) =>
+    _isIndonesian(subtitle) || _isEnglish(subtitle);
+
+/// Picker order: Indonesian tracks first, then English, provider order kept.
 List<int> subtitleOrder(List<WatchSubtitle> subtitles) {
   final indonesian = <int>[];
-  final rest = <int>[];
+  final english = <int>[];
   for (var i = 0; i < subtitles.length; i++) {
-    (_isIndonesian(subtitles[i]) ? indonesian : rest).add(i);
+    if (!_isShownSubtitle(subtitles[i])) continue;
+    (_isIndonesian(subtitles[i]) ? indonesian : english).add(i);
   }
-  return [...indonesian, ...rest];
+  return [...indonesian, ...english];
 }
 
-/// Default track: Indonesian, else the provider's default, else English,
-/// else off.
+/// Default track: Indonesian, else the provider's default (only if it is a
+/// shown language), else English, else off.
 int? defaultSubtitleIndex(List<WatchSubtitle> subtitles) {
   for (var i = 0; i < subtitles.length; i++) {
     if (_isIndonesian(subtitles[i])) return i;
   }
   for (var i = 0; i < subtitles.length; i++) {
-    if (subtitles[i].isDefault) return i;
+    if (subtitles[i].isDefault && _isShownSubtitle(subtitles[i])) return i;
   }
   for (var i = 0; i < subtitles.length; i++) {
-    if (subtitles[i].label.toLowerCase().startsWith('english')) return i;
+    if (_isEnglish(subtitles[i])) return i;
   }
   return null;
 }
@@ -171,6 +179,34 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     }
   }
 
+  @override
+  void didUpdateWidget(covariant VideoPlayerWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (identical(oldWidget.subtitles, widget.subtitles)) return;
+    // The track list can change while the player stays mounted (episode or
+    // server refresh). Keep the same file selected when it is still offered;
+    // otherwise fall back to the default (Indonesian) instead of pointing at
+    // a stale index that would silently drop the subtitle.
+    if (_selectedSubtitle == null &&
+        !(oldWidget.subtitles.isEmpty && widget.subtitles.isNotEmpty)) {
+      return; // The user chose "Off": keep it off.
+    }
+    final previous =
+        _selectedSubtitle != null &&
+            _selectedSubtitle! >= 0 &&
+            _selectedSubtitle! < oldWidget.subtitles.length
+        ? oldWidget.subtitles[_selectedSubtitle!].url
+        : null;
+    var next = previous == null
+        ? -1
+        : widget.subtitles.indexWhere((subtitle) => subtitle.url == previous);
+    if (next == -1) next = _defaultSubtitle() ?? -1;
+    final nextIndex = next == -1 ? null : next;
+    if (nextIndex == _selectedSubtitle) return;
+    _selectedSubtitle = nextIndex;
+    if (_player != null) unawaited(_applySubtitle());
+  }
+
   /// Indonesian first, then the provider's order.
   List<int> get _subtitleOrder => subtitleOrder(widget.subtitles);
 
@@ -258,10 +294,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     await _applySubtitleScale();
     final generation = ++_subtitleGeneration;
     final index = _selectedSubtitle;
-    if (index == null) {
+    if (index == null || index < 0 || index >= widget.subtitles.length) {
       await player.setSubtitleTrack(SubtitleTrack.no());
       return;
     }
+    // A fresh session (server switch) sometimes drops a track added right
+    // after `open`; mpv is settled by the time this runs, so one attach is
+    // enough.
     try {
       // Subtitle CDNs reject bare requests; media_kit's URI track cannot send
       // the provider's Origin/Referer, so fetch the VTT ourselves.
@@ -278,15 +317,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       // `sub-add`, so switching repeatedly would stack tracks (and any
       // auto-selected embedded track) on top of each other.
       await player.setSubtitleTrack(SubtitleTrack.no());
-      if (response.statusCode == 200) {
+      if (response.statusCode == 200 && response.body.trim().isNotEmpty) {
         await player.setSubtitleTrack(
           SubtitleTrack.data(normalizeSubtitle(response.body)),
         );
       }
     } catch (_) {
-      if (mounted && generation == _subtitleGeneration) {
-        await player.setSubtitleTrack(SubtitleTrack.no());
-      }
+      if (!mounted || generation != _subtitleGeneration) return;
+      await player.setSubtitleTrack(SubtitleTrack.no());
     }
   }
 
@@ -320,7 +358,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   }
 
   Widget _subtitleButton() {
-    if (widget.subtitles.isEmpty) return const SizedBox.shrink();
+    if (_subtitleOrder.isEmpty) return const SizedBox.shrink();
     return IconButton(
       onPressed: _pickSubtitle,
       tooltip: 'Subtitle',

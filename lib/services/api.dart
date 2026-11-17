@@ -305,37 +305,43 @@ WatchData parseWatchData(Map<String, dynamic> root, int episode) {
   }
   track ??= tracks.isEmpty ? null : tracks.first;
   final servers = <WatchServer>[];
+  // Every track from every provider is listed; the provider id (bee, sum,
+  // ...) is appended so the user knows where the subtitle comes from.
   final subtitles = <WatchSubtitle>[];
-  final seenSubtitles = <String>{};
+  var subtitleCount = 0;
   for (final provider
       in ((track?['providers'] as List?) ?? const [])
           .cast<Map<String, dynamic>>()) {
+    final providerId = ((provider['provider'] as String?) ?? '').trim();
     for (final item
         in ((provider['subtitles'] as List?) ?? const [])
             .cast<Map<String, dynamic>>()) {
-      final label = ((item['label'] as String?) ?? '').trim();
       final url = ((item['file'] as String?) ?? '').trim();
-      if (label.isEmpty || url.isEmpty) continue;
-      final key = label
-          .toLowerCase()
-          .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
-          .trim();
-      final match = RegExp(r'\b(english|indonesian|indonesia)\b')
-          .firstMatch(key)
-          ?.group(1);
-      if (match == null) continue;
-      // "Indonesia"/"Indonesian" collapse to one entry.
-      final canonical = match.startsWith('indonesia')
-          ? 'indonesian'
-          : 'english';
-      if (!seenSubtitles.add(canonical)) continue;
-      subtitles.add(
-        WatchSubtitle(
-          label: label,
-          url: url,
-          isDefault: item['default'] == true,
-        ),
+      if (url.isEmpty) continue;
+      var label = ((item['label'] as String?) ?? '').trim();
+      // The picker must never show a blank row.
+      if (label.isEmpty) label = 'Subtitle ${++subtitleCount}';
+      final tagged = providerId.isEmpty ? label : '$label · $providerId';
+      final key = url.toLowerCase();
+      final index = subtitles.indexWhere(
+        (subtitle) => subtitle.url.toLowerCase() == key,
       );
+      if (index == -1) {
+        subtitles.add(
+          WatchSubtitle(
+            label: tagged,
+            url: url,
+            isDefault: item['default'] == true,
+          ),
+        );
+      } else if (item['default'] == true) {
+        // Same file offered by another provider, marked default there.
+        subtitles[index] = WatchSubtitle(
+          label: subtitles[index].label,
+          url: subtitles[index].url,
+          isDefault: true,
+        );
+      }
     }
     final serversData = (provider['servers'] as List? ?? const [])
         .cast<Map<String, dynamic>>();
