@@ -14,13 +14,17 @@ import '../../services/subtitle_format.dart';
 
 final http.Client _client = sharedHttpClient;
 
-/// Nudges the center play/pause button down to sit visually centered.
+/// media_kit centers the primary bar between the 56 px top bar and the 92 px
+/// bottom area (56 px buttons + 36 px seek bar), which sits 18 px above the
+/// video's true center. Nudge it back down by exactly that difference.
+const _primaryButtonOffset = 18.0;
+
 final List<Widget> _primaryButtonBar = [
   Spacer(flex: 2),
   MaterialSkipPreviousButton(),
   Spacer(),
   Transform.translate(
-    offset: Offset(0, 10),
+    offset: const Offset(0, _primaryButtonOffset),
     child: MaterialPlayOrPauseButton(iconSize: 48.0),
   ),
   Spacer(),
