@@ -1,30 +1,36 @@
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-const _textScaleKey = 'text_scale';
-const minTextScale = 0.85;
-const maxTextScale = 1.2;
+const _sizeKey = 'subtitle_px';
 
-/// App-wide font scale, applied by [MaterialApp.builder] in main.dart.
-final ValueNotifier<double> textScale = ValueNotifier<double>(1);
+const minSubtitlePx = 12.0;
+const maxSubtitlePx = 32.0;
+const defaultSubtitlePx = 16.0;
 
-Future<void> loadTextScale() async {
+/// Subtitle size in on-screen px.
+final ValueNotifier<double> subtitlePx = ValueNotifier<double>(
+  defaultSubtitlePx,
+);
+
+/// Loads the saved subtitle size; called from main so the player has it on
+/// first open.
+Future<void> loadSubtitleStyle() async {
   try {
     final prefs = await SharedPreferences.getInstance();
-    final value = prefs.getDouble(_textScaleKey);
-    if (value != null && value >= minTextScale && value <= maxTextScale) {
-      textScale.value = value;
+    final value = prefs.getDouble(_sizeKey);
+    if (value != null && value >= minSubtitlePx && value <= maxSubtitlePx) {
+      subtitlePx.value = value;
     }
   } catch (_) {
     // Keep the default when preferences are unavailable (e.g. tests).
   }
 }
 
-Future<void> setTextScale(double value) async {
-  textScale.value = value.clamp(minTextScale, maxTextScale);
+Future<void> setSubtitlePx(double px) async {
+  subtitlePx.value = px.clamp(minSubtitlePx, maxSubtitlePx);
   try {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble(_textScaleKey, textScale.value);
+    await prefs.setDouble(_sizeKey, subtitlePx.value);
   } catch (_) {
     // The in-memory value still applies for this session.
   }

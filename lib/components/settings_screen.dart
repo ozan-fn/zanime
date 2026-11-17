@@ -282,17 +282,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final lists = _lists;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-      child: GridView.count(
+      child: GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
-        crossAxisCount: 3,
-        crossAxisSpacing: 8,
-        mainAxisSpacing: 8,
-        childAspectRatio: 1.5,
-        children: [
-          for (final status in aniListStatusOrder)
-            _statusTile(status, lists?[status]),
-        ],
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3,
+          crossAxisSpacing: 8,
+          mainAxisSpacing: 8,
+          // Fixed height so the text (and the font-size setting) cannot
+          // overflow the tile.
+          mainAxisExtent: 104,
+        ),
+        itemCount: aniListStatusOrder.length,
+        itemBuilder: (context, index) {
+          final status = aniListStatusOrder[index];
+          return _statusTile(status, lists?[status]);
+        },
       ),
     );
   }
@@ -317,7 +322,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
         child: Padding(
-          padding: const EdgeInsets.all(10),
+          padding: const EdgeInsets.all(8),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -325,7 +330,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Icon(_statusIcons[status], size: 18, color: accent),
               Text(
                 entries == null ? '–' : '${entries.length}',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -346,30 +351,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _fontSetting() {
     return ValueListenableBuilder<double>(
-      valueListenable: textScale,
+      valueListenable: subtitlePx,
       builder: (context, value, _) => ListTile(
-        leading: const Icon(Icons.format_size),
-        title: const Text('Ukuran font'),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 8),
-          child: SegmentedButton<double>(
-            showSelectedIcon: false,
-            segments: const [
-              ButtonSegment(value: minTextScale, label: Text('Kecil')),
-              ButtonSegment(value: 1, label: Text('Normal')),
-              ButtonSegment(value: maxTextScale, label: Text('Besar')),
-            ],
-            selected: {_scaleChoice(value)},
-            onSelectionChanged: (selection) => setTextScale(selection.first),
-          ),
+        leading: const Icon(Icons.subtitles_outlined),
+        title: const Text('Ukuran subtitle'),
+        trailing: Text('${value.round()} px'),
+        subtitle: Slider(
+          min: minSubtitlePx,
+          max: maxSubtitlePx,
+          divisions: (maxSubtitlePx - minSubtitlePx).round(),
+          value: value.clamp(minSubtitlePx, maxSubtitlePx),
+          label: '${value.round()} px',
+          onChanged: setSubtitlePx,
         ),
       ),
     );
-  }
-
-  double _scaleChoice(double value) {
-    if (value < 0.95) return minTextScale;
-    if (value > 1.1) return maxTextScale;
-    return 1;
   }
 }

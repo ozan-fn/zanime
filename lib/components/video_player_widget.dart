@@ -7,16 +7,11 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../models/models.dart';
+import '../services/app_settings.dart';
 import '../services/http_client.dart';
 import '../services/subtitle_format.dart';
 
 final http.Client _client = sharedHttpClient;
-
-/// Base size media_kit multiplies by the player box scale (≈ width / 1920), so
-/// subtitles are ~4.8% of the video width inline and grow in fullscreen.
-/// (Fullscreen re-creates its own `Video` from this config snapshot, so
-/// per-mode sizes are only possible through media_kit's own scaling.)
-const _subtitleFontSize = 92.0;
 
 /// Nudges the center play/pause button down to sit visually centered.
 final List<Widget> _primaryButtonBar = [
@@ -316,38 +311,55 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     }
     return AspectRatio(
       aspectRatio: 16 / 9,
-      child: MaterialVideoControlsTheme(
-        normal: kDefaultMaterialVideoControlsThemeData.copyWith(
-          topButtonBar: [_qualityButton(), _subtitleButton()],
-          primaryButtonBar: _primaryButtonBar,
-          seekGesture: true,
-          seekOnDoubleTap: true,
-        ),
-        // Built-in fullscreen defaults bring the safe-area padding, seek bar
-        // position and double-tap ±10s gestures; only the button bar changes.
-        fullscreen: kDefaultMaterialVideoControlsThemeDataFullscreen.copyWith(
-          topButtonBar: [_qualityButton(), _subtitleButton()],
-          seekBarMargin: const EdgeInsets.only(left: 16, right: 16, bottom: 28),
-        ),
-        child: Video(
-          controller: controller,
-          fit: BoxFit.contain,
-          subtitleViewConfiguration: SubtitleViewConfiguration(
-            // Slightly higher than media_kit's default bottom padding.
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
-            // No textScaler: media_kit then scales the font by the player box,
-            // which is what makes subtitles larger in fullscreen.
-            style: TextStyle(
-              fontFamily: 'Comic Neue',
-              fontSize: _subtitleFontSize,
-              fontWeight: FontWeight.w700,
-              height: 1.25,
-              color: const Color(0xFFFFFFFF),
-              backgroundColor: const Color(0x00000000),
-              shadows: _subtitleShadows,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth <= 0
+              ? 360.0
+              : constraints.maxWidth;
+          return AnimatedBuilder(
+            animation: subtitlePx,
+            builder: (context, _) => MaterialVideoControlsTheme(
+              normal: kDefaultMaterialVideoControlsThemeData.copyWith(
+                topButtonBar: [_qualityButton(), _subtitleButton()],
+                primaryButtonBar: _primaryButtonBar,
+                seekGesture: true,
+                seekOnDoubleTap: true,
+              ),
+              // Built-in fullscreen defaults bring the safe-area padding, seek
+              // bar position and double-tap ±10s gestures; only the buttons
+              // change.
+              fullscreen: kDefaultMaterialVideoControlsThemeDataFullscreen
+                  .copyWith(
+                    topButtonBar: [_qualityButton(), _subtitleButton()],
+                    seekBarMargin: const EdgeInsets.only(
+                      left: 16,
+                      right: 16,
+                      bottom: 28,
+                    ),
+                  ),
+              child: Video(
+                controller: controller,
+                fit: BoxFit.contain,
+                subtitleViewConfiguration: SubtitleViewConfiguration(
+                  // Slightly higher than media_kit's default bottom padding.
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+                  // media_kit multiplies the size by the player box scale
+                  // (≈ width / 1920); divide it back out so the settings value
+                  // is the on-screen px size.
+                  style: TextStyle(
+                    fontFamily: 'Comic Neue',
+                    fontSize: subtitlePx.value * 1920 / width,
+                    fontWeight: FontWeight.w700,
+                    height: 1.25,
+                    color: const Color(0xFFFFFFFF),
+                    backgroundColor: const Color(0x00000000),
+                    shadows: _subtitleShadows,
+                  ),
+                ),
+              ),
             ),
-          ),
-        ),
+          );
+        },
       ),
     );
   }

@@ -25,37 +25,19 @@ const _shape3 = RoundedRectangleBorder(
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
+  loadSubtitleStyle();
   runApp(const MyApp());
 }
 
-class MyApp extends StatefulWidget {
+class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
   @override
-  State<MyApp> createState() => _MyAppState();
-}
-
-class _MyAppState extends State<MyApp> {
-  @override
-  void initState() {
-    super.initState();
-    loadTextScale();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<double>(
-      valueListenable: textScale,
-      builder: (context, scale, _) => MaterialApp(
-        title: 'Zanime',
-        builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(
-            context,
-          ).copyWith(textScaler: TextScaler.linear(scale)),
-          child: child!,
-        ),
-        theme: ThemeData(
-          brightness: Brightness.dark,
+    return MaterialApp(
+      title: 'Zanime',
+      theme: ThemeData(
+        brightness: Brightness.dark,
           scaffoldBackgroundColor: _zinc950,
           colorScheme: const ColorScheme.dark(
             primary: _zinc100,
@@ -127,8 +109,7 @@ class _MyAppState extends State<MyApp> {
             ),
           ),
         ),
-        home: const HomeShell(),
-      ),
+      home: const HomeShell(),
     );
   }
 }

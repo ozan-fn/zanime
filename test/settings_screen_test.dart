@@ -137,8 +137,47 @@ void main() {
     expect(find.text('Dungeon Meshi'), findsOneWidget);
   });
 
-  testWidgets('Profil changes the app font scale', (tester) async {
-    addTearDown(() => textScale.value = 1);
+  testWidgets('Profil fits the status grid at a large text scale', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: const TextScaler.linear(1.3)),
+          child: child!,
+        ),
+        home: SettingsScreen(
+          cacheSize: () async => 0,
+          clearCache: () async {},
+          loadProfile: () async => const AniListProfile(
+            id: 1,
+            name: 'zanime',
+            avatarUrl: '',
+          ),
+          loadLists: () async => {
+            'COMPLETED': [
+              const WatchingAnime(
+                mediaId: 2,
+                title: 'Bocchi',
+                imageUrl: '',
+                progress: 12,
+                status: 'COMPLETED',
+              ),
+            ],
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Completed'), findsOneWidget);
+  });
+
+  testWidgets('Profil changes the subtitle px size', (tester) async {
+    addTearDown(() => subtitlePx.value = defaultSubtitlePx);
     await tester.pumpWidget(
       MaterialApp(
         home: SettingsScreen(
@@ -150,13 +189,17 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(textScale.value, 1);
-    await tester.tap(find.text('Besar'));
-    await tester.pump();
-    expect(textScale.value, maxTextScale);
+    expect(subtitlePx.value, defaultSubtitlePx);
+    expect(find.text('${defaultSubtitlePx.round()} px'), findsWidgets);
+    expect(find.text('Huruf tebal'), findsNothing, reason: 'removed');
 
-    await tester.tap(find.text('Kecil'));
+    tester.widget<Slider>(find.byType(Slider)).onChanged!(maxSubtitlePx);
     await tester.pump();
-    expect(textScale.value, minTextScale);
+    expect(subtitlePx.value, maxSubtitlePx);
+    expect(find.text('${maxSubtitlePx.round()} px'), findsWidgets);
+
+    tester.widget<Slider>(find.byType(Slider)).onChanged!(minSubtitlePx);
+    await tester.pump();
+    expect(subtitlePx.value, minSubtitlePx);
   });
 }
