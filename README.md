@@ -111,6 +111,23 @@ dibuatkan GitHub Release. Workflow memakai aksi pihak ketiga
 `softprops/action-gh-release`) dengan cache Flutter SDK, cache pub, dan cache
 Gradle; tidak ada `apt install`.
 
+## Login AniList
+
+Tab **Setting** punya tombol login dan profil AniList (nama, ID, jumlah anime,
+episode ditonton, tombol keluar). Token disimpan di `shared_preferences`.
+
+- Client ID: `18615` (hardcoded, aman karena publik).
+- Redirect URL yang **wajib** diisi di pengaturan aplikasi AniList:
+  `zanime://auth`
+- Flow: **implicit grant** (`response_type=token`) lewat
+  `flutter_web_auth_2`; token dikembalikan di fragment URL dan tidak butuh
+  server maupun client secret.
+- `AndroidManifest.xml` mendaftarkan `zanime` untuk menangkap callback.
+
+Client secret **tidak dipakai** dan tidak boleh ditanam di APK: APK bisa
+dibongkar, sehingga secret harus dianggap publik. Kalau secret pernah
+dibagikan, rotasi/revoke di pengaturan AniList.
+
 ## Masalah: HTTP 403 dari sokuja
 
 ### Gejala

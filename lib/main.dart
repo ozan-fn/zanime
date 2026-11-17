@@ -5,6 +5,7 @@ import 'components/anime_banner.dart';
 import 'components/latest_episodes.dart';
 import 'components/search_screen.dart';
 import 'components/settings_screen.dart';
+import 'components/watching_screen.dart';
 import 'models/models.dart';
 import 'services/api.dart';
 
@@ -81,7 +82,7 @@ class MyApp extends StatelessWidget {
   }
 }
 
-/// Bottom navigation: Home, Search, History, Setting. Tabs are mounted on
+/// Bottom navigation: Home, Search, Watching, Profile. Tabs are mounted on
 /// first visit and kept afterwards so their state survives switching.
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key, this.search});
@@ -94,23 +95,32 @@ class HomeShell extends StatefulWidget {
 }
 
 class _HomeShellState extends State<HomeShell> {
-  late final List<Widget> _pages = [
-    const HomeTab(),
-    SearchScreen(search: widget.search),
-    const _EmptyTab(title: 'History'),
-    const SettingsScreen(),
-  ];
   final _visited = <int>{0};
   int _index = 0;
+  int _watchingRefresh = 0;
+
+  List<Widget> get _pages => [
+    const HomeTab(),
+    SearchScreen(search: widget.search),
+    WatchingScreen(
+      refreshSignal: _watchingRefresh,
+      onLogin: () => setState(() {
+        _index = 3;
+        _visited.add(3);
+      }),
+    ),
+    const SettingsScreen(),
+  ];
 
   @override
   Widget build(BuildContext context) {
+    final pages = _pages;
     return Scaffold(
       body: IndexedStack(
         index: _index,
         children: [
-          for (var i = 0; i < _pages.length; i++)
-            _visited.contains(i) ? _pages[i] : const SizedBox.shrink(),
+          for (var i = 0; i < pages.length; i++)
+            _visited.contains(i) ? pages[i] : const SizedBox.shrink(),
         ],
       ),
       bottomNavigationBar: Theme(
@@ -128,6 +138,7 @@ class _HomeShellState extends State<HomeShell> {
           onDestinationSelected: (index) => setState(() {
             _index = index;
             _visited.add(index);
+            if (index == 2) _watchingRefresh++;
           }),
           destinations: const [
             NavigationDestination(
@@ -136,11 +147,15 @@ class _HomeShellState extends State<HomeShell> {
               label: 'Home',
             ),
             NavigationDestination(icon: Icon(Icons.search), label: 'Search'),
-            NavigationDestination(icon: Icon(Icons.history), label: 'History'),
             NavigationDestination(
-              icon: Icon(Icons.settings_outlined),
-              selectedIcon: Icon(Icons.settings),
-              label: 'Setting',
+              icon: Icon(Icons.live_tv_outlined),
+              selectedIcon: Icon(Icons.live_tv),
+              label: 'Watching',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.person_outline),
+              selectedIcon: Icon(Icons.person),
+              label: 'Profile',
             ),
           ],
         ),
