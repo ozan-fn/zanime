@@ -112,6 +112,18 @@ jobs:
           path: build/media_kit_libs_android_video
           key: media-kit-libs-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
 
+      # The release keystore arrives as one repo secret (never committed): a
+      # base64 zip holding key.properties + app/zanime-release.keystore, so
+      # every build signs with the same key and updates install cleanly.
+      # Without the secret the build falls back to debug signing.
+      - name: Restore release keystore
+        if: env.KEYSTORE_B64_ZIP != ''
+        env:
+          KEYSTORE_B64_ZIP: ${{ secrets.KEYSTORE_B64_ZIP }}
+        run: |
+          echo "$KEYSTORE_B64_ZIP" | base64 --decode > /tmp/keystore.zip
+          unzip -o /tmp/keystore.zip -d .
+
       - name: Resolve dependencies
         run: flutter pub get
 

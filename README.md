@@ -139,6 +139,39 @@ Menghasilkan `app-arm64-v8a-release.apk`, `app-armeabi-v7a-release.apk`, dan
 `app-x86_64-release.apk` di `build/app/outputs/flutter-apk/`. Tanpa
 `--split-per-abi`, Flutter membuat satu APK universal berisi semua ABI.
 
+### Tanda tangan APK
+
+Update di Android hanya bisa dipasang kalau APK baru **ditandatangani dengan
+kunci yang sama** dengan yang terpasang. Kunci release
+(`android/app/zanime-release.keystore`) **tidak di-commit** — `.gitignore`
+menutup `*.keystore` dan `key.properties`.
+
+- **Lokal**: buat `android/key.properties` berisi `storePassword`,
+  `keyPassword`, `keyAlias=zanime`, `storeFile=zanime-release.keystore`, dan
+  simpan kuncinya di `android/app/zanime-release.keystore`. `build.gradle.kts`
+  memakai kunci itu kalau filenya ada.
+- **GitHub Actions**: workflow mengembalikan kunci dari **satu** repo secret
+  sebelum build, di Settings → Secrets and variables → Actions:
+  - `KEYSTORE_B64_ZIP` — ZIP berisi `android/key.properties` +
+    `android/app/zanime-release.keystore`, dalam base64. Buat dari root repo:
+    ```powershell
+    $stage = "$env:TEMP\ks-stage\android"
+    New-Item -ItemType Directory -Force "$stage\app" | Out-Null
+    Copy-Item android\key.properties $stage\ -Force
+    Copy-Item android\app\zanime-release.keystore $stage\app\ -Force
+    Compress-Archive -Path "$env:TEMP\ks-stage\android" -DestinationPath ks.zip -Force
+    [Convert]::ToBase64String([IO.File]::ReadAllBytes("ks.zip")) | Set-Clipboard
+    Remove-Item ks.zip, "$env:TEMP\ks-stage" -Recurse -Force
+    ```
+- Tanpa kunci/secrets, build jatuh kembali ke tanda tangan debug — yang
+  berbeda di tiap mesin, sehingga APK-nya tidak bisa jadi update.
+
+Build `flutter run` (debug) memakai kunci debug yang berbeda; setelah mencoba
+build release, uninstall dulu aplikasi debug sebelum memasang APK release,
+sekali saja. Setelah itu semua rilis bisa update di atas yang lama. Simpan
+file keystore di tempat aman (backup) — kunci hilang berarti tidak bisa
+update ke instalasi yang sudah ada.
+
 ### Rilis otomatis
 
 `.github/workflows/release-apk.yml` berjalan setiap push ke `main` (atau
