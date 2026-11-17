@@ -234,6 +234,7 @@ class WatchSubtitle {
     required this.label,
     required this.url,
     this.isDefault = false,
+    this.headers = const {},
   });
 
   factory WatchSubtitle.fromJson(Map<String, dynamic> json) {
@@ -241,12 +242,18 @@ class WatchSubtitle {
       label: json['label'] as String,
       url: json['url'] as String,
       isDefault: json['isDefault'] as bool? ?? false,
+      headers: ((json['headers'] as Map?) ?? const {}).cast<String, String>(),
     );
   }
 
   final String label;
   final String url;
   final bool isDefault;
+
+  /// Provider headers (Origin/Referer) needed by the subtitle CDN. Tracks are
+  /// listed across providers, so a sun track must still be fetched with sun's
+  /// headers even while a bee stream is playing.
+  final Map<String, String> headers;
 }
 
 class WatchStream {

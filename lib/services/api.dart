@@ -438,6 +438,20 @@ WatchData parseWatchData(Map<String, dynamic> root, int episode) {
       in ((track?['providers'] as List?) ?? const [])
           .cast<Map<String, dynamic>>()) {
     final providerId = ((provider['provider'] as String?) ?? '').trim();
+    // Subtitle files live on the provider's CDN, which rejects requests sent
+    // with another provider's Origin/Referer. The headers sit on the servers,
+    // not on the subtitle entries, so copy them onto every track below.
+    var providerHeaders = <String, String>{};
+    for (final server
+        in ((provider['servers'] as List?) ?? const [])
+            .cast<Map<String, dynamic>>()) {
+      final headers = ((server['headers'] as Map?) ?? const {})
+          .cast<String, String>();
+      if (headers.isNotEmpty) {
+        providerHeaders = headers;
+        break;
+      }
+    }
     for (final item
         in ((provider['subtitles'] as List?) ?? const [])
             .cast<Map<String, dynamic>>()) {
@@ -457,6 +471,7 @@ WatchData parseWatchData(Map<String, dynamic> root, int episode) {
             label: tagged,
             url: url,
             isDefault: item['default'] == true,
+            headers: providerHeaders,
           ),
         );
       } else if (item['default'] == true) {
@@ -465,6 +480,9 @@ WatchData parseWatchData(Map<String, dynamic> root, int episode) {
           label: subtitles[index].label,
           url: subtitles[index].url,
           isDefault: true,
+          headers: subtitles[index].headers.isNotEmpty
+              ? subtitles[index].headers
+              : providerHeaders,
         );
       }
     }

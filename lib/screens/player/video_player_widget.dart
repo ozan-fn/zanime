@@ -314,6 +314,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           'accept': '*/*',
           'referer': 'https://miruro.cx/',
           ...?widget.subtitleHeaders,
+          // Per-track headers win: a sun subtitle needs sun's Origin/Referer
+          // even when the playing stream comes from another provider.
+          ...widget.subtitles[index].headers,
         },
       );
       if (generation != _subtitleGeneration || !mounted) return;

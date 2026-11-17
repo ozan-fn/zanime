@@ -231,6 +231,7 @@ void main() {
         'Subtitle 1 · sun',
       ], reason: 'every track is listed, tagged with its provider, none blank');
       expect(data.subtitles.first.isDefault, isTrue);
+      expect(data.subtitles.first.headers, {'Referer': 'https://miruro.cx/'});
     });
 
     test('subtitles from other providers dedupe by file', () {
@@ -245,6 +246,10 @@ void main() {
                 'streams': [
                   {'url': 'https://bee/a.m3u8'},
                 ],
+                'headers': {
+                  'Origin': 'https://bee.example',
+                  'Referer': 'https://bee.example/',
+                },
               },
             ],
             'subtitles': [
@@ -267,6 +272,15 @@ void main() {
         'Spanish · bee',
       ]);
       expect(data.subtitles.first.isDefault, isTrue);
+      expect(data.subtitles.last.headers, {
+        'Origin': 'https://bee.example',
+        'Referer': 'https://bee.example/',
+      }, reason: 'a bee subtitle must be fetched with bee headers');
+      expect(
+        data.subtitles.first.headers['Referer'],
+        'https://miruro.cx/',
+        reason: 'the deduped sun track keeps sun headers, not bee',
+      );
     });
 
     test('falls back to the requested episode when unspecified', () {
