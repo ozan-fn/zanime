@@ -226,10 +226,7 @@ Future<Map<String, dynamic>?> _aniListQuery(
       'content-type': 'application/json',
       'authorization': 'Bearer $token',
     },
-    body: jsonEncode({
-      'query': query,
-      if (variables != null) 'variables': variables,
-    }),
+    body: jsonEncode({'query': query, 'variables': ?variables}),
   );
   if (response.statusCode == 401) {
     await signOutAniList();

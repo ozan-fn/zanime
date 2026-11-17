@@ -2,7 +2,6 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:test1/services/anilist_auth.dart';
-
 void main() {
   test('parseAniListToken reads the implicit grant fragment', () {
     expect(
@@ -60,5 +59,49 @@ void main() {
     )!;
     expect(profile.animeCount, 0);
     expect(profile.bannerUrl, isNull);
+  });
+
+  test('parseAniListWatching keeps watching entries, newest first', () {
+    Map<String, dynamic> entry(int id, String status, int progress, int updated) => {
+      'status': status,
+      'progress': progress,
+      'updatedAt': updated,
+      'media': {
+        'id': id,
+        'title': {'romaji': 'Romaji $id', 'english': 'English $id'},
+        'coverImage': {'large': 'https://example.com/$id.jpg'},
+        'episodes': 12,
+        'format': 'TV',
+        'seasonYear': 2025,
+        'nextAiringEpisode': {'episode': progress + 1},
+      },
+    };
+    final list = parseAniListWatching(
+      jsonEncode({
+        'data': {
+          'MediaListCollection': {
+            'lists': [
+              {
+                'entries': [
+                  entry(1, 'CURRENT', 5, 100),
+                  entry(2, 'COMPLETED', 12, 200),
+                ],
+              },
+              {
+                'entries': [
+                  entry(3, 'REPEATING', 2, 300),
+                  entry(1, 'CURRENT', 5, 100),
+                ],
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    expect(list.map((anime) => anime.mediaId), [3, 1]);
+    expect(list.first.title, 'English 3');
+    expect(list.first.nextWatchEpisode, 3);
+    expect(list.last.totalEpisodes, 12);
   });
 }

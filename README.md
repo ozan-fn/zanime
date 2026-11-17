@@ -10,6 +10,9 @@ AniList, halaman tonton dari miruro.cx, dan server tambahan dari sokuja.
 
 - Banner anime trending, daftar episode terbaru, dan pencarian dengan debounce.
 - Riwayat pencarian dalam sesi (maks. 10, tanpa penyimpanan permanen).
+- Tab **Watching** menampilkan anime berstatus CURRENT/REPEATING dari akun
+  AniList (progress + episode berikutnya, tap untuk memutar). Tab **Profile**
+  berisi login/profil AniList dan pengaturan cache.
 - Halaman tonton: grid episode, ganti provider/server, kualitas video, subtitle.
   Provider terakhir yang dipilih diingat selama sesi; kalau tidak tersedia,
   dipakai server paling atas.
@@ -30,6 +33,7 @@ lib/
     anime_banner.dart           Banner trending
     latest_episodes.dart        Grid episode terbaru (satu halaman)
     search_screen.dart          Pencarian + riwayat
+    watching_screen.dart        Anime CURRENT/REPEATING dari AniList
     watch_screen.dart           Detail anime, episode, pemilihan server
     video_player_widget.dart    Player media_kit, kontrol, subtitle
     upcoming_countdown.dart     Hitung mundur tayang
@@ -37,6 +41,7 @@ lib/
   models/models.dart            Model data + label/format helper
   services/
     api.dart                    AniList + miruro.cx (parser SvelteKit)
+    anilist_auth.dart           OAuth AniList, profil, daftar watching
     sokuja.dart                 Provider sokuja + pencocokan anime
     http_client.dart            Cronet di Android, dart:io di desktop
     subtitle_format.dart        Normalisasi subtitle

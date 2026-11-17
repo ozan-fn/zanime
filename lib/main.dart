@@ -241,15 +241,3 @@ class _HomeTabState extends State<HomeTab> {
     );
   }
 }
-
-/// History and Setting are placeholders for now.
-class _EmptyTab extends StatelessWidget {
-  const _EmptyTab({required this.title});
-
-  final String title;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(appBar: AppBar(title: Text(title)));
-  }
-}
