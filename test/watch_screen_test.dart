@@ -643,4 +643,33 @@ void main() {
         .where((list) => list.scrollDirection == Axis.horizontal);
     expect(horizontal, isNotEmpty, reason: 'recommendations scroll sideways');
   });
+
+  testWidgets('WatchScreen explains when AniList has no story relations', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: WatchScreen(
+          animeId: 'x',
+          loader: (_, episode) async => _data(episode),
+          statusLoader: (_) async => null,
+          recommendationLoader: (_) async => const [],
+          relatedLoader: (_) async => const [],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Terkait'), findsOneWidget);
+    expect(
+      find.text('Belum ada prequel, sequel, atau cerita sampingan di AniList.'),
+      findsOneWidget,
+    );
+    expect(find.text('Rekomendasi'), findsNothing);
+  });
 }

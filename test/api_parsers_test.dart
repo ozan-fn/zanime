@@ -421,6 +421,16 @@ void main() {
                     'coverImage': {'extraLarge': 'https://img/m.jpg'},
                   },
                 },
+                {
+                  // Cameo: anime, but not a prequel/sequel-style relation.
+                  'relationType': 'CHARACTER',
+                  'node': {
+                    'id': 103,
+                    'type': 'ANIME',
+                    'title': {'romaji': 'Cameo'},
+                    'coverImage': {'extraLarge': 'https://img/c.jpg'},
+                  },
+                },
               ],
             },
           },
@@ -429,7 +439,11 @@ void main() {
 
       final items = parseRelated(body);
 
-      expect(items, hasLength(2), reason: 'manga adaptations are skipped');
+      expect(
+        items,
+        hasLength(2),
+        reason: 'manga adaptations and character cameos are skipped',
+      );
       expect(items.first.title, 'Season 1');
       expect(items.first.relationType, 'PREQUEL');
       expect(items.first.relationLabel, 'Prequel');

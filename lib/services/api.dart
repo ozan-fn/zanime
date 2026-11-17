@@ -153,7 +153,8 @@ Future<List<RelatedAnime>> fetchRelated(int aniListId) async {
   return parseRelated(response.body);
 }
 
-/// Parses the GraphQL payload from [fetchRelated], keeping anime only.
+/// Parses the GraphQL payload from [fetchRelated], keeping story relations
+/// (prequel, sequel, side story, ...) and dropping cameos/adaptations.
 List<RelatedAnime> parseRelated(String body) {
   final media =
       (jsonDecode(body) as Map<String, dynamic>)['data']?['Media']
@@ -174,6 +175,7 @@ List<RelatedAnime> parseRelated(String body) {
     final title = (titles['english'] ?? titles['romaji'] as String?) ?? '';
     final image = (cover['extraLarge'] as String?) ?? '';
     final relation = (edge['relationType'] as String?) ?? '';
+    if (!_relationPriority.containsKey(relation)) continue;
     if (id == null ||
         title.isEmpty ||
         image.isEmpty ||

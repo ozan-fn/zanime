@@ -422,9 +422,9 @@ class _WatchScreenState extends State<WatchScreen> {
                   _player(server, data),
                   _episodeBar(data, server),
                   _episodeGrid(data),
-                  _about(data),
                   _relatedSection(data),
                   _recommendationsSection(data),
+                  _about(data),
                 ],
               ),
             );
@@ -711,6 +711,7 @@ class _WatchScreenState extends State<WatchScreen> {
       title: 'Terkait',
       icon: Icons.account_tree_outlined,
       future: future,
+      emptyText: 'Belum ada prequel, sequel, atau cerita sampingan di AniList.',
       card: (item) => _animeCard(
         title: item.title,
         imageUrl: item.imageUrl,
@@ -755,12 +756,15 @@ class _WatchScreenState extends State<WatchScreen> {
     required IconData icon,
     required Future<List<T>> future,
     required Widget Function(T item) card,
+    String? emptyText,
   }) {
     return FutureBuilder<List<T>>(
       future: future,
       builder: (context, snapshot) {
         final items = snapshot.data;
-        if (items == null || items.isEmpty) return const SizedBox.shrink();
+        if (items == null || (items.isEmpty && emptyText == null)) {
+          return const SizedBox.shrink();
+        }
         final theme = Theme.of(context);
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -775,17 +779,29 @@ class _WatchScreenState extends State<WatchScreen> {
                 ],
               ),
             ),
-            SizedBox(
-              height: 224,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                itemCount: items.length,
-                separatorBuilder: (_, _) => const SizedBox(width: 12),
-                itemBuilder: (context, index) => card(items[index]),
+            if (items.isEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Text(
+                  emptyText!,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              )
+            else ...[
+              SizedBox(
+                height: 224,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: items.length,
+                  separatorBuilder: (_, _) => const SizedBox(width: 12),
+                  itemBuilder: (context, index) => card(items[index]),
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
+              const SizedBox(height: 16),
+            ],
           ],
         );
       },
