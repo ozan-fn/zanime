@@ -122,7 +122,13 @@ jobs:
           KEYSTORE_B64_ZIP: ${{ secrets.KEYSTORE_B64_ZIP }}
         run: |
           echo "$KEYSTORE_B64_ZIP" | base64 --decode > /tmp/keystore.zip
-          unzip -o /tmp/keystore.zip -d .
+          # Compress-Archive on Windows writes backslash paths; unzip treats
+          # that as a warning and exits 1. Accept the warning, then prove the
+          # two files really landed.
+          unzip -o /tmp/keystore.zip -d . || status=$?
+          if [ "${status:-0}" -gt 1 ]; then exit "$status"; fi
+          test -f android/key.properties
+          test -f android/app/zanime-release.keystore
 
       - name: Resolve dependencies
         run: flutter pub get
