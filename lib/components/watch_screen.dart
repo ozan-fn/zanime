@@ -1,7 +1,10 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../models/models.dart';
 import '../services/api.dart';
+import '../services/sokuja.dart';
+import 'upcoming_countdown.dart';
 import 'video_player_widget.dart';
 
 class WatchScreen extends StatefulWidget {
@@ -45,7 +48,13 @@ class _WatchScreenState extends State<WatchScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Watch')),
+      appBar: AppBar(
+        title: FutureBuilder<WatchData>(
+          future: _future,
+          builder: (context, snapshot) =>
+              Text(snapshot.data?.anime.title ?? ''),
+        ),
+      ),
       body: FutureBuilder<WatchData>(
         future: _future,
         builder: (context, snapshot) {
@@ -62,8 +71,14 @@ class _WatchScreenState extends State<WatchScreen> {
                   (item) => item.provider == _provider,
                   orElse: () => data.servers.first,
                 );
+          final upcoming = _upcoming(data);
           return ListView(
             children: [
+              if (upcoming != null)
+                UpcomingCountdown(
+                  episode: upcoming.number,
+                  airDate: DateTime.parse(upcoming.airDate!),
+                ),
               _player(server, data),
               _episodeBar(data, server),
               _episodeGrid(data),
@@ -73,6 +88,16 @@ class _WatchScreenState extends State<WatchScreen> {
         },
       ),
     );
+  }
+
+  /// Next episode that has not aired yet, if the schedule lists one.
+  WatchEpisode? _upcoming(WatchData data) {
+    final now = DateTime.now();
+    for (final episode in data.episodes) {
+      final date = DateTime.tryParse(episode.airDate ?? '');
+      if (date != null && date.isAfter(now)) return episode;
+    }
+    return null;
   }
 
   Widget _player(WatchServer? server, WatchData data) {
@@ -86,7 +111,8 @@ class _WatchScreenState extends State<WatchScreen> {
       key: ValueKey(server.url),
       streams: server.streams,
       headers: server.headers,
-      subtitles: data.subtitles,
+      // Sokuja mirrors are self-contained mp4s without track metadata.
+      subtitles: server.provider == sokujaProvider ? const [] : data.subtitles,
       subtitleHeaders: server.headers,
     );
   }
@@ -139,7 +165,11 @@ class _WatchScreenState extends State<WatchScreen> {
                         for (final item in data.servers)
                           DropdownMenuItem(
                             value: item.provider,
-                            child: Text(item.provider),
+                            child: Text(
+                              item.provider == sokujaProvider
+                                  ? 'skj'
+                                  : item.provider,
+                            ),
                           ),
                       ],
                       onChanged: (value) => setState(() {
@@ -218,10 +248,10 @@ class _WatchScreenState extends State<WatchScreen> {
                 child: SizedBox(
                   width: 56,
                   height: 80,
-                  child: Image.network(
-                    anime.imageUrl,
+                  child: CachedNetworkImage(
+                    imageUrl: anime.imageUrl,
                     fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) =>
+                    errorWidget: (_, _, _) =>
                         const ColoredBox(color: Colors.black),
                   ),
                 ),

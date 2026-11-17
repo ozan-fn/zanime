@@ -18,23 +18,16 @@ LatestEpisode _episode(int i) => LatestEpisode(
 );
 
 void main() {
-  testWidgets('Latest Episodes renders vertically and loads the next page', (
+  testWidgets('Latest Episodes shows every episode without pagination', (
     tester,
   ) async {
-    final controller = ScrollController();
     final items = [for (var i = 1; i <= 20; i++) _episode(i)];
 
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
           body: ListView(
-            controller: controller,
-            children: [
-              LatestEpisodes(
-                future: Future.value(items),
-                scrollController: controller,
-              ),
-            ],
+            children: [LatestEpisodes(future: Future.value(items))],
           ),
         ),
       ),
@@ -43,15 +36,8 @@ void main() {
 
     expect(find.text('Latest Episodes'), findsOneWidget);
     expect(find.text('Anime 1'), findsOneWidget);
-    expect(find.text('Anime 20'), findsNothing);
-    expect(find.text('1/2'), findsOneWidget);
-
-    controller.jumpTo(controller.position.maxScrollExtent);
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
-
-    expect(find.text('Anime 20'), findsOneWidget);
-    expect(find.text('2/2'), findsOneWidget);
+    expect(find.textContaining('/'), findsNothing, reason: 'no page counter');
+    expect(find.byType(CircularProgressIndicator), findsNothing);
   });
 
   testWidgets('Latest Episodes opens the watch page when a card is tapped', (
@@ -81,22 +67,17 @@ void main() {
     expect(find.byType(WatchScreen), findsOneWidget);
   });
 
-  testWidgets('Latest Episodes shows a skeleton while loading', (
-    tester,
-  ) async {
-    final controller = ScrollController();
+  testWidgets('Latest Episodes shows a skeleton while loading', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
           body: ListView(
-            controller: controller,
             children: [
               LatestEpisodes(
                 future: Future.delayed(
                   const Duration(seconds: 1),
                   () => [_episode(1)],
                 ),
-                scrollController: controller,
               ),
             ],
           ),

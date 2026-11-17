@@ -12,9 +12,7 @@ void main() {
 
     expect(find.text('Zanime'), findsOneWidget);
     expect(find.byType(NavigationBar), findsOneWidget);
-    for (final label in ['Home', 'Search', 'History', 'Setting']) {
-      expect(find.text(label), findsOneWidget);
-    }
+    expect(find.byType(NavigationDestination), findsNWidgets(4));
   });
 
   testWidgets('search tab does not open the keyboard', (
@@ -22,12 +20,10 @@ void main() {
   ) async {
     await tester.pumpWidget(const MyApp());
 
-    expect(find.byIcon(Icons.search), findsOneWidget, reason: 'tab icon only');
     expect(find.byType(TextField), findsNothing);
 
-    await tester.tap(find.text('Search'));
+    await tester.tap(find.byIcon(Icons.search));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(TextField), findsOneWidget);
     expect(tester.testTextInput.isVisible, isFalse);
@@ -55,22 +51,19 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('Search'));
+    await tester.tap(find.byIcon(Icons.search));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
     await tester.enterText(find.byType(TextField), 'frieren');
     await tester.pump(const Duration(milliseconds: 600));
     await tester.pump();
     expect(find.text('Frieren'), findsOneWidget);
 
-    await tester.tap(find.text('Home'));
+    await tester.tap(find.byIcon(Icons.home_outlined));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Frieren'), findsNothing);
 
-    await tester.tap(find.text('Search'));
+    await tester.tap(find.byIcon(Icons.search));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Frieren'), findsOneWidget);
     expect(find.text('frieren'), findsOneWidget, reason: 'query is kept');
   });

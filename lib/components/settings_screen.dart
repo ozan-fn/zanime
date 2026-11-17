@@ -41,9 +41,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _size = 0;
       _clearing = false;
     });
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Cache dihapus')));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Cache dihapus')));
   }
 
   @override
@@ -56,7 +55,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ListTile(
             leading: const Icon(Icons.image_outlined),
             title: const Text('Cache gambar'),
-            subtitle: Text(size == null ? 'Menghitung...' : formatCacheSize(size)),
+            subtitle: Text(
+              size == null ? 'Menghitung...' : formatCacheSize(size),
+            ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),

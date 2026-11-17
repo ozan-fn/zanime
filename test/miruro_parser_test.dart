@@ -3,7 +3,8 @@ import 'package:test1/services/api.dart';
 
 void main() {
   test('parseLatestEpisodes extracts the miruro raw array', () {
-    const html = '<html><script>\n'
+    const html =
+        '<html><script>\n'
         'const a={}, b={};\n'
         'a.english="Frieren"; a.romaji="Sousou no Frieren"; b.sub=12; b.dub=3;\n'
         'raw:{latest:[{animeId:"id1",episode:5,coverUrl:"https://img/1.jpg",'

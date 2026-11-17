@@ -16,3 +16,7 @@ http.Client createHttpClient() {
   }
   return IOClient(HttpClient());
 }
+
+/// One client for the whole app: every Cronet engine spawns its own threads
+/// and cache, and building it is slow enough to jank the first screen.
+final http.Client sharedHttpClient = createHttpClient();

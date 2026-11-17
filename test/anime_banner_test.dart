@@ -7,8 +7,7 @@ void main() {
   const items = [
     AnimeBannerData(
       title: 'Hello, I am a Witch and my Crush Wants me to Make a Love Potion!',
-      imageUrl:
-          'https://s4.anilist.co/file/anilistcdn/media/anime/banner/207191-xYgpkCDnXc5m.jpg',
+      imageUrl: 'https://s4.anilist.co/file/anilistcdn/media/anime/banner/207191-xYgpkCDnXc5m.jpg',
       genres: ['Fantasy', 'Romance'],
       year: 2026,
       episodes: 12,
@@ -16,8 +15,7 @@ void main() {
     ),
     AnimeBannerData(
       title: 'The Apothecary Diaries Season 3',
-      imageUrl:
-          'https://s4.anilist.co/file/anilistcdn/media/anime/banner/195516-B5M0cPaQbQXI.jpg',
+      imageUrl: 'https://s4.anilist.co/file/anilistcdn/media/anime/banner/195516-B5M0cPaQbQXI.jpg',
       genres: ['Drama', 'Mystery'],
       year: 2026,
       episodes: 12,

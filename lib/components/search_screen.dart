@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../models/models.dart';
@@ -140,11 +141,10 @@ class _SearchScreenState extends State<SearchScreen> {
             child: SizedBox(
               width: 40,
               height: 56,
-              child: Image.network(
-                result.imageUrl,
+              child: CachedNetworkImage(
+                imageUrl: result.imageUrl,
                 fit: BoxFit.cover,
-                errorBuilder: (_, _, _) =>
-                    const ColoredBox(color: Colors.black),
+                errorWidget: (_, _, _) => const ColoredBox(color: Colors.black),
               ),
             ),
           ),

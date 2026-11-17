@@ -2,44 +2,21 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:test1/services/subtitle_format.dart';
 
 void main() {
-  test('ASS dialogue becomes plain WebVTT cues', () {
+  test('ASS/SSA payloads pass through so libass keeps their positioning', () {
     const ass = '''
 [Script Info]
 Title: Test
 
-[V4+ Styles]
-Format: Name, Fontname
-Style: Default,Arial
-
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:01.23,0:00:03.45,Default,,0,0,0,,{\\i1}Hello, world{\\i0}
-Dialogue: 0,0:00:04.00,0:00:06.50,Default,,0,0,0,,Line one\\NLine two
+Dialogue: 0,0:00:01.23,0:00:03.45,Top,,0,0,0,,{\\an8}Top line
+Dialogue: 0,0:00:04.00,0:00:06.50,Default,,0,0,0,,Bottom line\\NSecond line
 ''';
 
-    final vtt = normalizeSubtitle(ass);
+    final result = normalizeSubtitle(ass);
 
-    expect(vtt, startsWith('WEBVTT'));
-    expect(vtt, contains('00:00:01.230 --> 00:00:03.450'));
-    expect(vtt, contains('Hello, world'));
-    expect(vtt, isNot(contains('{\\i1}')));
-    expect(vtt, contains('Line one\nLine two'));
-    expect(vtt, isNot(contains('[Events]')));
-  });
-
-  test('SSA timestamps and a missing Format line still resolve', () {
-    const ssa = '''
-[Script Info]
-
-[Events]
-Format: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: Marked=0,0:00:10.5,0:00:12.9,Default,,0,0,0,,Short cue
-''';
-
-    final vtt = normalizeSubtitle(ssa);
-
-    expect(vtt, contains('00:00:10.500 --> 00:00:12.900'));
-    expect(vtt, contains('Short cue'));
+    expect(result, ass);
+    expect(result, contains('{\\an8}'));
   });
 
   test('WebVTT and SRT pass through untouched', () {
@@ -50,11 +27,39 @@ Dialogue: Marked=0,0:00:10.5,0:00:12.9,Default,,0,0,0,,Short cue
     expect(normalizeSubtitle(srt), srt);
   });
 
+  test('blank and markup-only cues are dropped', () {
+    const vtt =
+        'WEBVTT\n\n'
+        '00:00:01.000 --> 00:00:02.000\n\n'
+        '00:00:03.000 --> 00:00:04.000\n<i></i>\n\n'
+        '00:00:05.000 --> 00:00:06.000\nHi\n';
+
+    final result = normalizeSubtitle(vtt);
+
+    expect(result, isNot(contains('00:00:01.000')));
+    expect(result, isNot(contains('00:00:03.000')));
+    expect(result, contains('00:00:05.000 --> 00:00:06.000\nHi'));
+  });
+
+  test('duplicate WebVTT cues and repeated lines are collapsed', () {
+    const vtt =
+        'WEBVTT\n\n'
+        '00:00:01.000 --> 00:00:03.000\nSame line\n\n'
+        '00:00:01.000 --> 00:00:03.000\nSame line\n\n'
+        '00:00:05.000 --> 00:00:07.000\nOther\nOther\n';
+
+    final result = normalizeSubtitle(vtt);
+
+    expect('Same line'.allMatches(result), hasLength(1));
+    expect('Other'.allMatches(result), hasLength(1));
+    expect(result, contains('00:00:05.000 --> 00:00:07.000\nOther'));
+  });
+
   test('byte order mark is stripped', () {
     expect(normalizeSubtitle('\uFEFFWEBVTT\n'), 'WEBVTT\n');
   });
 
-  test('malformed ASS falls back to empty cues instead of throwing', () {
+  test('malformed ASS does not throw', () {
     const broken = '''
 [Events]
 Format: Layer, Start, End, Text
@@ -62,6 +67,5 @@ Dialogue: 0,not-a-time,also-not,text
 ''';
 
     expect(() => normalizeSubtitle(broken), returnsNormally);
-    expect(normalizeSubtitle(broken), startsWith('WEBVTT'));
   });
 }

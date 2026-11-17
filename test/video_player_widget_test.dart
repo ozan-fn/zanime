@@ -11,7 +11,9 @@ void main() {
       const MaterialApp(
         home: Scaffold(
           body: VideoPlayerWidget(
-            streams: [WatchStream(label: 'auto', url: 'https://example.com/v.m3u8')],
+            streams: [
+              WatchStream(label: 'auto', url: 'https://example.com/v.m3u8'),
+            ],
           ),
         ),
       ),

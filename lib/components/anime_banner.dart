@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../models/models.dart';
@@ -40,13 +41,9 @@ class _AnimeBannerState extends State<AnimeBanner> {
           aspectRatio: 16 / 9,
           child: items == null
               ? ColoredBox(
-                  color: Theme.of(
-                    context,
-                  ).colorScheme.surfaceContainerHighest,
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
                   child: snapshot.hasError
-                      ? const Center(
-                          child: Text('Gagal memuat banner'),
-                        )
+                      ? const Center(child: Text('Gagal memuat banner'))
                       : null,
                 )
               : Stack(
@@ -92,10 +89,10 @@ class _AnimeBannerState extends State<AnimeBanner> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        Image.network(
-          data.imageUrl,
+        CachedNetworkImage(
+          imageUrl: data.imageUrl,
           fit: BoxFit.cover,
-          errorBuilder: (_, _, _) => const ColoredBox(color: Colors.black),
+          errorWidget: (_, _, _) => const ColoredBox(color: Colors.black),
         ),
         const DecoratedBox(
           decoration: BoxDecoration(
@@ -126,9 +123,8 @@ class _AnimeBannerState extends State<AnimeBanner> {
               const SizedBox(height: 4),
               Text(
                 data.meta,
-                style: Theme.of(
-                  context,
-                ).textTheme.bodySmall?.copyWith(color: Colors.white),
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: Colors.white),
               ),
             ],
           ),

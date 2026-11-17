@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 
 import '../models/models.dart';
 import 'http_client.dart';
+import 'sokuja.dart';
 
 const _miruroBase = 'https://miruro.cx';
 const _miruroHeaders = {
@@ -14,7 +15,7 @@ const _miruroHeaders = {
       '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
 };
 
-final http.Client _client = createHttpClient();
+final http.Client _client = sharedHttpClient;
 
 const _bannersQuery =
     'query(\$perPage: Int) { Page(page: 1, perPage: \$perPage) { '
@@ -215,12 +216,25 @@ Future<WatchData> fetchWatchData(String animeId, {int episode = 1}) async {
   final root = await _miruroRoot('/watch/$animeId/x/__data.json', {
     'ep': '$episode',
   });
-  return parseWatchData(root, episode);
+  final data = parseWatchData(root, episode);
+  try {
+    final titles = (root['media'] as Map<String, dynamic>)['title']
+        as Map<String, dynamic>;
+    final romaji = (titles['romaji'] as String?)?.trim();
+    final server = await fetchSokujaServer(
+      data.anime,
+      episode,
+      altTitle: romaji == null || romaji == data.anime.title ? null : romaji,
+    );
+    if (server != null) data.servers.add(server);
+  } catch (_) {
+    // Miruro streams still play when sokuja is unreachable.
+  }
+  return data;
 }
 
 /// Maps one SvelteKit watch payload to [WatchData].
 WatchData parseWatchData(Map<String, dynamic> root, int episode) {
-
   final media = root['media'] as Map<String, dynamic>;
   final titles = media['title'] as Map<String, dynamic>;
   final cover = media['coverImage'] as Map<String, dynamic>;
@@ -329,8 +343,8 @@ WatchData parseWatchData(Map<String, dynamic> root, int episode) {
     subtitles: subtitles,
     currentEpisode:
         ((episodesData['currentEpisode'] as Map<String, dynamic>?)?['number']
-                as int?) ??
-            episode,
+            as int?) ??
+        episode,
   );
 }
 
@@ -349,9 +363,7 @@ Future<Map<String, dynamic>> _miruroRoot(
   final header = jsonDecode(first);
   if (header is Map && header['type'] == 'redirect') {
     final location = Uri.parse(header['location'] as String);
-    final nextQuery = location.hasQuery
-        ? location.queryParameters
-        : query;
+    final nextQuery = location.hasQuery ? location.queryParameters : query;
     uri = Uri.parse('$_miruroBase${location.path}/__data.json')
         .replace(queryParameters: nextQuery);
     response = await _client.get(uri, headers: _miruroHeaders);

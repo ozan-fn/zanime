@@ -36,11 +36,7 @@ void main() {
         },
       ],
       'subtitles': [
-        {
-          'label': 'English',
-          'url': 'https://sub/en.vtt',
-          'isDefault': false,
-        },
+        {'label': 'English', 'url': 'https://sub/en.vtt', 'isDefault': false},
       ],
       'currentEpisode': 1,
     });

@@ -10,8 +10,7 @@ const _frierenJson = {
   'year': 2023,
   'episodes': 28,
   'score': 91,
-  'imageUrl':
-      'https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx154587-gHSraOSa0nA0.jpg',
+  'imageUrl': 'https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx154587-gHSraOSa0nA0.jpg',
 };
 
 void main() {

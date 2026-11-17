@@ -10,7 +10,7 @@ import '../models/models.dart';
 import '../services/http_client.dart';
 import '../services/subtitle_format.dart';
 
-final http.Client _client = createHttpClient();
+final http.Client _client = sharedHttpClient;
 
 /// Base size media_kit multiplies by the player box scale (≈ width / 1920), so
 /// subtitles are ~4.8% of the video width inline and grow in fullscreen.
@@ -113,7 +113,15 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       // Idempotent; also covers entrypoints/hot-restart paths where main() did
       // not run this session.
       MediaKit.ensureInitialized();
-      final player = Player();
+      final player = Player(
+        // libass (mpv) renders ASS/SSA natively, keeping \an top/bottom
+        // positioning that Flutter's flat text layer cannot express.
+        configuration: const PlayerConfiguration(
+          libass: true,
+          libassAndroidFont: 'assets/fonts/ComicNeue-Bold.ttf',
+          libassAndroidFontName: 'Comic Neue',
+        ),
+      );
       _player = player;
       _videoController = VideoController(player);
       unawaited(_prepare(player));
@@ -142,8 +150,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       context: context,
       useRootNavigator: true,
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        child: ListView(
+          shrinkWrap: true,
           children: [
             const ListTile(title: Text('Kualitas')),
             for (var i = 0; i < widget.streams.length; i++)
@@ -157,7 +165,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       ),
     );
     final player = _player;
-    if (index == null || !mounted || index == _selectedStream || player == null) {
+    if (index == null ||
+        !mounted ||
+        index == _selectedStream ||
+        player == null) {
       return;
     }
     setState(() {
@@ -189,12 +200,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         },
       );
       if (generation != _subtitleGeneration || !mounted) return;
+      // Drop the previous track first: media_kit adds external tracks with
+      // `sub-add`, so switching repeatedly would stack tracks (and any
+      // auto-selected embedded track) on top of each other.
+      await player.setSubtitleTrack(SubtitleTrack.no());
       if (response.statusCode == 200) {
         await player.setSubtitleTrack(
           SubtitleTrack.data(normalizeSubtitle(response.body)),
         );
-      } else {
-        await player.setSubtitleTrack(SubtitleTrack.no());
       }
     } catch (_) {
       if (generation == _subtitleGeneration) {
@@ -208,8 +221,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       context: context,
       useRootNavigator: true,
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        child: ListView(
+          shrinkWrap: true,
           children: [
             const ListTile(title: Text('Subtitle')),
             ListTile(
@@ -245,13 +258,11 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   }
 
   Widget _qualityButton() {
-    if (widget.streams.length < 2) return const SizedBox.shrink();
-    return TextButton(
+    if (widget.streams.isEmpty) return const SizedBox.shrink();
+    return IconButton(
       onPressed: _pickQuality,
-      child: Text(
-        _stream.label,
-        style: const TextStyle(color: Colors.white),
-      ),
+      tooltip: _stream.label,
+      icon: const Icon(Icons.high_quality_outlined, color: Colors.white),
     );
   }
 
@@ -279,15 +290,16 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     return AspectRatio(
       aspectRatio: 16 / 9,
       child: MaterialVideoControlsTheme(
-        normal: MaterialVideoControlsThemeData(
+        normal: kDefaultMaterialVideoControlsThemeData.copyWith(
           topButtonBar: [_qualityButton(), _subtitleButton()],
-        ),
-        fullscreen: MaterialVideoControlsThemeData(
-          topButtonBar: [_qualityButton(), _subtitleButton()],
-          // media_kit's built-in gestures: double tap left/right seeks 10s.
           seekGesture: true,
           seekOnDoubleTap: true,
-          seekOnDoubleTapEnabledWhileControlsVisible: true,
+        ),
+        // Built-in fullscreen defaults bring the safe-area padding, seek bar
+        // position and double-tap ±10s gestures; only the button bar changes.
+        fullscreen: kDefaultMaterialVideoControlsThemeDataFullscreen.copyWith(
+          topButtonBar: [_qualityButton(), _subtitleButton()],
+          seekBarMargin: const EdgeInsets.only(left: 16, right: 16, bottom: 28),
         ),
         child: Video(
           controller: controller,

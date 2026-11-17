@@ -116,11 +116,7 @@ void main() {
       },
       'episodesData': {
         'episodes': [
-          {
-            'number': 1,
-            'title': 'The Journey’s End',
-            'airDate': '2023-09-29',
-          },
+          {'number': 1, 'title': 'The Journey’s End', 'airDate': '2023-09-29'},
           {'number': 2, 'title': null},
         ],
         if (includeCurrentEpisode) 'currentEpisode': {'number': 2},
@@ -170,26 +166,21 @@ void main() {
       expect(data.servers, hasLength(1));
       expect(data.servers.single.provider, 'sun');
       expect(data.servers.single.url, 'https://mirror/a.m3u8');
-      expect(
-        data.servers.single.streams.map((stream) => stream.label),
-        ['1080p', '720p'],
-        reason: 'every stream becomes a quality option',
-      );
+      expect(data.servers.single.streams.map((stream) => stream.label), [
+        '1080p',
+        '720p',
+      ], reason: 'every stream becomes a quality option');
       expect(data.servers.single.headers['Referer'], 'https://miruro.cx/');
 
-      expect(
-        data.subtitles.map((subtitle) => subtitle.label),
-        ['English', 'Indonesian'],
-        reason: 'Indonesia/Indonesian collapse, others dropped',
-      );
+      expect(data.subtitles.map((subtitle) => subtitle.label), [
+        'English',
+        'Indonesian',
+      ], reason: 'Indonesia/Indonesian collapse, others dropped');
       expect(data.subtitles.first.isDefault, isTrue);
     });
 
     test('falls back to the requested episode when unspecified', () {
-      final data = parseWatchData(
-        payload(includeCurrentEpisode: false),
-        7,
-      );
+      final data = parseWatchData(payload(includeCurrentEpisode: false), 7);
 
       expect(data.currentEpisode, 7);
       expect(data.episode, isNull);
@@ -205,7 +196,9 @@ void main() {
             null,
             {
               'data': [
-                {'media': ['Promise', 3]},
+                {
+                  'media': ['Promise', 3],
+                },
                 'unused',
                 'unused',
                 3,

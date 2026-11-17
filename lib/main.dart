@@ -53,9 +53,14 @@ class MyApp extends StatelessWidget {
             borderRadius: BorderRadius.zero,
           ),
           surfaceTintColor: Colors.transparent,
+          // Kills the pressed overlay box M3 draws behind the icon.
+          overlayColor: const WidgetStatePropertyAll(Colors.transparent),
           elevation: 0,
+          // shadcn-like compact bar.
+          height: 48,
           iconTheme: WidgetStateProperty.resolveWith(
             (states) => IconThemeData(
+              size: 22,
               color: states.contains(WidgetState.selected)
                   ? _zinc100
                   : _zinc400,
@@ -93,7 +98,7 @@ class _HomeShellState extends State<HomeShell> {
     const HomeTab(),
     SearchScreen(search: widget.search),
     const _EmptyTab(title: 'History'),
-    const _EmptyTab(title: 'Setting'),
+    const SettingsScreen(),
   ];
   final _visited = <int>{0};
   int _index = 0;
@@ -108,29 +113,45 @@ class _HomeShellState extends State<HomeShell> {
             _visited.contains(i) ? _pages[i] : const SizedBox.shrink(),
         ],
       ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (index) => setState(() {
-          _index = index;
-          _visited.add(index);
-        }),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home),
-            label: 'Home',
-          ),
-          NavigationDestination(icon: Icon(Icons.search), label: 'Search'),
-          NavigationDestination(icon: Icon(Icons.history), label: 'History'),
-          NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings),
-            label: 'Setting',
-          ),
-        ],
+      bottomNavigationBar: Theme(
+        // No ripple/highlight box on tap: only the icon colour changes.
+        data: Theme.of(context).copyWith(
+          splashFactory: NoSplash.splashFactory,
+          splashColor: Colors.transparent,
+          highlightColor: Colors.transparent,
+        ),
+        child: NavigationBar(
+          selectedIndex: _index,
+          // No labels and no transition: the tab switch is a plain swap.
+          labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
+          animationDuration: Duration.zero,
+          onDestinationSelected: (index) => setState(() {
+            _index = index;
+            _visited.add(index);
+          }),
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.home_outlined),
+              selectedIcon: Icon(Icons.home),
+              label: 'Home',
+            ),
+            NavigationDestination(icon: Icon(Icons.search), label: 'Search'),
+            NavigationDestination(icon: Icon(Icons.history), label: 'History'),
+            NavigationDestination(
+              icon: Icon(Icons.settings_outlined),
+              selectedIcon: Icon(Icons.settings),
+              label: 'Setting',
+            ),
+          ],
+        ),
       ),
     );
   }
+}
+
+/// Marks a future's error as observed without changing what it yields.
+void _ignoreErrors(Future<Object?> future) {
+  future.then<void>((_) {}, onError: (_, _) {});
 }
 
 class HomeTab extends StatefulWidget {
@@ -141,14 +162,30 @@ class HomeTab extends StatefulWidget {
 }
 
 class _HomeTabState extends State<HomeTab> {
-  final _scrollController = ScrollController();
-  late Future<List<AnimeBannerData>> _banners = fetchAnimeBanners();
-  late Future<List<LatestEpisode>> _episodes = fetchLatestEpisodes();
+  // Started after the first frame: building the Cronet engine is heavy enough
+  // to stall the first paint (visible as skipped frames/Davey in logcat).
+  Future<List<AnimeBannerData>>? _banners;
+  Future<List<LatestEpisode>>? _episodes;
 
   @override
-  void dispose() {
-    _scrollController.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _load();
+    });
+  }
+
+  void _load() {
+    final banners = fetchAnimeBanners();
+    final episodes = fetchLatestEpisodes();
+    // The widgets subscribe a frame later; keep the instant failures
+    // (offline, test HTTP stub) from surfacing as unhandled async errors.
+    _ignoreErrors(banners);
+    _ignoreErrors(episodes);
+    setState(() {
+      _banners = banners;
+      _episodes = episodes;
+    });
   }
 
   Future<void> _refresh() async {
@@ -166,19 +203,23 @@ class _HomeTabState extends State<HomeTab> {
 
   @override
   Widget build(BuildContext context) {
+    final banners = _banners;
+    final episodes = _episodes;
     return Scaffold(
       appBar: AppBar(title: const Text('Zanime')),
       body: RefreshIndicator(
         onRefresh: _refresh,
         child: ListView(
-          controller: _scrollController,
           physics: const AlwaysScrollableScrollPhysics(),
           children: [
-            AnimeBanner(future: _banners),
-            LatestEpisodes(
-              future: _episodes,
-              scrollController: _scrollController,
-            ),
+            if (banners == null)
+              const AspectRatio(
+                aspectRatio: 16 / 9,
+                child: ColoredBox(color: _zinc900),
+              )
+            else
+              AnimeBanner(future: banners),
+            if (episodes != null) LatestEpisodes(future: episodes),
           ],
         ),
       ),

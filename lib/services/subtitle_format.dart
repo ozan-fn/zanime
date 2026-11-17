@@ -1,75 +1,88 @@
 /// Subtitle payload normalisation.
 ///
-/// media_kit/libmpv handles VTT and SRT text tracks and exposes their lines to
-/// the Flutter subtitle layer, which is where our font/outline styling applies.
-/// ASS/SSA are rendered by libass inside libmpv instead, ignore that styling
-/// and need system fonts, so they are flattened to plain WebVTT cues.
+/// ASS/SSA are handed to libmpv as-is: libass renders them natively, which is
+/// what preserves `\an` top/bottom positioning and styling. Flattening them to
+/// WebVTT made every line render at the bottom (looked like duplicate lines).
+///
+/// VTT/SRT go through the Flutter subtitle layer; providers often ship the
+/// same line twice, so identical overlapping cues and repeated lines are
+/// collapsed there.
 String normalizeSubtitle(String content) {
   final text = content.startsWith('\uFEFF') ? content.substring(1) : content;
-  if (!text.contains('[Events]')) return text;
-  return _assToVtt(text);
+  if (text.contains('[Events]')) return text;
+  return _dropEmptyCues(text);
 }
 
-String _assToVtt(String content) {
-  final lines = content.split(RegExp(r'\r?\n'));
-  final cues = StringBuffer('WEBVTT\n');
-  var inEvents = false;
-  var order = const <String>[];
+class _Cue {
+  const _Cue(this.start, this.end, this.body);
 
-  for (final line in lines) {
-    final trimmed = line.trim();
-    if (trimmed.startsWith('[')) {
-      inEvents = trimmed.toLowerCase() == '[events]';
+  final int start;
+  final int end;
+  final String body;
+}
+
+/// Drops cues whose text is blank or markup-only, and cues repeating a line
+/// that is already on screen at the same time.
+String _dropEmptyCues(String text) {
+  final blocks = text.split(RegExp(r'\r?\n[ \t]*\r?\n'));
+  final kept = <String>[];
+  final emitted = <_Cue>[];
+  for (final block in blocks) {
+    final lines = block.split(RegExp(r'\r?\n'));
+    final timeIndex = lines.indexWhere((line) => line.contains('-->'));
+    if (timeIndex < 0) {
+      kept.add(block);
       continue;
     }
-    if (!inEvents) continue;
-    final lower = trimmed.toLowerCase();
-    if (lower.startsWith('format:')) {
-      order = trimmed
-          .substring('format:'.length)
-          .split(',')
-          .map((field) => field.trim().toLowerCase())
-          .toList();
-      continue;
-    }
-    if (!lower.startsWith('dialogue:')) continue;
-    if (order.isEmpty) continue;
-    final fields = _splitFields(
-      trimmed.substring('dialogue:'.length).trim(),
-      order.length,
+    final body = _dedupeLines(
+      lines.skip(timeIndex + 1).map(_plainText).toList(),
     );
-    if (fields.length < order.length) continue;
-
-    final start = fields[order.indexOf('start')];
-    final end = fields[order.indexOf('end')];
-    final body = fields[order.indexOf('text')]
-        .replaceAll(RegExp(r'\{[^}]*\}'), '')
-        .replaceAll(RegExp(r'\\[Nn]'), '\n')
-        .trim();
     if (body.isEmpty) continue;
 
-    cues.write('\n${_vttTime(start)} --> ${_vttTime(end)}\n$body\n');
+    final times = lines[timeIndex].split('-->');
+    final startMs = _timeMs(times[0]);
+    final endMs = times.length > 1 ? _timeMs(times[1]) : null;
+    if (_isDuplicate(emitted, body, startMs, endMs)) continue;
+    if (startMs != null && endMs != null) {
+      emitted.add(_Cue(startMs, endMs, body));
+    }
+
+    final trailer = block.endsWith('\n') ? '\n' : '';
+    kept.add([...lines.take(timeIndex + 1), body].join('\n') + trailer);
   }
-  return cues.toString();
+  return kept.join('\n\n');
 }
 
-/// ASS keeps commas inside its last field (the text), so only split `count-1`.
-List<String> _splitFields(String value, int count) {
-  if (count <= 0) return const [];
-  final parts = value.split(',');
-  if (parts.length <= count) return parts;
-  return [...parts.take(count - 1), parts.skip(count - 1).join(',')];
+String _plainText(String line) => line
+    .replaceAll(RegExp(r'<[^>]*>'), '')
+    .replaceAll(RegExp(r'\{[^}]*\}'), '')
+    .trim();
+
+/// Keeps the first occurrence of each line, dropping repeats inside a cue.
+String _dedupeLines(List<String> lines) {
+  final result = <String>[];
+  for (final raw in lines) {
+    final line = _plainText(raw);
+    if (line.isEmpty || result.contains(line)) continue;
+    result.add(line);
+  }
+  return result.join('\n');
 }
 
-/// `H:MM:SS.cc` (ASS) or `H:MM:SS,mmm` (SRT-ish) to `HH:MM:SS.mmm`.
-String _vttTime(String value) {
-  final match = RegExp(
-    r'^\s*(\d+):(\d{1,2}):(\d{1,2})[.,](\d{1,3})',
-  ).firstMatch(value);
-  if (match == null) return '00:00:00.000';
-  final hours = int.parse(match[1]!).toString().padLeft(2, '0');
-  final minutes = int.parse(match[2]!).toString().padLeft(2, '0');
-  final seconds = int.parse(match[3]!).toString().padLeft(2, '0');
-  final millis = int.parse(match[4]!.padRight(3, '0').substring(0, 3));
-  return '$hours:$minutes:$seconds.${millis.toString().padLeft(3, '0')}';
+bool _isDuplicate(List<_Cue> cues, String body, int? start, int? end) {
+  if (start == null || end == null) return false;
+  return cues.any(
+    (cue) => cue.body == body && start < cue.end && cue.start < end,
+  );
+}
+
+int? _timeMs(String value) {
+  final match = RegExp(r'(\d+):(\d{2}):(\d{2})[.,](\d{1,3})').firstMatch(value);
+  if (match == null) return null;
+  return Duration(
+    hours: int.parse(match[1]!),
+    minutes: int.parse(match[2]!),
+    seconds: int.parse(match[3]!),
+    milliseconds: int.parse(match[4]!.padRight(3, '0').substring(0, 3)),
+  ).inMilliseconds;
 }

@@ -1,7 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:test1/components/watch_screen.dart';
-import 'package:test1/components/video_player_widget.dart' show VideoPlayerWidget;
+import 'package:test1/components/video_player_widget.dart'
+    show VideoPlayerWidget;
 import 'package:test1/models/models.dart';
 
 WatchData _data(int episode) => WatchData(
@@ -74,7 +75,11 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Delicious in Dungeon'), findsOneWidget);
+    expect(
+      find.text('Delicious in Dungeon'),
+      findsNWidgets(2),
+      reason: 'AppBar title plus the synopsis header',
+    );
     expect(find.text('Winter 2024 · TV · 1200 eps · 25 min'), findsOneWidget);
     expect(find.text('Finished · TRIGGER'), findsOneWidget);
     expect(find.text('Server tidak tersedia'), findsOneWidget);
@@ -87,35 +92,36 @@ void main() {
     expect(find.textContaining('Episode 2 · Jan 4, 2024'), findsNWidgets(2));
   });
 
-  testWidgets('WatchScreen keeps the server picker and passes subtitles to the player', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(800, 1600);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(
-      MaterialApp(
-        home: WatchScreen(
-          animeId: 'x',
-          loader: (_, episode) async => _dataWithServers(episode),
+  testWidgets(
+    'WatchScreen keeps the server picker and passes subtitles to the player',
+    (tester) async {
+      tester.view.physicalSize = const Size(800, 1600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: WatchScreen(
+            animeId: 'x',
+            loader: (_, episode) async => _dataWithServers(episode),
+          ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
 
-    expect(find.byIcon(Icons.dns_outlined), findsOneWidget);
-    expect(find.text('sun'), findsOneWidget);
-    // The subtitle picker lives inside the player, not under the title.
-    expect(find.text('English'), findsNothing);
-    final player = tester.widget<VideoPlayerWidget>(
-      find.byType(VideoPlayerWidget),
-    );
-    expect(
-      player.subtitles.map((subtitle) => subtitle.label),
-      ['English', 'Indonesian'],
-    );
-  });
+      expect(find.byIcon(Icons.dns_outlined), findsOneWidget);
+      expect(find.text('sun'), findsOneWidget);
+      // The subtitle picker lives inside the player, not under the title.
+      expect(find.text('English'), findsNothing);
+      final player = tester.widget<VideoPlayerWidget>(
+        find.byType(VideoPlayerWidget),
+      );
+      expect(player.subtitles.map((subtitle) => subtitle.label), [
+        'English',
+        'Indonesian',
+      ]);
+    },
+  );
 
   testWidgets('WatchScreen expands the synopsis', (tester) async {
     tester.view.physicalSize = const Size(800, 1600);
