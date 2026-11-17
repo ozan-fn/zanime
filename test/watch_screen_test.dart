@@ -586,4 +586,47 @@ void main() {
 
     expect(find.text('Anime tidak tersedia di MyAnimeList'), findsOneWidget);
   });
+
+  testWidgets('WatchScreen shows recommendations in a horizontal list', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: WatchScreen(
+          animeId: 'x',
+          loader: (_, episode) async => _data(episode),
+          statusLoader: (_) async => null,
+          recommendationLoader: (_) async => const [
+            AnimeRecommendation(
+              aniListId: 1,
+              title: 'Cowboy Bebop',
+              imageUrl: 'https://example.com/bebop.jpg',
+              format: 'TV',
+              year: 1998,
+              episodes: 26,
+            ),
+            AnimeRecommendation(
+              aniListId: 2,
+              title: 'Trigun',
+              imageUrl: 'https://example.com/trigun.jpg',
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Rekomendasi'), findsOneWidget);
+    expect(find.text('Cowboy Bebop'), findsOneWidget);
+    expect(find.text('TV · 1998 · 26 eps'), findsOneWidget);
+    final horizontal = tester
+        .widgetList<ListView>(find.byType(ListView))
+        .where((list) => list.scrollDirection == Axis.horizontal);
+    expect(horizontal, isNotEmpty, reason: 'recommendations scroll sideways');
+  });
 }

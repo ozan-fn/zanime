@@ -61,6 +61,62 @@ List<AnimeBannerData> parseAnimeBanners(String body) {
   }).toList();
 }
 
+const _recommendationsQuery =
+    'query(\$id: Int) { Media(id: \$id, type: ANIME) { '
+    'recommendations(sort: RATING_DESC, perPage: 12) { nodes { '
+    'mediaRecommendation { id title { english romaji } '
+    'coverImage { extraLarge } format episodes seasonYear } } } } }';
+
+/// AniList community recommendations for [aniListId], best rated first.
+Future<List<AnimeRecommendation>> fetchRecommendations(int aniListId) async {
+  final response = await _client.post(
+    Uri.parse('https://graphql.anilist.co'),
+    headers: {'content-type': 'application/json'},
+    body: jsonEncode({
+      'query': _recommendationsQuery,
+      'variables': {'id': aniListId},
+    }),
+  );
+  if (response.statusCode != 200) {
+    throw http.ClientException('AniList HTTP ${response.statusCode}');
+  }
+  return parseRecommendations(response.body);
+}
+
+/// Parses the GraphQL payload from [fetchRecommendations], dropping empty
+/// recommendation slots.
+List<AnimeRecommendation> parseRecommendations(String body) {
+  final media =
+      (jsonDecode(body) as Map<String, dynamic>)['data']?['Media']
+          as Map<String, dynamic>?;
+  final nodes =
+      ((media?['recommendations'] as Map<String, dynamic>?)?['nodes'] as List?)
+          ?.cast<Map<String, dynamic>>() ??
+      const [];
+  final items = <AnimeRecommendation>[];
+  for (final node in nodes) {
+    final item = node['mediaRecommendation'] as Map<String, dynamic>?;
+    if (item == null) continue;
+    final titles = item['title'] as Map<String, dynamic>? ?? const {};
+    final cover = item['coverImage'] as Map<String, dynamic>? ?? const {};
+    final id = (item['id'] as num?)?.toInt();
+    final title = (titles['english'] ?? titles['romaji'] as String?) ?? '';
+    final image = (cover['extraLarge'] as String?) ?? '';
+    if (id == null || title.isEmpty || image.isEmpty) continue;
+    items.add(
+      AnimeRecommendation(
+        aniListId: id,
+        title: title,
+        imageUrl: image,
+        format: item['format'] as String?,
+        year: item['seasonYear'] as int?,
+        episodes: item['episodes'] as int?,
+      ),
+    );
+  }
+  return items;
+}
+
 /// Same array and order as the "Latest Episodes" list on miruro.cx.
 Future<List<LatestEpisode>> fetchLatestEpisodes() async {
   final response = await _client.get(

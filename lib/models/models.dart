@@ -358,3 +358,22 @@ class WatchData {
     return '${months[date.month - 1]} ${date.day}, ${date.year}';
   }
 }
+
+/// One AniList recommendation shown on the watch page.
+class AnimeRecommendation {
+  const AnimeRecommendation({
+    required this.aniListId,
+    required this.title,
+    required this.imageUrl,
+    this.format,
+    this.year,
+    this.episodes,
+  });
+
+  final int aniListId;
+  final String title;
+  final String imageUrl;
+  final String? format;
+  final int? year;
+  final int? episodes;
+}

@@ -40,6 +40,7 @@ class WatchScreen extends StatefulWidget {
     this.remover,
     this.session,
     this.initialData,
+    this.recommendationLoader,
   });
 
   final String animeId;
@@ -63,6 +64,10 @@ class WatchScreen extends StatefulWidget {
   /// Injected in tests; defaults to [removeAniListEntry].
   final Future<bool> Function(int mediaId)? remover;
 
+  /// Injected in tests; defaults to [fetchRecommendations].
+  final Future<List<AnimeRecommendation>> Function(int aniListId)?
+  recommendationLoader;
+
   @override
   State<WatchScreen> createState() => _WatchScreenState();
 }
@@ -76,6 +81,7 @@ class _WatchScreenState extends State<WatchScreen> {
   String? _listStatus;
   ListService _service = ListService.anilist;
   bool _expanded = false;
+  Future<List<AnimeRecommendation>>? _recommendations;
 
   /// Latest loaded data/server, captured for the floating player handoff.
   WatchData? _data;
@@ -144,7 +150,10 @@ class _WatchScreenState extends State<WatchScreen> {
   /// while the new payload is in flight.
   Future<void> _refresh() async {
     final future = _load();
-    setState(() => _future = future);
+    setState(() {
+      _future = future;
+      _recommendations = null;
+    });
     try {
       await future;
     } catch (_) {
@@ -405,6 +414,7 @@ class _WatchScreenState extends State<WatchScreen> {
                   _episodeBar(data, server),
                   _episodeGrid(data),
                   _about(data),
+                  _recommendationsSection(data),
                 ],
               ),
             );
@@ -669,5 +679,130 @@ class _WatchScreenState extends State<WatchScreen> {
         ],
       ),
     );
+  }
+
+  /// Horizontal AniList recommendations; hidden while loading, on error, or
+  /// when the anime has no AniList id.
+  Widget _recommendationsSection(WatchData data) {
+    final aniListId = data.aniListId;
+    if (aniListId == null) return const SizedBox.shrink();
+    final loader = widget.recommendationLoader ?? fetchRecommendations;
+    final future = _recommendations ??= loader(aniListId);
+    return FutureBuilder<List<AnimeRecommendation>>(
+      future: future,
+      builder: (context, snapshot) {
+        final items = snapshot.data;
+        if (items == null || items.isEmpty) return const SizedBox.shrink();
+        final theme = Theme.of(context);
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.recommend_outlined, size: 18),
+                  const SizedBox(width: 8),
+                  Text('Rekomendasi', style: theme.textTheme.titleMedium),
+                ],
+              ),
+            ),
+            SizedBox(
+              height: 224,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                itemCount: items.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 12),
+                itemBuilder: (context, index) =>
+                    _recommendationCard(items[index]),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _recommendationCard(AnimeRecommendation item) {
+    final theme = Theme.of(context);
+    final meta = [
+      ?item.format,
+      if (item.year != null) '${item.year}',
+      if (item.episodes != null) '${item.episodes} eps',
+    ].join(' · ');
+    return SizedBox(
+      width: 108,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(3),
+        onTap: () => _openRecommendation(item),
+        // Clamp the scale so a huge system font cannot overflow the fixed card.
+        child: MediaQuery.withClampedTextScaling(
+          maxScaleFactor: 1.2,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: SizedBox(
+                  width: 108,
+                  height: 152,
+                  child: CachedNetworkImage(
+                    imageUrl: item.imageUrl,
+                    fit: BoxFit.cover,
+                    errorWidget: (_, _, _) =>
+                        const ColoredBox(color: Colors.black),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      item.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall,
+                    ),
+                    if (meta.isNotEmpty)
+                      Text(
+                        meta,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openRecommendation(AnimeRecommendation item) async {
+    String? animeId;
+    try {
+      animeId = await resolveMiruroAnimeId(item.title, item.aniListId);
+    } catch (_) {
+      animeId = null;
+    }
+    if (!mounted) return;
+    final id = animeId;
+    if (id == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Anime tidak tersedia di Miruro')),
+      );
+      return;
+    }
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => WatchScreen(animeId: id)));
   }
 }

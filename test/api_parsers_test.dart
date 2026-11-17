@@ -318,4 +318,51 @@ void main() {
       );
     });
   });
+
+  group('parseRecommendations', () {
+    test('maps AniList recommendations and drops empty slots', () {
+      final body = jsonEncode({
+        'data': {
+          'Media': {
+            'recommendations': {
+              'nodes': [
+                {
+                  'mediaRecommendation': {
+                    'id': 5114,
+                    'title': {'english': 'Fullmetal Alchemist', 'romaji': ''},
+                    'coverImage': {'extraLarge': 'https://img/fmab.jpg'},
+                    'format': 'TV',
+                    'episodes': 64,
+                    'seasonYear': 2009,
+                  },
+                },
+                {'mediaRecommendation': null},
+                {
+                  'mediaRecommendation': {
+                    'id': 1,
+                    'title': {'romaji': 'Cowboy Bebop'},
+                    'coverImage': {'extraLarge': 'https://img/bebop.jpg'},
+                  },
+                },
+              ],
+            },
+          },
+        },
+      });
+
+      final items = parseRecommendations(body);
+
+      expect(items, hasLength(2));
+      expect(items.first.title, 'Fullmetal Alchemist');
+      expect(items.first.aniListId, 5114);
+      expect(items.first.episodes, 64);
+      expect(items.last.title, 'Cowboy Bebop');
+      expect(items.last.format, isNull);
+    });
+
+    test('returns empty when Media or nodes are missing', () {
+      expect(parseRecommendations('{"data":null}'), isEmpty);
+      expect(parseRecommendations('{"data":{"Media":null}}'), isEmpty);
+    });
+  });
 }
