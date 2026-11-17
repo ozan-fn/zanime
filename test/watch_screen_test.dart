@@ -123,6 +123,46 @@ void main() {
     },
   );
 
+  testWidgets('WatchScreen remembers the last picked server', (tester) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    Widget screen() => MaterialApp(
+      home: WatchScreen(
+        animeId: 'x',
+        loader: (_, episode) async => _dataWithServers(episode),
+      ),
+    );
+
+    await tester.pumpWidget(screen());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('sun'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('bee').last);
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.widget<VideoPlayerWidget>(find.byType(VideoPlayerWidget)).streams
+          .single
+          .url,
+      'https://example.com/b.m3u8',
+    );
+
+    // A fresh watch screen (e.g. another anime) keeps the same provider.
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(screen());
+    await tester.pumpAndSettle();
+
+    expect(find.text('bee'), findsOneWidget);
+    expect(
+      tester.widget<VideoPlayerWidget>(find.byType(VideoPlayerWidget)).streams
+          .single
+          .url,
+      'https://example.com/b.m3u8',
+    );
+  });
+
   testWidgets('WatchScreen expands the synopsis', (tester) async {
     tester.view.physicalSize = const Size(800, 1600);
     tester.view.devicePixelRatio = 1;

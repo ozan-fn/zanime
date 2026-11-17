@@ -1,0 +1,116 @@
+name: Release APK (arm64)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-apk
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # tags are needed to derive the next build number
+
+      - name: Next version from pubspec.yaml
+        id: version
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import re, subprocess, sys
+
+          text = open("pubspec.yaml", encoding="utf-8").read()
+          m = re.search(
+              r"^version:\s*(\d+)\.(\d+)\.(\d+)(?:\+(\d+))?\s*$",
+              text,
+              re.M,
+          )
+          if not m:
+              sys.exit("version: major.minor.patch[+build] not found in pubspec.yaml")
+          core = tuple(int(part) for part in m.group(1, 2, 3))
+          build = int(m.group(4) or 1)
+
+          tags = subprocess.run(
+              ["git", "tag", "--list", "v*", "--sort=-v:refname"],
+              capture_output=True, text=True, check=True,
+          ).stdout.split()
+          latest_core, latest_build = (0, 0, 0), 0
+          for tag in tags:
+              t = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)(?:\+(\d+))?", tag)
+              if not t:
+                  continue
+              tcore = tuple(int(part) for part in t.group(1, 2, 3))
+              if tcore > latest_core or (
+                  tcore == latest_core and int(t.group(4) or 0) > latest_build
+              ):
+                  latest_core, latest_build = tcore, int(t.group(4) or 0)
+
+          if core < latest_core:
+              sys.exit(
+                  f"pubspec version {'.'.join(map(str, core))} is older than "
+                  f"latest tag {'.'.join(map(str, latest_core))}"
+              )
+
+          # versionCode must keep growing for upgrades, even when only the
+          # major/minor/patch in pubspec.yaml changed.
+          build = max(build, latest_build + 1)
+          name = ".".join(map(str, core))
+          print(f"name={name}")
+          print(f"code={build}")
+          print(f"tag={name}+{build}")
+          PY
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+          pub-cache: true
+
+      # Caches Gradle user home, wrapper distribution, and build caches.
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      # abiFilters in android/app/build.gradle.kts already forces arm64-v8a.
+      # Pass the derived version explicitly so the APK matches the release tag.
+      - name: Build arm64 APK
+        run: >
+          flutter build apk --release
+          --target-platform android-arm64
+          --build-name "${{ steps.version.outputs.name }}"
+          --build-number "${{ steps.version.outputs.code }}"
+
+      - name: Name APK after the version
+        run: |
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk \
+            "dist/zanime-v${{ steps.version.outputs.tag }}-arm64.apk"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: zanime-arm64-${{ steps.version.outputs.tag }}
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Zanime v${{ steps.version.outputs.name }}
+          files: dist/*.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true

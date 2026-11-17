@@ -7,6 +7,10 @@ import '../services/sokuja.dart';
 import 'upcoming_countdown.dart';
 import 'video_player_widget.dart';
 
+/// Provider picked by the user most recently, shared by all watch screens
+/// for the rest of the session. Falls back to the first server.
+String? _lastProvider;
+
 class WatchScreen extends StatefulWidget {
   const WatchScreen({
     super.key,
@@ -68,7 +72,7 @@ class _WatchScreenState extends State<WatchScreen> {
           final server = data.servers.isEmpty
               ? null
               : data.servers.firstWhere(
-                  (item) => item.provider == _provider,
+                  (item) => item.provider == (_provider ?? _lastProvider),
                   orElse: () => data.servers.first,
                 );
           final upcoming = _upcoming(data);
@@ -174,6 +178,7 @@ class _WatchScreenState extends State<WatchScreen> {
                       ],
                       onChanged: (value) => setState(() {
                         _provider = value;
+                        _lastProvider = value;
                       }),
                     ),
                   ],
