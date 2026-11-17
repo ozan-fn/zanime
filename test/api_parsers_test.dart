@@ -173,7 +173,8 @@ void main() {
       'sourcesData': {
         'tracks': [
           {
-            'track': 'ssub',            'providers': [
+            'track': 'ssub',
+            'providers': [
               {
                 'provider': 'sun',
                 'servers': [

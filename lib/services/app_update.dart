@@ -32,7 +32,9 @@ class AppRelease {
 /// Latest published (non-draft, non-prerelease) release of the repo.
 Future<AppRelease> fetchLatestRelease() async {
   final response = await sharedHttpClient.get(
-    Uri.parse('https://api.github.com/repos/$githubOwner/$githubRepo/releases/latest'),
+    Uri.parse(
+      'https://api.github.com/repos/$githubOwner/$githubRepo/releases/latest',
+    ),
     headers: const {
       'Accept': 'application/vnd.github+json',
       'User-Agent': 'Zanime',
@@ -104,7 +106,9 @@ Future<AppUpdateInfo?> checkForUpdate() async {
   final now = DateTime.now();
   final cached = _cachedCheck;
   final at = _cachedAt;
-  if (cached != null && at != null && now.difference(at) < updateCheckInterval) {
+  if (cached != null &&
+      at != null &&
+      now.difference(at) < updateCheckInterval) {
     return cached;
   }
   try {

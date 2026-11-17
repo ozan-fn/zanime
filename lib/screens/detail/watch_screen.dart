@@ -4,15 +4,16 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../models/models.dart';
-import '../services/anilist_auth.dart';
-import '../services/api.dart';
-import '../services/mini_player.dart';
-import '../services/playback_session.dart';
-import '../services/sokuja.dart';
-import 'mini_player.dart';
-import 'upcoming_countdown.dart';
-import 'video_player_widget.dart';
+import '../../models/models.dart';
+import '../../services/anilist_auth.dart';
+import '../../services/api.dart';
+import '../../services/list_service.dart';
+import '../../services/mini_player.dart';
+import '../../services/playback_session.dart';
+import '../../services/sokuja.dart';
+import '../../widgets/mini_player.dart';
+import '../../widgets/upcoming_countdown.dart';
+import '../player/video_player_widget.dart';
 
 /// Provider picked by the user most recently, shared by all watch screens
 /// for the rest of the session. Falls back to the first server.
@@ -73,6 +74,7 @@ class _WatchScreenState extends State<WatchScreen> {
       : _load();
   String? _provider;
   String? _listStatus;
+  ListService _service = ListService.anilist;
   bool _expanded = false;
 
   /// Latest loaded data/server, captured for the floating player handoff.
@@ -89,10 +91,21 @@ class _WatchScreenState extends State<WatchScreen> {
     _session = widget.session;
     _data = widget.initialData;
     final initial = widget.initialData;
-    if (initial != null) _syncStatus(initial.aniListId);
+    if (initial != null) _syncStatus(initial);
+    unawaited(_loadService());
     // Opening the watch page always takes over from the floating player.
     hideMiniPlayer();
   }
+
+  /// The list button must stay available for MAL even when Miruro exposes no
+  /// AniList id, because MAL entries are resolved from the title.
+  Future<void> _loadService() async {
+    final service = await loadActiveListService();
+    if (mounted && service != _service) setState(() => _service = service);
+  }
+
+  String get _serviceLabel =>
+      _service == ListService.myanimelist ? 'MyAnimeList' : 'AniList';
 
   @override
   void dispose() {
@@ -118,7 +131,7 @@ class _WatchScreenState extends State<WatchScreen> {
     }
     _data = data;
     _session ??= PlaybackSession.create();
-    _syncStatus(data.aniListId);
+    _syncStatus(data);
     return data;
   }
 
@@ -135,9 +148,14 @@ class _WatchScreenState extends State<WatchScreen> {
     }
   }
 
-  Future<void> _syncStatus(int? mediaId) async {
-    if (mediaId == null) return;
-    final status = await (widget.statusLoader ?? fetchAniListStatus)(mediaId);
+  Future<void> _syncStatus(WatchData data) async {
+    final loader = widget.statusLoader;
+    final status = loader != null
+        ? (data.aniListId == null ? null : await loader(data.aniListId!))
+        : await fetchActiveStatus(
+            title: data.anime.title,
+            aniListId: data.aniListId,
+          );
     if (!mounted || status == _listStatus) return;
     setState(() => _listStatus = status);
   }
@@ -200,7 +218,7 @@ class _WatchScreenState extends State<WatchScreen> {
     final status = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('AniList status'),
+        title: Text('$_serviceLabel status'),
         contentPadding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
         content: SizedBox(
           width: 280,
@@ -233,18 +251,31 @@ class _WatchScreenState extends State<WatchScreen> {
     if (status == null || !mounted) return;
     // Tapping the active status again removes the entry from the list.
     final unmark = status == _listStatus;
+    final remover = widget.remover;
+    final saver = widget.saver;
     final saved = unmark
-        ? await (widget.remover ?? removeAniListEntry)(data.aniListId!)
-        : await (widget.saver ?? saveAniListEntry)(data.aniListId!, status);
+        ? remover != null
+              ? await remover(data.aniListId!)
+              : await removeActiveEntry(
+                  title: data.anime.title,
+                  aniListId: data.aniListId,
+                )
+        : saver != null
+        ? await saver(data.aniListId!, status)
+        : await saveActiveEntry(
+            title: data.anime.title,
+            status: status,
+            aniListId: data.aniListId,
+          );
     if (!mounted) return;
     if (saved) setState(() => _listStatus = unmark ? null : status);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
           !saved
-              ? 'Login AniList di Profile dulu'
+              ? 'Login di Profile dulu'
               : unmark
-              ? 'Dihapus dari AniList'
+              ? 'Dihapus dari list'
               : 'Status: ${aniListStatusLabels[status]}',
         ),
       ),
@@ -284,8 +315,8 @@ class _WatchScreenState extends State<WatchScreen> {
     return IconButton(
       onPressed: () => _pickStatus(data),
       tooltip: status == null
-          ? 'Add to AniList'
-          : 'AniList: ${aniListStatusLabels[status]}',
+          ? 'Add to $_serviceLabel'
+          : '$_serviceLabel: ${aniListStatusLabels[status]}',
       icon: Icon(
         status == null ? Icons.add : _aniListStatusIcons[status]!,
         size: 18,
@@ -546,7 +577,8 @@ class _WatchScreenState extends State<WatchScreen> {
                   ],
                 ),
               ),
-              if (data.aniListId != null) ...[
+              if (data.aniListId != null ||
+                  _service == ListService.myanimelist) ...[
                 const SizedBox(width: 8),
                 _listButton(data),
               ],

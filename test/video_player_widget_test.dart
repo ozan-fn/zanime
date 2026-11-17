@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:test1/components/video_player_widget.dart';
+import 'package:test1/screens/player/video_player_widget.dart';
 import 'package:test1/models/models.dart';
 
 void main() {

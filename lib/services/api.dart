@@ -233,6 +233,20 @@ String? pickMiruroAnimeId(List<SearchResult> results, int aniListId) {
   return null;
 }
 
+String _normalizeTitle(String value) =>
+    value.toLowerCase().replaceAll(RegExp('[^a-z0-9]+'), ' ').trim();
+
+/// Resolves by title only, for services whose ids differ from AniList (MAL).
+Future<String?> resolveMiruroAnimeIdByTitle(String title) async {
+  final results = await searchAnime(title);
+  if (results.isEmpty) return null;
+  final wanted = _normalizeTitle(title);
+  for (final result in results) {
+    if (_normalizeTitle(result.title) == wanted) return result.animeId;
+  }
+  return results.first.animeId;
+}
+
 /// Watch page data for one episode: anime info, full episode list and servers.
 Future<WatchData> fetchWatchData(String animeId, {int episode = 1}) async {
   final root = await _miruroRoot('/watch/$animeId/x/__data.json', {
@@ -240,8 +254,9 @@ Future<WatchData> fetchWatchData(String animeId, {int episode = 1}) async {
   });
   final data = parseWatchData(root, episode);
   try {
-    final titles = (root['media'] as Map<String, dynamic>)['title']
-        as Map<String, dynamic>;
+    final titles =
+        (root['media'] as Map<String, dynamic>)['title']
+            as Map<String, dynamic>;
     final romaji = (titles['romaji'] as String?)?.trim();
     final server = await fetchSokujaServer(
       data.anime,

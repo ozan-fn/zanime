@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:test1/components/anime_banner.dart';
+import 'package:test1/screens/home/widgets/anime_banner.dart';
 import 'package:test1/models/models.dart';
 
 void main() {

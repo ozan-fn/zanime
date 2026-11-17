@@ -31,8 +31,9 @@ class MiniPlayback {
 }
 
 /// Non-null while the floating player is visible.
-final ValueNotifier<MiniPlayback?> miniPlayback =
-    ValueNotifier<MiniPlayback?>(null);
+final ValueNotifier<MiniPlayback?> miniPlayback = ValueNotifier<MiniPlayback?>(
+  null,
+);
 
 /// Lets the floating player push the watch page from outside the navigator.
 final navigatorKey = GlobalKey<NavigatorState>();

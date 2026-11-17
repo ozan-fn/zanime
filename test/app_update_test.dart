@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:test1/components/update_screen.dart';
+import 'package:test1/screens/profile/update_screen.dart';
 import 'package:test1/services/app_update.dart';
 
 void main() {
@@ -85,7 +85,11 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Gagal mengecek update'), findsOneWidget);
-    expect(find.text('1.0.1'), findsOneWidget, reason: 'still shows app version');
+    expect(
+      find.text('1.0.1'),
+      findsOneWidget,
+      reason: 'still shows app version',
+    );
     expect(find.byTooltip('Periksa lagi'), findsOneWidget);
   });
 }

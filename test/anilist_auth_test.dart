@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:test1/services/anilist_auth.dart';
+
 void main() {
   test('parseAniListToken reads the implicit grant fragment', () {
     expect(
@@ -31,11 +32,7 @@ void main() {
             'avatar': {'large': 'https://example.com/avatar.jpg'},
             'bannerImage': 'https://example.com/banner.jpg',
             'statistics': {
-              'anime': {
-                'count': 42,
-                'episodesWatched': 510,
-                'meanScore': 78,
-              },
+              'anime': {'count': 42, 'episodesWatched': 510, 'meanScore': 78},
             },
           },
         },
@@ -53,7 +50,11 @@ void main() {
     final profile = parseAniListProfile(
       jsonEncode({
         'data': {
-          'Viewer': {'id': 1, 'name': 'a', 'avatar': {'large': 'x'}},
+          'Viewer': {
+            'id': 1,
+            'name': 'a',
+            'avatar': {'large': 'x'},
+          },
         },
       }),
     )!;
@@ -62,7 +63,12 @@ void main() {
   });
 
   test('parseAniListWatching keeps watching entries, newest first', () {
-    Map<String, dynamic> entry(int id, String status, int progress, int updated) => {
+    Map<String, dynamic> entry(
+      int id,
+      String status,
+      int progress,
+      int updated,
+    ) => {
       'status': status,
       'progress': progress,
       'updatedAt': updated,

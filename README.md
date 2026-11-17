@@ -13,12 +13,13 @@ AniList, halaman tonton dari miruro.cx, dan server tambahan dari sokuja.
   saat aplikasi dibuka ulang); hanya disimpan saat Enter, bukan saat mengetik.
   Ada tombol silang di kolom pencarian dan di setiap item riwayat.
 - Tab **Watching** menampilkan anime berstatus CURRENT/REPEATING dari akun
-  AniList (progress + episode berikutnya, tap untuk memutar). Tab **Profile**
-  berisi login/profil AniList, total per status (grid yang bisa dibuka menjadi
-  daftar), pengaturan subtitle, cache, dan cek update.
+  AniList atau MyAnimeList yang sedang aktif (progress + episode berikutnya,
+  tap untuk memutar). Tab **Profile** berisi login/profil akun, total per
+  status (grid yang bisa dibuka menjadi daftar), pengaturan subtitle, cache,
+  dan cek update.
 - Halaman tonton: grid episode, ganti provider/server, kualitas video, subtitle.
   Provider terakhir yang dipilih diingat selama sesi; kalau tidak tersedia,
-  dipakai server paling atas. Dialog status AniList: tap status yang sedang
+  dipakai server paling atas. Dialog status list: tap status yang sedang
   aktif sekali lagi untuk menghapus anime dari list. Kalau episode yang diminta
   belum ada/gagal dimuat, halaman otomatis memakai episode 1, bukan layar
   "Gagal memuat anime".
@@ -49,31 +50,43 @@ AniList, halaman tonton dari miruro.cx, dan server tambahan dari sokuja.
 
 ```
 lib/
-  main.dart                     Home shell, navigasi 4 tab, tema gelap
-  components/
-    anime_banner.dart           Banner trending
-    latest_episodes.dart        Grid episode terbaru (satu halaman)
-    search_screen.dart          Pencarian + riwayat tersimpan
-    watching_screen.dart        Anime CURRENT/REPEATING dari AniList
-    watch_screen.dart           Detail anime, episode, pemilihan server
-    video_player_widget.dart    Player media_kit, kontrol, subtitle
-    mini_player.dart            Overlay PiP dalam aplikasi
-    update_screen.dart          Halaman cek update (list, catatan Markdown)
-    upcoming_countdown.dart     Hitung mundur tayang
-    settings_screen.dart        Profil, subtitle, cache, cek update
-  models/models.dart            Model data + label/format helper
+  main.dart                       Bootstrap, tema gelap, MaterialApp
+  models/models.dart              Model data + label/format helper
+  screens/
+    home/
+      home_shell.dart             Bottom navigation 4 tab
+      home_tab.dart               Banner trending + episode terbaru
+      widgets/
+        anime_banner.dart         Banner trending
+        latest_episodes.dart      Grid episode terbaru (satu halaman)
+    search/search_screen.dart     Pencarian + riwayat tersimpan
+    watching/watching_screen.dart Anime CURRENT/REPEATING dari layanan aktif
+    detail/watch_screen.dart      Detail anime, episode, pemilihan server
+    player/video_player_widget.dart Player media_kit, kontrol, subtitle
+    profile/
+      settings_screen.dart        Profil, subtitle, cache, cek update
+      anilist_list_screen.dart    Satu daftar status (completed, planning, ...)
+      update_screen.dart          Halaman cek update (list, catatan Markdown)
+  widgets/
+    mini_player.dart              Overlay PiP dalam aplikasi
+    upcoming_countdown.dart       Hitung mundur tayang
   services/
-    api.dart                    AniList + miruro.cx (parser SvelteKit)
-    anilist_auth.dart           OAuth AniList, profil, daftar watching
-    app_settings.dart           Ukuran subtitle (px) + persistensi
-    app_update.dart             Release GitHub + perbandingan versi
-    mini_player.dart            Status playback PiP + navigator key
-    playback_session.dart       Player libmpv yang dipakai bersama PiP
-    sokuja.dart                 Provider sokuja + pencocokan anime
-    http_client.dart            Cronet di Android, dart:io di desktop
-    subtitle_format.dart        Normalisasi subtitle
-    image_cache.dart            Ukuran/hapus cache gambar
+    api.dart                      AniList + miruro.cx (parser SvelteKit)
+    anilist_auth.dart             OAuth AniList, profil, daftar watching
+    mal_auth.dart                 OAuth MyAnimeList, profil, daftar, status
+    list_service.dart             Layanan list aktif (AniList/MyAnimeList)
+    app_settings.dart             Ukuran subtitle (px) + persistensi
+    app_update.dart               Release GitHub + perbandingan versi
+    mini_player.dart              Status playback PiP + navigator key
+    playback_session.dart         Player libmpv yang dipakai bersama PiP
+    sokuja.dart                   Provider sokuja + pencocokan anime
+    http_client.dart              Cronet di Android, dart:io di desktop
+    subtitle_format.dart          Normalisasi subtitle
+    image_cache.dart              Ukuran/hapus cache gambar
 ```
+
+State halaman masih memakai `StatefulWidget`/`Future` lokal, jadi belum ada
+folder `providers`.
 
 ## Sumber data
 
@@ -177,14 +190,29 @@ di Profile.
 - Gagal jaringan menampilkan tile error dan tombol coba lagi; versi terpasang
   tetap ditampilkan.
 
-## Login AniList
+## Login AniList dan MyAnimeList
 
-Tab **Profile** punya tombol login dan profil AniList (nama, ID, jumlah anime,
-episode ditonton, tombol keluar solid merah). Token disimpan di
-`shared_preferences`.
+Tab **Profile** punya dua tombol login bersebelahan dengan logo aslinya: **ani**
+(AniList) dan **mal** (MyAnimeList). Setelah login, tab itu menampilkan profil
+akun aktif (nama, ID, jumlah anime, episode ditonton, tombol keluar solid
+merah). Token disimpan di `shared_preferences`.
 
-- **Keluar** dari AniList dan **hapus cache aplikasi** meminta konfirmasi
-  lewat dialog sebelum dijalankan.
+- **Keluar** dari akun dan **hapus cache aplikasi** meminta konfirmasi lewat
+  dialog sebelum dijalankan.
+- Hanya **satu layanan aktif** pada satu waktu. Untuk pindah, keluar dulu lalu
+  login lewat tombol layanan lain; layanan aktif disimpan di
+  `shared_preferences` (`list_service`).
+- Tab **Watching**, status di halaman tonton, simpan, dan hapus list semuanya
+  mengikuti layanan aktif.
+- AniList memakai **AniList ID** dari miruro; MyAnimeList tidak memakai ID itu,
+  jadi anime dicari lewat judul di MAL lalu ID hasilnya di-cache supaya tidak
+  mencari ulang.
+- Daftar MAL mengambil field anime (`num_episodes`, `media_type`,
+  `start_season`) di level atas request, bukan di dalam `node{...}`, supaya
+  total episode, format, dan tahun terisi seperti AniList. Episode `0` dari MAL
+  (belum diketahui) ditampilkan sebagai `?`, sama seperti AniList.
+
+### AniList
 
 - Client ID: `18615` (hardcoded, aman karena publik).
 - Redirect URL yang **wajib** diisi di pengaturan aplikasi AniList:
@@ -194,8 +222,24 @@ episode ditonton, tombol keluar solid merah). Token disimpan di
   server maupun client secret.
 - `AndroidManifest.xml` mendaftarkan `zanime` untuk menangkap callback.
 
-Client secret **tidak dipakai** dan tidak boleh ditanam di APK: APK bisa
-dibongkar, sehingga secret harus dianggap publik. Kalau secret pernah
+### MyAnimeList
+
+- Client ID: `9de8db2034d559e70de97b61528a9692`
+- Client secret ditanam di aplikasi (diminta eksplisit). APK bisa dibongkar,
+  jadi secret harus dianggap publik dan dirotasi bila bocor.
+- Redirect URL yang **wajib** didaftarkan persis di pengaturan aplikasi MAL:
+  `zanime://auth`
+- Flow: **authorization code + PKCE** (`code_challenge_method=plain`) lewat
+  `flutter_web_auth_2`; kode ditukar ke token di
+  `https://myanimelist.net/v1/oauth2/token`.
+- Access token diperbarui otomatis dengan refresh token sebelum kedaluwarsa
+  (`mal_token`, `mal_refresh_token`, `mal_expiry_ms`).
+- Status MAL dipetakan ke kode gaya AniList agar UI yang sama bisa dipakai:
+  `watching→CURRENT`, `completed→COMPLETED`, `on_hold→PAUSED`,
+  `dropped→DROPPED`, `plan_to_watch→PLANNING`, rewatch→`REPEATING`.
+
+Client secret AniList **tidak dipakai** dan tidak boleh ditanam di APK: APK
+bisa dibongkar, sehingga secret harus dianggap publik. Kalau secret pernah
 dibagikan, rotasi/revoke di pengaturan AniList.
 
 ## Masalah: HTTP 403 dari sokuja

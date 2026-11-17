@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:test1/components/upcoming_countdown.dart';
-import 'package:test1/components/watch_screen.dart';
+import 'package:test1/widgets/upcoming_countdown.dart';
+import 'package:test1/screens/detail/watch_screen.dart';
 import 'package:test1/models/models.dart';
 
 void main() {

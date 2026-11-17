@@ -1,7 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../models/models.dart';
+import '../../../models/models.dart';
 
 class AnimeBanner extends StatefulWidget {
   const AnimeBanner({super.key, required this.future});

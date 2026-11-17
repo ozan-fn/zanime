@@ -1,16 +1,23 @@
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../services/anilist_auth.dart';
-import '../services/app_settings.dart';
-import '../services/app_update.dart';
-import '../services/image_cache.dart';
+import '../../services/anilist_auth.dart';
+import '../../services/app_settings.dart';
+import '../../services/app_update.dart';
+import '../../services/image_cache.dart';
+import '../../services/list_service.dart';
+import '../../services/mal_auth.dart';
 import 'anilist_list_screen.dart';
 import 'update_screen.dart';
 
 const _zinc900 = Color(0xFF18181B);
 const _zinc800 = Color(0xFF27272A);
 const _zinc100 = Color(0xFFF4F4F5);
+
+/// Shown when an account has no avatar or banner of its own.
+const _profileFallback = 'assets/images/profile_fallback.jpg';
+const _bannerFallback = 'assets/images/banner_fallback.gif';
 
 const _statusColors = {
   'CURRENT': Color(0xFF4ADE80),
@@ -36,10 +43,12 @@ class SettingsScreen extends StatefulWidget {
     super.key,
     this.cacheSize = imageCacheSize,
     this.clearCache = clearImageCache,
-    this.loadProfile = loadAniListProfile,
-    this.loadLists = fetchAniListLists,
+    this.loadProfile = loadActiveProfile,
+    this.loadLists = fetchActiveLists,
     this.signIn = signInWithAniList,
-    this.signOut = signOutAniList,
+    this.signInMal = signInWithMal,
+    this.signOut = signOutActive,
+    this.loadService = loadActiveListService,
     this.checkUpdate = checkForUpdate,
   });
 
@@ -49,7 +58,9 @@ class SettingsScreen extends StatefulWidget {
   final Future<AniListProfile?> Function() loadProfile;
   final Future<Map<String, List<WatchingAnime>>?> Function() loadLists;
   final Future<void> Function() signIn;
+  final Future<void> Function() signInMal;
   final Future<void> Function() signOut;
+  final Future<ListService> Function() loadService;
   final Future<AppUpdateInfo?> Function() checkUpdate;
 
   @override
@@ -62,7 +73,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   AniListProfile? _profile;
   Map<String, List<WatchingAnime>>? _lists;
   bool _loadingProfile = true;
-  bool _signingIn = false;
+  ListService? _signingIn;
+  ListService _service = ListService.anilist;
   AppUpdateInfo? _update;
 
   @override
@@ -80,9 +92,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _refreshProfile() async {
     final profile = await widget.loadProfile();
+    // Only signed-in profiles need the provider/list lookups.
+    final service = profile == null ? _service : await widget.loadService();
     final lists = profile == null ? null : await widget.loadLists();
     if (!mounted) return;
     setState(() {
+      _service = service;
       _profile = profile;
       _lists = lists;
       _loadingProfile = false;
@@ -111,20 +126,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _login() async {
-    setState(() => _signingIn = true);
+  Future<void> _login(ListService service) async {
+    setState(() => _signingIn = service);
     try {
-      await widget.signIn();
+      await (service == ListService.myanimelist
+          ? widget.signInMal()
+          : widget.signIn());
+      await setActiveListService(service);
       await _refreshProfile();
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Login AniList gagal')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Login ${_serviceLabel(service)} gagal')),
+        );
       }
     } finally {
-      if (mounted) setState(() => _signingIn = false);
+      if (mounted) setState(() => _signingIn = null);
     }
   }
+
+  String _serviceLabel(ListService service) =>
+      service == ListService.myanimelist ? 'MyAnimeList' : 'AniList';
 
   /// Solid, muted shadcn destructive button for destructive actions.
   ButtonStyle _destructiveStyle() => FilledButton.styleFrom(
@@ -162,8 +184,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _confirmLogout() async {
+    final label = _serviceLabel(_service);
     final confirmed = await _confirm(
-      title: 'Keluar dari AniList?',
+      title: 'Keluar dari $label?',
       message: 'Profil dan daftar watching tidak akan ditampilkan lagi.',
       action: 'Keluar',
     );
@@ -171,6 +194,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _logout() async {
+    final label = _serviceLabel(_service);
     await widget.signOut();
     if (!mounted) return;
     setState(() {
@@ -178,7 +202,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _lists = null;
     });
     ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('Logout dari AniList')));
+        .showSnackBar(SnackBar(content: Text('Logout dari $label')));
   }
 
   Future<void> _confirmClear() async {
@@ -265,24 +289,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
           height: 32,
           child: CircularProgressIndicator(strokeWidth: 2),
         ),
-        title: Text('Memuat profil AniList...'),
+        title: Text('Memuat profil...'),
       );
     }
 
     final profile = _profile;
     if (profile == null) {
-      return ListTile(
-        leading: const Icon(Icons.login),
-        title: const Text('Login dengan AniList'),
-        subtitle: const Text('Belum login'),
-        trailing: _signingIn
-            ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.chevron_right),
-        onTap: _signingIn ? null : _login,
+      final theme = Theme.of(context);
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Hubungkan akun', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 4),
+            Text(
+              'Login untuk menyimpan status tontonan.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _loginButton(
+                    service: ListService.anilist,
+                    label: 'ani',
+                    asset: 'assets/logos/anilist.svg',
+                    color: const Color(0xFF02B9FF),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _loginButton(
+                    service: ListService.myanimelist,
+                    label: 'mal',
+                    asset: 'assets/logos/myanimelist.svg',
+                    color: const Color(0xFF2E51A2),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       );
     }
 
@@ -306,7 +354,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ),
                   ),
-                  if ((profile.bannerUrl ?? '').isNotEmpty)
+                  if ((profile.bannerUrl ?? '').isEmpty)
+                    Image.asset(
+                      _bannerFallback,
+                      fit: BoxFit.cover,
+                      gaplessPlayback: true,
+                    )
+                  else
                     CachedNetworkImage(
                       imageUrl: profile.bannerUrl!,
                       fit: BoxFit.cover,
@@ -327,15 +381,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     bottom: 14,
                     child: Row(
                       children: [
-                        CircleAvatar(
-                          radius: 26,
-                          backgroundColor: _zinc800,
-                          backgroundImage: profile.avatarUrl.isEmpty
-                              ? null
-                              : CachedNetworkImageProvider(profile.avatarUrl),
-                          child: profile.avatarUrl.isEmpty
-                              ? const Icon(Icons.person_outline)
-                              : null,
+                        ClipOval(
+                          child: SizedBox(
+                            width: 52,
+                            height: 52,
+                            child: profile.avatarUrl.isEmpty
+                                ? Image.asset(
+                                    _profileFallback,
+                                    fit: BoxFit.cover,
+                                  )
+                                : CachedNetworkImage(
+                                    imageUrl: profile.avatarUrl,
+                                    fit: BoxFit.cover,
+                                    errorWidget: (_, _, _) => Image.asset(
+                                      _profileFallback,
+                                      fit: BoxFit.cover,
+                                    ),
+                                  ),
+                          ),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
@@ -382,6 +445,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _loginButton({
+    required ListService service,
+    required String label,
+    required String asset,
+    required Color color,
+  }) {
+    final busy = _signingIn == service;
+    return FilledButton.icon(
+      onPressed: _signingIn == null ? () => _login(service) : null,
+      style: FilledButton.styleFrom(
+        backgroundColor: color,
+        foregroundColor: Colors.white,
+        disabledBackgroundColor: color.withValues(alpha: 0.4),
+        minimumSize: const Size(0, 44),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(3)),
+      ),
+      icon: busy
+          ? const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
+            )
+          : SvgPicture.asset(asset, width: 18, height: 18),
+      label: Text(label),
+    );
+  }
+
   Widget _statusGrid() {
     final lists = _lists;
     return Padding(
@@ -420,37 +514,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ? null
             : () => Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                  builder: (_) =>
-                      AniListListScreen(title: label, entries: entries),
+                  builder: (_) => AniListListScreen(
+                    title: label,
+                    entries: entries,
+                    resolver: resolveMiruroAnimeIdForActive,
+                  ),
                 ),
               ),
         child: Padding(
           padding: const EdgeInsets.all(8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Icon(_statusIcons[status], size: 16, color: accent),
-                  const SizedBox(width: 6),
-                  Text(
-                    entries == null ? '–' : '${entries.length}',
-                    style: Theme.of(context).textTheme.titleMedium
-                        ?.copyWith(fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
-              Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  fontSize: 10,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+          // Fixed 72 px tiles: clamp the text scale so large system fonts
+          // cannot overflow the icon+count row and the label below.
+          child: MediaQuery.withClampedTextScaling(
+            maxScaleFactor: 1.3,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(_statusIcons[status], size: 16, color: accent),
+                    const SizedBox(width: 6),
+                    Text(
+                      entries == null ? '–' : '${entries.length}',
+                      style: Theme.of(context).textTheme.titleMedium
+                          ?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                  ],
                 ),
-              ),
-            ],
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    fontSize: 10,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -518,58 +620,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return SizedBox(
           key: const ValueKey('subtitle-tile'),
           height: 72,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                const Icon(Icons.subtitles_outlined),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              'Ukuran subtitle',
-                              style: theme.textTheme.bodyLarge,
+          child: MediaQuery.withClampedTextScaling(
+            maxScaleFactor: 1.3,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  const Icon(Icons.subtitles_outlined),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                'Ukuran subtitle',
+                                style: theme.textTheme.bodyLarge,
+                              ),
                             ),
-                          ),
-                          Text(
-                            '${value.round()} px',
-                            style: theme.textTheme.bodySmall,
-                          ),
-                        ],
-                      ),
-                      SizedBox(
-                        height: 32,
-                        child: SliderTheme(
-                          data: SliderTheme.of(context).copyWith(
-                            trackHeight: 2,
-                            thumbShape: const RoundSliderThumbShape(
-                              enabledThumbRadius: 6,
+                            Text(
+                              '${value.round()} px',
+                              style: theme.textTheme.bodySmall,
                             ),
-                            overlayShape: const RoundSliderOverlayShape(
-                              overlayRadius: 12,
+                          ],
+                        ),
+                        SizedBox(
+                          height: 32,
+                          child: SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              trackHeight: 2,
+                              thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 6,
+                              ),
+                              overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 12,
+                              ),
+                              tickMarkShape: SliderTickMarkShape.noTickMark,
                             ),
-                            tickMarkShape: SliderTickMarkShape.noTickMark,
-                          ),
-                          child: Slider(
-                            min: minSubtitlePx,
-                            max: maxSubtitlePx,
-                            divisions: (maxSubtitlePx - minSubtitlePx).round(),
-                            value: value.clamp(minSubtitlePx, maxSubtitlePx),
-                            label: '${value.round()} px',
-                            onChanged: setSubtitlePx,
+                            child: Slider(
+                              min: minSubtitlePx,
+                              max: maxSubtitlePx,
+                              divisions: (maxSubtitlePx - minSubtitlePx)
+                                  .round(),
+                              value: value.clamp(minSubtitlePx, maxSubtitlePx),
+                              label: '${value.round()} px',
+                              onChanged: setSubtitlePx,
+                            ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         );

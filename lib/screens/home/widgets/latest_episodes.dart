@@ -1,8 +1,8 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../models/models.dart';
-import 'watch_screen.dart';
+import '../../../models/models.dart';
+import '../../detail/watch_screen.dart';
 
 class LatestEpisodes extends StatelessWidget {
   const LatestEpisodes({super.key, required this.future});

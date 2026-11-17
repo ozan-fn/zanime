@@ -1,8 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:test1/components/mini_player.dart';
-import 'package:test1/components/watch_screen.dart';
-import 'package:test1/components/video_player_widget.dart'
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:test1/widgets/mini_player.dart';
+import 'package:test1/screens/detail/watch_screen.dart';
+import 'package:test1/screens/player/video_player_widget.dart'
     show VideoPlayerWidget;
 import 'package:test1/models/models.dart';
 import 'package:test1/services/anilist_auth.dart';
@@ -355,7 +356,7 @@ void main() {
     expect(removed, [21]);
     expect(saved, isEmpty);
     expect(find.byIcon(Icons.add), findsOneWidget);
-    expect(find.text('Dihapus dari AniList'), findsOneWidget);
+    expect(find.text('Dihapus dari list'), findsOneWidget);
   });
 
   testWidgets('WatchScreen shows the saved list status icon', (tester) async {
@@ -505,5 +506,45 @@ void main() {
 
     expect(miniPlayback.value, isNull);
     expect(find.byType(VideoPlayerWidget), findsNothing);
+  });
+
+  testWidgets('Watch status dialog follows the active MAL service', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({'list_service': 'myanimelist'});
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final base = _data(1);
+    final data = WatchData(
+      anime: base.anime,
+      episodes: base.episodes.take(3).toList(),
+      servers: const [],
+      currentEpisode: 1,
+      // MAL resolves entries from the title, so no AniList id is required.
+      aniListId: null,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: WatchScreen(
+          animeId: 'x',
+          initialData: data,
+          loader: (_, _) async => data,
+          statusLoader: (_) async => null,
+          saver: (_, _) async => true,
+          remover: (_) async => true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byTooltip('Add to MyAnimeList'), findsOneWidget);
+    await tester.tap(find.byTooltip('Add to MyAnimeList'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('MyAnimeList status'), findsOneWidget);
+    expect(find.text('AniList status'), findsNothing);
   });
 }

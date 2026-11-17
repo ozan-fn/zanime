@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:test1/main.dart';
 import 'package:test1/models/models.dart';
+import 'package:test1/screens/home/home_shell.dart';
 
 void main() {
   testWidgets('home shows the Zanime title and four navigation tabs', (

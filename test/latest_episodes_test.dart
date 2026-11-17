@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:test1/components/latest_episodes.dart';
-import 'package:test1/components/watch_screen.dart';
+import 'package:test1/screens/home/widgets/latest_episodes.dart';
+import 'package:test1/screens/detail/watch_screen.dart';
 import 'package:test1/models/models.dart';
 
 LatestEpisode _episode(int i) => LatestEpisode(

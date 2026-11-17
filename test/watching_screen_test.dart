@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:test1/components/watching_screen.dart';
+import 'package:test1/screens/watching/watching_screen.dart';
 import 'package:test1/services/anilist_auth.dart';
 
 void main() {
@@ -18,7 +18,10 @@ void main() {
 
     expect(find.text('Watching'), findsOneWidget);
     expect(
-      find.text('Login AniList untuk melihat anime yang sedang ditonton'),
+      find.text(
+        'Login AniList atau MyAnimeList untuk melihat anime yang sedang '
+        'ditonton',
+      ),
       findsOneWidget,
     );
     await tester.tap(find.text('Buka Setting'));

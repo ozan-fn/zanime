@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 
 import '../services/mini_player.dart';
-import 'video_player_widget.dart';
-import 'watch_screen.dart';
+import '../screens/player/video_player_widget.dart';
+import '../screens/detail/watch_screen.dart';
 
 OverlayEntry? _entry;
 

@@ -6,11 +6,11 @@ import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
-import '../models/models.dart';
-import '../services/app_settings.dart';
-import '../services/http_client.dart';
-import '../services/playback_session.dart';
-import '../services/subtitle_format.dart';
+import '../../models/models.dart';
+import '../../services/app_settings.dart';
+import '../../services/http_client.dart';
+import '../../services/playback_session.dart';
+import '../../services/subtitle_format.dart';
 
 final http.Client _client = sharedHttpClient;
 
@@ -387,6 +387,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
               final video = Video(
                 controller: controller,
                 fit: BoxFit.contain,
+                // PiP hides controls entirely; passing null would be ignored by
+                // media_kit's copyWith (null means "keep existing controls"),
+                // and the adaptive bottom bar overflows the 176x99 card.
+                controls: widget.showControls
+                    ? AdaptiveVideoControls
+                    : (_) => const SizedBox.shrink(),
                 subtitleViewConfiguration: SubtitleViewConfiguration(
                   // Slightly higher than media_kit's default bottom padding.
                   padding: EdgeInsets.fromLTRB(16, 0, 16, bottomGap),

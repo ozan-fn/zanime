@@ -1,12 +1,19 @@
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:test1/components/settings_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:test1/screens/profile/settings_screen.dart';
 import 'package:test1/services/anilist_auth.dart';
 import 'package:test1/services/app_settings.dart';
 import 'package:test1/services/app_update.dart';
 import 'package:test1/services/image_cache.dart';
+import 'package:test1/services/list_service.dart';
 
 void main() {
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   test('formatCacheSize uses B, KB and MB', () {
     expect(formatCacheSize(0), '0 B');
     expect(formatCacheSize(1023), '1023 B');
@@ -65,6 +72,7 @@ void main() {
             id: 18615,
             name: 'zanime',
             avatarUrl: '',
+            bannerUrl: 'https://example.com/banner.jpg',
             animeCount: 42,
             episodesWatched: 510,
           ),
@@ -74,9 +82,11 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Login dengan AniList'), findsOneWidget);
+    expect(find.text('ani'), findsOneWidget);
+    expect(find.text('mal'), findsOneWidget);
+    expect(find.byType(SvgPicture), findsNWidgets(2));
 
-    await tester.tap(find.text('Login dengan AniList'));
+    await tester.tap(find.text('ani'));
     await tester.pumpAndSettle();
 
     expect(find.text('zanime'), findsOneWidget);
@@ -103,8 +113,94 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Login dengan AniList'), findsOneWidget);
+    expect(find.text('ani'), findsOneWidget);
     expect(find.text('Logout dari AniList'), findsOneWidget);
+  });
+
+  testWidgets('Setting logs in to MyAnimeList and logs out', (tester) async {
+    AniListProfile? profile;
+    var malSignIn = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsScreen(
+          cacheSize: () async => 0,
+          clearCache: () async {},
+          loadProfile: () async => profile,
+          loadLists: () async => null,
+          loadService: () async => ListService.myanimelist,
+          signInMal: () async {
+            malSignIn = true;
+            profile = const AniListProfile(
+              id: 42,
+              name: 'maluser',
+              avatarUrl: '',
+              bannerUrl: 'https://example.com/banner.jpg',
+              animeCount: 7,
+              episodesWatched: 99,
+            );
+          },
+          signOut: () async => profile = null,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('ani'), findsOneWidget);
+    expect(find.text('mal'), findsOneWidget);
+
+    await tester.tap(find.text('mal'));
+    await tester.pumpAndSettle();
+
+    expect(malSignIn, isTrue);
+    expect(find.text('maluser'), findsOneWidget);
+    expect(find.text('ID 42 · 7 anime · 99 episode'), findsOneWidget);
+
+    await tester.tap(find.text('Keluar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Keluar dari MyAnimeList?'), findsOneWidget);
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('Keluar'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Logout dari MyAnimeList'), findsOneWidget);
+    expect(find.text('ani'), findsOneWidget);
+  });
+
+  testWidgets('Profil falls back to the bundled avatar and banner', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(900, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsScreen(
+          cacheSize: () async => 0,
+          clearCache: () async {},
+          loadProfile: () async =>
+              const AniListProfile(id: 1, name: 'zanime', avatarUrl: ''),
+          loadLists: () async => null,
+          checkUpdate: () async => null,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    Image imageWith(String asset) => tester
+        .widgetList<Image>(find.byType(Image))
+        .firstWhere((image) => (image.image as AssetImage).assetName == asset);
+
+    expect(imageWith('assets/images/profile_fallback.jpg'), isNotNull);
+    expect(imageWith('assets/images/banner_fallback.gif'), isNotNull);
   });
 
   testWidgets('Profil shows status totals and opens the list page', (
@@ -120,8 +216,12 @@ void main() {
         home: SettingsScreen(
           cacheSize: () async => 0,
           clearCache: () async {},
-          loadProfile: () async =>
-              const AniListProfile(id: 1, name: 'zanime', avatarUrl: ''),
+          loadProfile: () async => const AniListProfile(
+            id: 1,
+            name: 'zanime',
+            avatarUrl: '',
+            bannerUrl: 'https://example.com/banner.jpg',
+          ),
           loadLists: () async => {
             'CURRENT': [
               const WatchingAnime(
@@ -168,18 +268,27 @@ void main() {
   testWidgets('Profil fits the status grid at a large text scale', (
     tester,
   ) async {
+    tester.view.physicalSize = const Size(600, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
     await tester.pumpWidget(
       MaterialApp(
         builder: (context, child) => MediaQuery(
           data: MediaQuery.of(context)
-              .copyWith(textScaler: const TextScaler.linear(1.3)),
+              .copyWith(textScaler: const TextScaler.linear(2)),
           child: child!,
         ),
         home: SettingsScreen(
           cacheSize: () async => 0,
           clearCache: () async {},
-          loadProfile: () async =>
-              const AniListProfile(id: 1, name: 'zanime', avatarUrl: ''),
+          loadProfile: () async => const AniListProfile(
+            id: 1,
+            name: 'zanime',
+            avatarUrl: '',
+            bannerUrl: 'https://example.com/banner.jpg',
+          ),
           loadLists: () async => {
             'COMPLETED': [
               const WatchingAnime(

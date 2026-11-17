@@ -64,8 +64,8 @@ class SokujaDetail {
 List<SokujaCandidate> parseSokujaSearch(String body) {
   final root = jsonDecode(body) as Map<String, dynamic>;
   return [
-    for (final item in (root['results'] as List? ?? const [])
-        .cast<Map<String, dynamic>>())
+    for (final item
+        in (root['results'] as List? ?? const []).cast<Map<String, dynamic>>())
       if ((item['slug'] as String?)?.isNotEmpty ?? false)
         SokujaCandidate(
           slug: item['slug'] as String,
@@ -79,9 +79,9 @@ List<SokujaCandidate> parseSokujaSearch(String body) {
 /// Parses an anime detail page. The episode list only exists inside Next's
 /// base64 RSC payload, not in the rendered HTML.
 SokujaDetail? parseSokujaDetail(String html) {
-  final title = _text(_first(html, RegExp(r'<h1[^>]*>(.*?)</h1>', dotAll: true)))
-      .replaceFirst(RegExp(r'\s*Subtitle Indonesia$'), '')
-      .trim();
+  final title = _text(
+    _first(html, RegExp(r'<h1[^>]*>(.*?)</h1>', dotAll: true)),
+  ).replaceFirst(RegExp(r'\s*Subtitle Indonesia$'), '').trim();
   if (title.isEmpty) return null;
 
   final decoded = _decodeRsc(html);
@@ -118,7 +118,9 @@ SokujaDetail? parseSokujaDetail(String html) {
     ),
     type: _text(_first(html, RegExp(r'>Tipe</dt><dd[^>]*>([^<]+)</dd>'))),
     studios: [
-      for (final match in RegExp(r'<a[^>]*>([^<]+)</a>').allMatches(studioBlock))
+      for (final match in RegExp(
+        r'<a[^>]*>([^<]+)</a>',
+      ).allMatches(studioBlock))
         _text(match.group(1)!).trim(),
     ],
     genres: [
@@ -136,8 +138,8 @@ SokujaDetail? parseSokujaDetail(String html) {
 List<WatchStream> parseSokujaMirrors(String body) {
   final root = jsonDecode(body) as Map<String, dynamic>;
   final streams = [
-    for (final mirror in (root['mirrors'] as List? ?? const [])
-        .cast<Map<String, dynamic>>())
+    for (final mirror
+        in (root['mirrors'] as List? ?? const []).cast<Map<String, dynamic>>())
       if ((mirror['embedUrl'] as String?)?.isNotEmpty ?? false)
         WatchStream(
           label: (mirror['quality'] as String? ?? '').trim().isEmpty
@@ -190,8 +192,7 @@ double sokujaMatchScore({
   final sharedGenres = genres.intersection(animeGenres).length;
   if (genres.isNotEmpty) score += 0.1 * sharedGenres / genres.length;
 
-  if (anime.episodes != null &&
-      detail.episodes.length == anime.episodes) {
+  if (anime.episodes != null && detail.episodes.length == anime.episodes) {
     score += 0.1;
   }
 
@@ -220,9 +221,8 @@ Future<WatchServer?> fetchSokujaServer(
   for (final query in _queries([altTitle ?? anime.title, anime.title])) {
     try {
       final response = await sharedHttpClient.get(
-        Uri.parse('$sokujaBase/api/search/').replace(
-          queryParameters: {'q': query, 'limit': '20'},
-        ),
+        Uri.parse('$sokujaBase/api/search/')
+            .replace(queryParameters: {'q': query, 'limit': '20'}),
         headers: _headers,
       );
       if (response.statusCode != 200) continue;
@@ -242,9 +242,11 @@ Future<WatchServer?> fetchSokujaServer(
 
   final ranked = candidates.values.toList()
     ..sort(
-      (a, b) => _cheapScore(b, anime, altTitle).compareTo(
-        _cheapScore(a, anime, altTitle),
-      ),
+      (a, b) => _cheapScore(
+        b,
+        anime,
+        altTitle,
+      ).compareTo(_cheapScore(a, anime, altTitle)),
     );
 
   SokujaDetail? bestDetail;
@@ -275,9 +277,8 @@ Future<WatchServer?> fetchSokujaServer(
 
   try {
     final response = await sharedHttpClient.get(
-      Uri.parse('$sokujaBase/api/video-mirrors/').replace(
-        queryParameters: {'e': '${match.id}'},
-      ),
+      Uri.parse('$sokujaBase/api/video-mirrors/')
+          .replace(queryParameters: {'e': '${match.id}'}),
       headers: _headers,
     );
     if (response.statusCode != 200) return null;
@@ -333,7 +334,18 @@ Iterable<String> _queries(List<String> titles) sync* {
 }
 
 final _particles = {
-  'the', 'a', 'an', 'and', 'of', 'to', 'wa', 'wo', 'no', 'ni', 'de', 'ga',
+  'the',
+  'a',
+  'an',
+  'and',
+  'of',
+  'to',
+  'wa',
+  'wo',
+  'no',
+  'ni',
+  'de',
+  'ga',
 };
 
 Set<String> _words(String text) => {

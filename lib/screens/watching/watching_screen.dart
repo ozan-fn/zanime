@@ -1,16 +1,16 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../services/anilist_auth.dart';
-import '../services/api.dart';
-import 'watch_screen.dart';
+import '../../services/anilist_auth.dart';
+import '../../services/list_service.dart';
+import '../detail/watch_screen.dart';
 
-/// Anime on the user's AniList CURRENT/REPEATING list.
+/// Anime on the active service's CURRENT/REPEATING list.
 class WatchingScreen extends StatefulWidget {
   const WatchingScreen({
     super.key,
-    this.loader = fetchAniListWatching,
-    this.resolver = resolveMiruroAnimeId,
+    this.loader = fetchActiveWatching,
+    this.resolver = resolveMiruroAnimeIdForActive,
     this.onLogin,
     this.refreshSignal = 0,
   });
@@ -77,10 +77,8 @@ class _WatchingScreenState extends State<WatchingScreen> {
     }
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => WatchScreen(
-          animeId: id,
-          episode: anime.nextWatchEpisode,
-        ),
+        builder: (_) =>
+            WatchScreen(animeId: id, episode: anime.nextWatchEpisode),
       ),
     );
   }
@@ -91,9 +89,7 @@ class _WatchingScreenState extends State<WatchingScreen> {
       onRefresh: _refresh,
       child: CustomScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
-        slivers: [
-          SliverFillRemaining(hasScrollBody: false, child: child),
-        ],
+        slivers: [SliverFillRemaining(hasScrollBody: false, child: child)],
       ),
     );
   }
@@ -123,7 +119,9 @@ class _WatchingScreenState extends State<WatchingScreen> {
           if (anime == null) {
             return _refreshable(
               _Message(
-                text: 'Login AniList untuk melihat anime yang sedang ditonton',
+                text:
+                    'Login AniList atau MyAnimeList untuk melihat anime yang '
+                    'sedang ditonton',
                 action: widget.onLogin == null
                     ? null
                     : FilledButton(

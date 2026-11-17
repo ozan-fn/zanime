@@ -1,9 +1,9 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../services/anilist_auth.dart';
-import '../services/api.dart';
-import 'watch_screen.dart';
+import '../../services/anilist_auth.dart';
+import '../../services/api.dart';
+import '../detail/watch_screen.dart';
 
 /// One AniList status list (watching, completed, planning, and so on).
 class AniListListScreen extends StatelessWidget {
@@ -37,10 +37,8 @@ class AniListListScreen extends StatelessWidget {
     }
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => WatchScreen(
-          animeId: id,
-          episode: anime.nextWatchEpisode,
-        ),
+        builder: (_) =>
+            WatchScreen(animeId: id, episode: anime.nextWatchEpisode),
       ),
     );
   }

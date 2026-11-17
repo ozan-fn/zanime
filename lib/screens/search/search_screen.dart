@@ -3,10 +3,10 @@ import 'dart:async';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../models/models.dart';
-import '../services/api.dart';
-import '../services/search_history.dart';
-import 'watch_screen.dart';
+import '../../models/models.dart';
+import '../../services/api.dart';
+import '../../services/search_history.dart';
+import '../detail/watch_screen.dart';
 
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key, this.search});

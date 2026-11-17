@@ -47,14 +47,15 @@ String? parseAniListToken(String resultUrl) {
 
 AniListProfile? parseAniListProfile(String body) {
   final root = jsonDecode(body) as Map<String, dynamic>;
-  final viewer = (root['data'] as Map<String, dynamic>?)?['Viewer']
-      as Map<String, dynamic>?;
+  final viewer =
+      (root['data'] as Map<String, dynamic>?)?['Viewer']
+          as Map<String, dynamic>?;
   if (viewer == null) return null;
   final avatar = viewer['avatar'] as Map<String, dynamic>?;
   final stats =
       ((viewer['statistics'] as Map<String, dynamic>?)?['anime']
-              as Map<String, dynamic>?) ??
-          const {};
+          as Map<String, dynamic>?) ??
+      const {};
   return AniListProfile(
     id: (viewer['id'] as num?)?.toInt() ?? 0,
     name: (viewer['name'] as String?) ?? '',
@@ -117,15 +118,17 @@ const aniListStatusLabels = {
 /// Sorted newest update first, one entry per media.
 List<(int, WatchingAnime)> _aniListEntries(String body) {
   final root = jsonDecode(body) as Map<String, dynamic>;
-  final collection = (root['data'] as Map<String, dynamic>?)?[
-      'MediaListCollection'] as Map<String, dynamic>?;
+  final collection =
+      (root['data'] as Map<String, dynamic>?)?['MediaListCollection']
+          as Map<String, dynamic>?;
   final lists = (collection?['lists'] as List? ?? const [])
       .cast<Map<String, dynamic>>();
   final seen = <int>{};
   final entries = <(int, WatchingAnime)>[];
   for (final list in lists) {
-    for (final entry in (list['entries'] as List? ?? const [])
-        .cast<Map<String, dynamic>>()) {
+    for (final entry
+        in (list['entries'] as List? ?? const [])
+            .cast<Map<String, dynamic>>()) {
       final status = entry['status'] as String?;
       if (status == null) continue;
       final media = entry['media'] as Map<String, dynamic>?;
@@ -249,11 +252,9 @@ Future<Map<String, List<WatchingAnime>>?> fetchAniListLists() async {
             ?.toInt();
     if (userId == null) return const {};
 
-    final collection = await _aniListQuery(
-      token,
-      _listCollectionQuery,
-      {'userId': userId},
-    );
+    final collection = await _aniListQuery(token, _listCollectionQuery, {
+      'userId': userId,
+    });
     if (collection == null) return const {};
     return parseAniListLists(jsonEncode(collection));
   } catch (_) {
@@ -300,7 +301,8 @@ Future<String?> fetchAniListStatus(int mediaId) async {
 
 /// Creates or updates the viewer's list entry for [mediaId].
 /// Returns false when logged out, rejected, or offline.
-Future<bool> saveAniListEntry(int mediaId, String status) async {  final prefs = await SharedPreferences.getInstance();
+Future<bool> saveAniListEntry(int mediaId, String status) async {
+  final prefs = await SharedPreferences.getInstance();
   final token = prefs.getString(_tokenKey);
   if (token == null || token.isEmpty) return false;
   try {
@@ -311,8 +313,7 @@ Future<bool> saveAniListEntry(int mediaId, String status) async {  final prefs =
       'id status } }',
       {'mediaId': mediaId, 'status': status},
     );
-    return (result?['data'] as Map<String, dynamic>?)?
-            ['SaveMediaListEntry'] !=
+    return (result?['data'] as Map<String, dynamic>?)?['SaveMediaListEntry'] !=
         null;
   } catch (_) {
     return false;

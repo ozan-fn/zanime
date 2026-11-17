@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:test1/components/search_screen.dart';
+import 'package:test1/screens/search/search_screen.dart';
 import 'package:test1/models/models.dart';
 import 'package:test1/services/search_history.dart';
 

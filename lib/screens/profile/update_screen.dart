@@ -4,7 +4,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../services/app_update.dart';
+import '../../services/app_update.dart';
 
 /// Update check as a settings list page: current version, latest release and
 /// what changed. No dialog.
@@ -83,7 +83,8 @@ class _UpdateScreenState extends State<UpdateScreen> {
     final theme = Theme.of(context);
     final release = _release;
     final version = _version;
-    final newer = release != null &&
+    final newer =
+        release != null &&
         version != null &&
         isNewerVersion(release.version, version);
     return Scaffold(
@@ -133,9 +134,7 @@ class _UpdateScreenState extends State<UpdateScreen> {
               leading: Icon(
                 newer ? Icons.system_update_alt : Icons.check_circle_outline,
               ),
-              title: Text(
-                newer ? 'Update tersedia' : 'Sudah versi terbaru',
-              ),
+              title: Text(newer ? 'Update tersedia' : 'Sudah versi terbaru'),
               subtitle: Text(
                 newer
                     ? 'Versi $version → ${release.version}'
