@@ -4,20 +4,27 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../services/apk_download.dart';
 import '../../services/app_update.dart';
 
-/// Update check as a settings list page: current version, latest release and
-/// what changed. No dialog.
+/// Update check as a settings list page: current version, latest release,
+/// release notes and an in-app APK download with pause/cancel/install.
 class UpdateScreen extends StatefulWidget {
   const UpdateScreen({
     super.key,
     this.loadRelease = fetchLatestRelease,
     this.loadVersion = installedAppVersion,
+    this.downloader,
+    this.install,
+    this.abi,
   });
 
   /// Injected in tests.
   final Future<AppRelease> Function() loadRelease;
   final Future<String> Function() loadVersion;
+  final ApkDownloader? downloader;
+  final Future<void> Function(String path)? install;
+  final String? abi;
 
   @override
   State<UpdateScreen> createState() => _UpdateScreenState();
@@ -29,10 +36,14 @@ class _UpdateScreenState extends State<UpdateScreen> {
   bool _loading = true;
   bool _failed = false;
   Timer? _timer;
+  late final ApkDownloader _downloader;
+  late final bool _ownsDownloader;
 
   @override
   void initState() {
     super.initState();
+    _ownsDownloader = widget.downloader == null;
+    _downloader = widget.downloader ?? ApkDownloader();
     // Checked when the page opens, then re-checked once a minute while it is
     // open (the manual refresh button bypasses the wait).
     _check();
@@ -45,6 +56,7 @@ class _UpdateScreenState extends State<UpdateScreen> {
   @override
   void dispose() {
     _timer?.cancel();
+    if (_ownsDownloader) unawaited(_downloader.dispose());
     super.dispose();
   }
 
@@ -87,6 +99,9 @@ class _UpdateScreenState extends State<UpdateScreen> {
         release != null &&
         version != null &&
         isNewerVersion(release.version, version);
+    final asset = release == null
+        ? null
+        : selectApkAsset(release.assets, widget.abi ?? currentApkAbi());
     return Scaffold(
       appBar: AppBar(
         title: const Text('Cek update'),
@@ -142,14 +157,21 @@ class _UpdateScreenState extends State<UpdateScreen> {
               ),
             ),
             if (newer)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-                child: FilledButton.icon(
-                  onPressed: () => _openReleases(context),
-                  icon: const Icon(Icons.open_in_browser, size: 18),
-                  label: const Text('Buka halaman rilis'),
+              if (asset == null)
+                ListTile(
+                  leading: Icon(
+                    Icons.error_outline,
+                    color: theme.colorScheme.error,
+                  ),
+                  title: const Text('APK tidak tersedia di rilis ini'),
+                  subtitle: const Text('Coba periksa lagi nanti'),
+                )
+              else
+                ValueListenableBuilder<ApkDownloadState>(
+                  valueListenable: _downloader.state,
+                  builder: (context, download, _) =>
+                      _downloadSection(download, asset),
                 ),
-              ),
             if (release.name.isNotEmpty && release.name != release.version)
               ListTile(
                 leading: const Icon(Icons.sell_outlined),
@@ -184,11 +206,125 @@ class _UpdateScreenState extends State<UpdateScreen> {
     );
   }
 
-  Future<void> _openReleases(BuildContext context) async {
-    final opened = await openLatestRelease();
-    if (!opened && context.mounted) {
+  Widget _downloadSection(ApkDownloadState download, ReleaseAsset asset) {
+    final theme = Theme.of(context);
+    final status = download.status;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (status == ApkDownloadStatus.idle)
+            FilledButton.icon(
+              onPressed: () => _start(asset),
+              icon: const Icon(Icons.download, size: 18),
+              label: const Text('Unduh update'),
+            ),
+          if (status == ApkDownloadStatus.failed) ...[
+            Text(
+              'Unduhan gagal',
+              style: theme.textTheme.titleSmall?.copyWith(
+                color: theme.colorScheme.error,
+              ),
+            ),
+            if (download.error != null)
+              Text(
+                download.error!,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            const SizedBox(height: 8),
+            FilledButton.icon(
+              onPressed: () => _start(asset),
+              icon: const Icon(Icons.download, size: 18),
+              label: const Text('Unduh ulang'),
+            ),
+          ],
+          if (status == ApkDownloadStatus.downloading ||
+              status == ApkDownloadStatus.paused) ...[
+            LinearProgressIndicator(value: download.progress),
+            const SizedBox(height: 8),
+            Text(
+              [
+                status == ApkDownloadStatus.paused
+                    ? 'Dihentikan sementara'
+                    : 'Mengunduh APK',
+                if (download.total > 0)
+                  '${formatFileSize(download.received)} / '
+                      '${formatFileSize(download.total)}',
+              ].join(' · '),
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: status == ApkDownloadStatus.paused
+                      ? FilledButton.icon(
+                          onPressed: () => _start(asset),
+                          icon: const Icon(Icons.play_arrow, size: 18),
+                          label: const Text('Lanjutkan'),
+                        )
+                      : OutlinedButton.icon(
+                          onPressed: _downloader.pause,
+                          icon: const Icon(Icons.pause, size: 18),
+                          label: const Text('Pause'),
+                        ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _downloader.cancel,
+                    child: const Text('Batal'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (status == ApkDownloadStatus.downloaded) ...[
+            Text(
+              'Unduhan selesai · ${formatFileSize(download.total)}',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            FilledButton.icon(
+              onPressed: () => _install(download),
+              icon: const Icon(Icons.install_mobile, size: 18),
+              label: const Text('Pasang update'),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton(
+              onPressed: _downloader.cancel,
+              child: const Text('Batal'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _start(ReleaseAsset asset) async {
+    await _downloader.start(
+      Uri.parse(asset.url),
+      fileName: asset.name,
+      totalBytes: asset.size,
+    );
+  }
+
+  Future<void> _install(ApkDownloadState download) async {
+    final path = download.filePath;
+    if (path == null) return;
+    try {
+      await (widget.install ?? installApkFile)(path);
+    } catch (_) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Tidak bisa membuka browser')),
+        const SnackBar(
+          content: Text('Gagal membuka installer. Izinkan pemasangan APK.'),
+        ),
       );
     }
   }

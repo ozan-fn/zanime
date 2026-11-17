@@ -117,15 +117,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _checkUpdate();
   }
 
-  Future<void> _openRelease() async {
-    final opened = await openLatestRelease();
-    if (!opened && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Tidak bisa membuka browser')),
-      );
-    }
-  }
-
   Future<void> _login(ListService service) async {
     setState(() => _signingIn = service);
     try {
@@ -512,15 +503,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
         borderRadius: BorderRadius.circular(3),
         onTap: entries == null
             ? null
-            : () => Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => AniListListScreen(
-                    title: label,
-                    entries: entries,
-                    resolver: resolveMiruroAnimeIdForActive,
+            : () async {
+                await Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => AniListListScreen(
+                      title: label,
+                      status: status,
+                      entries: entries,
+                      resolver: resolveMiruroAnimeIdForActive,
+                    ),
                   ),
-                ),
-              ),
+                );
+                // Counts may have changed after a pull-to-refresh in the list.
+                if (mounted) await _refreshProfile();
+              },
         child: Padding(
           padding: const EdgeInsets.all(8),
           // Fixed 72 px tiles: clamp the text scale so large system fonts
@@ -562,7 +558,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _updateTile() {
     final update = _update;
     final available = update?.available == true;
-    final theme = Theme.of(context);
     return ListTile(
       key: const ValueKey('update-tile'),
       contentPadding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
@@ -575,39 +570,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ? 'Versi ${update!.release.version} tersedia'
             : 'Bandingkan dengan release GitHub',
       ),
-      trailing: available
-          ? Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Update',
-                  style: theme.textTheme.labelLarge?.copyWith(
-                    color: theme.colorScheme.primary,
-                  ),
-                ),
-                const SizedBox(width: 4),
-                const Icon(Icons.open_in_new, size: 16),
-              ],
-            )
-          : IconButton(
-              onPressed: _openUpdatePage,
-              tooltip: 'Cek update',
-              iconSize: 20,
-              icon: const Icon(Icons.chevron_right),
-              style: IconButton.styleFrom(
-                backgroundColor: _zinc100,
-                foregroundColor: const Color(0xFF09090B),
-                fixedSize: const Size(32, 32),
-                padding: EdgeInsets.zero,
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(3),
-                ),
-              ),
-            ),
-      // Update available: straight to the latest release on GitHub.
-      onTap: available ? _openRelease : _openUpdatePage,
+      trailing: IconButton(
+        onPressed: _openUpdatePage,
+        tooltip: 'Cek update',
+        iconSize: 20,
+        icon: const Icon(Icons.chevron_right),
+        style: IconButton.styleFrom(
+          backgroundColor: _zinc100,
+          foregroundColor: const Color(0xFF09090B),
+          fixedSize: const Size(32, 32),
+          padding: EdgeInsets.zero,
+          minimumSize: Size.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(3)),
+        ),
+      ),
+      // Everything happens inside the app now: download and install here.
+      onTap: _openUpdatePage,
     );
   }
 

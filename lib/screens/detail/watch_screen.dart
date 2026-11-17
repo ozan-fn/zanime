@@ -139,6 +139,22 @@ class _WatchScreenState extends State<WatchScreen> {
       ? widget.loader!(widget.animeId, episode)
       : fetchWatchData(widget.animeId, episode: episode);
 
+  /// Reloads the current episode (pull-to-refresh / app-bar action). The
+  /// future swap keeps the old data on screen, so the player is not torn down
+  /// while the new payload is in flight.
+  Future<void> _refresh() async {
+    final future = _load();
+    setState(() => _future = future);
+    try {
+      await future;
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Gagal memperbarui anime')));
+    }
+  }
+
   /// Drops the current player after the frame so its widget unmounts first.
   void _replaceSession(PlaybackSession? next) {
     final old = _session;
@@ -350,6 +366,13 @@ class _WatchScreenState extends State<WatchScreen> {
             builder: (context, snapshot) =>
                 Text(snapshot.data?.anime.title ?? ''),
           ),
+          actions: [
+            IconButton(
+              onPressed: _refresh,
+              tooltip: 'Muat ulang',
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
         ),
         body: FutureBuilder<WatchData>(
           future: _future,
@@ -368,18 +391,22 @@ class _WatchScreenState extends State<WatchScreen> {
                     orElse: () => data.servers.first,
                   );
             final upcoming = _upcoming(data);
-            return ListView(
-              children: [
-                if (upcoming != null)
-                  UpcomingCountdown(
-                    episode: upcoming.number,
-                    airDate: DateTime.parse(upcoming.airDate!),
-                  ),
-                _player(server, data),
-                _episodeBar(data, server),
-                _episodeGrid(data),
-                _about(data),
-              ],
+            return RefreshIndicator(
+              onRefresh: _refresh,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                children: [
+                  if (upcoming != null)
+                    UpcomingCountdown(
+                      episode: upcoming.number,
+                      airDate: DateTime.parse(upcoming.airDate!),
+                    ),
+                  _player(server, data),
+                  _episodeBar(data, server),
+                  _episodeGrid(data),
+                  _about(data),
+                ],
+              ),
             );
           },
         ),

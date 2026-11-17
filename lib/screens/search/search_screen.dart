@@ -101,6 +101,14 @@ class _SearchScreenState extends State<SearchScreen> {
     });
   }
 
+  /// Re-runs the current query (pull-to-refresh or the app-bar action).
+  Future<void> _refresh() async {
+    final query = _textController.text.trim();
+    if (query.isEmpty) return;
+    _debounce?.cancel();
+    await _search(query);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -122,6 +130,13 @@ class _SearchScreenState extends State<SearchScreen> {
           onChanged: _onChanged,
           onSubmitted: _submit,
         ),
+        actions: [
+          IconButton(
+            onPressed: _textController.text.trim().isEmpty ? null : _refresh,
+            tooltip: 'Muat ulang',
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
       ),
       body: _body(context),
     );
@@ -168,37 +183,42 @@ class _SearchScreenState extends State<SearchScreen> {
     if (results.isEmpty) {
       return const Center(child: Text('Tidak ada hasil'));
     }
-    return ListView.separated(
-      itemCount: results.length,
-      separatorBuilder: (_, _) => const Divider(height: 1),
-      itemBuilder: (context, index) {
-        final result = results[index];
-        return ListTile(
-          leading: ClipRRect(
-            borderRadius: BorderRadius.circular(3),
-            child: SizedBox(
-              width: 40,
-              height: 56,
-              child: CachedNetworkImage(
-                imageUrl: result.imageUrl,
-                fit: BoxFit.cover,
-                errorWidget: (_, _, _) => const ColoredBox(color: Colors.black),
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: ListView.separated(
+        physics: const AlwaysScrollableScrollPhysics(),
+        itemCount: results.length,
+        separatorBuilder: (_, _) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final result = results[index];
+          return ListTile(
+            leading: ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: SizedBox(
+                width: 40,
+                height: 56,
+                child: CachedNetworkImage(
+                  imageUrl: result.imageUrl,
+                  fit: BoxFit.cover,
+                  errorWidget: (_, _, _) =>
+                      const ColoredBox(color: Colors.black),
+                ),
               ),
             ),
-          ),
-          title: Text(
-            result.title,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          subtitle: Text(result.subtitle),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder: (_) => WatchScreen(animeId: result.animeId),
+            title: Text(
+              result.title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
             ),
-          ),
-        );
-      },
+            subtitle: Text(result.subtitle),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => WatchScreen(animeId: result.animeId),
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 }

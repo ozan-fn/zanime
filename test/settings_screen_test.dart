@@ -309,7 +309,7 @@ void main() {
     expect(find.text('Completed'), findsOneWidget);
   });
 
-  testWidgets('Profil row links straight to GitHub when an update exists', (
+  testWidgets('Profil row opens the in-app update page when an update exists', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -333,9 +333,20 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Versi 1.1.0 tersedia'), findsOneWidget);
-    expect(find.text('Update'), findsOneWidget);
-    expect(find.byIcon(Icons.open_in_new), findsOneWidget);
+    expect(
+      find.text('Update'),
+      findsNothing,
+      reason: 'no more GitHub redirect label',
+    );
+    expect(find.byIcon(Icons.open_in_new), findsNothing);
     expect(find.byIcon(Icons.system_update), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('update-tile')),
+        matching: find.byIcon(Icons.chevron_right),
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('Profil row opens the update page when up to date', (

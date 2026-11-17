@@ -2,16 +2,20 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'http_client.dart';
 
 const githubOwner = 'ozan-fn';
 const githubRepo = 'zanime';
 
-/// Where users are sent when an update is available.
-const releasesUrl =
-    'https://github.com/$githubOwner/$githubRepo/releases/latest';
+/// One downloadable file attached to a GitHub release.
+class ReleaseAsset {
+  const ReleaseAsset({required this.name, required this.url, this.size = 0});
+
+  final String name;
+  final String url;
+  final int size;
+}
 
 /// A GitHub release, reduced to what the update check shows.
 class AppRelease {
@@ -20,6 +24,7 @@ class AppRelease {
     required this.name,
     required this.notes,
     required this.url,
+    this.assets = const [],
   });
 
   /// Tag reduced to `major.minor.patch`.
@@ -27,6 +32,7 @@ class AppRelease {
   final String name;
   final String notes;
   final String url;
+  final List<ReleaseAsset> assets;
 }
 
 /// Latest published (non-draft, non-prerelease) release of the repo.
@@ -45,11 +51,23 @@ Future<AppRelease> fetchLatestRelease() async {
   }
   final json = jsonDecode(response.body) as Map<String, dynamic>;
   final tag = json['tag_name'] as String? ?? '';
+  final assets = ((json['assets'] as List?) ?? const [])
+      .cast<Map<String, dynamic>>()
+      .map(
+        (asset) => ReleaseAsset(
+          name: asset['name'] as String? ?? '',
+          url: asset['browser_download_url'] as String? ?? '',
+          size: (asset['size'] as num?)?.toInt() ?? 0,
+        ),
+      )
+      .where((asset) => asset.name.isNotEmpty && asset.url.isNotEmpty)
+      .toList();
   return AppRelease(
     version: shortVersion(tag) ?? tag,
     name: json['name'] as String? ?? tag,
     notes: json['body'] as String? ?? '',
     url: json['html_url'] as String? ?? '',
+    assets: assets,
   );
 }
 
@@ -128,7 +146,3 @@ void cacheUpdateInfo(String installed, AppRelease release) {
   _cachedCheck = AppUpdateInfo(installed: installed, release: release);
   _cachedAt = DateTime.now();
 }
-
-/// Sends the user to the latest release page. Returns false if no browser.
-Future<bool> openLatestRelease() =>
-    launchUrl(Uri.parse(releasesUrl), mode: LaunchMode.externalApplication);

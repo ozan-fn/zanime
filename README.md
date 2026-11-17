@@ -38,11 +38,16 @@ AniList, halaman tonton dari miruro.cx, dan server tambahan dari sokuja.
   ukuran font, jadi subtitle besar tidak menempel terlalu rendah.
 - Cek update di **Profile**: mengecek saat halaman dibuka dan setiap 1 menit
   selama terbuka; membandingkan versi aplikasi dengan GitHub Release terbaru
-  (hanya major.minor.patch). Kalau ada update, baris **Cek update** langsung
-  menuju halaman rilis; catatan rilis dirender sebagai Markdown.
+  (hanya major.minor.patch). Update diunduh **di dalam aplikasi** (bisa pause,
+  lanjut, batal) lalu dipasang lewat installer Android; catatan rilis dirender
+  sebagai Markdown.
 - Cache aplikasi (`cached_network_image` + `flutter_cache_manager`) dengan
   ukuran dan tombol hapus di tile yang sama.
 - Hitung mundur episode berikutnya yang belum tayang.
+- Hampir semua halaman daftar bisa ditarik untuk refresh: Home, Search,
+  Watching, daftar status (Watching/Completed/Planning/Repeating/Paused/
+  Dropped), dan halaman Detail. Daftar status juga punya tombol refresh di
+  AppBar.
 - APK release dipecah per ABI (`arm64-v8a`, `armeabi-v7a`, `x86_64`) dengan
   `flutter build apk --split-per-abi`.
 
@@ -66,7 +71,7 @@ lib/
     profile/
       settings_screen.dart        Profil, subtitle, cache, cek update
       anilist_list_screen.dart    Satu daftar status (completed, planning, ...)
-      update_screen.dart          Halaman cek update (list, catatan Markdown)
+      update_screen.dart          Cek update + unduh/pasang APK dalam aplikasi
   widgets/
     mini_player.dart              Overlay PiP dalam aplikasi
     upcoming_countdown.dart       Hitung mundur tayang
@@ -77,6 +82,7 @@ lib/
     list_service.dart             Layanan list aktif (AniList/MyAnimeList)
     app_settings.dart             Ukuran subtitle (px) + persistensi
     app_update.dart               Release GitHub + perbandingan versi
+    apk_download.dart             Unduh APK (pause/resume/cancel) + installer
     mini_player.dart              Status playback PiP + navigator key
     playback_session.dart         Player libmpv yang dipakai bersama PiP
     sokuja.dart                   Provider sokuja + pencocokan anime
@@ -211,13 +217,18 @@ Profile → **Cek update**. Pengecekan berjalan saat halaman dibuka dan diulang
 tiap 1 menit selama halaman terbuka; hasil terakhir dipakai bersama oleh baris
 di Profile.
 
-- Baris **Cek update** di Profile: kalau ada versi lebih baru, tampil ikon
-  update + label **Update** dan tap langsung membuka
-  `https://github.com/ozan-fn/zanime/releases/latest`; kalau tidak, tap membuka
-  halaman list cek update seperti biasa.
-- Sumber: `GET https://api.github.com/repos/ozan-fn/zanime/releases/latest`.
+- Baris **Cek update** di Profile selalu membuka halaman cek update di dalam
+  aplikasi; kalau ada versi lebih baru, halaman itu menampilkan tombol unduh.
+- Sumber: `GET https://api.github.com/repos/ozan-fn/zanime/releases/latest`,
+  termasuk daftar asset APK-nya.
 - Versi terpasang dibaca lewat `package_info_plus`. Perbandingan hanya
   **major.minor.patch**; build metadata (`+8`) dan awalan `v` diabaikan.
+- Aset APK dipilih sesuai ABI perangkat (`arm64-v8a`, `armeabi-v7a`, `x86_64`)
+  memakai `dart:ffi`. Kalau tidak ada yang cocok, aplikasi tidak memasang APK
+  ABI lain; aset universal (tanpa token ABI) tetap diterima.
+- Unduhan berjalan di aplikasi: **Unduh update** → progress → **Pause** /
+  **Lanjutkan** / **Batal**; setelah selesai muncul **Pasang update** yang
+  menyerahkan APK ke installer Android (`REQUEST_INSTALL_PACKAGES`).
 - Catatan rilis dirender sebagai **Markdown** dan mengikuti scroll halaman
   (tidak dipotong).
 - Gagal jaringan menampilkan tile error dan tombol coba lagi; versi terpasang
