@@ -22,16 +22,22 @@ class UpcomingCountdown extends StatefulWidget {
 }
 
 class _UpcomingCountdownState extends State<UpcomingCountdown> {
-  late final Timer _timer = Timer.periodic(
-    const Duration(minutes: 1),
-    (_) => setState(() {}),
-  );
+  Timer? _timer;
 
   DateTime get _now => widget.now?.call() ?? DateTime.now();
 
   @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
   void dispose() {
-    _timer.cancel();
+    _timer?.cancel();
+    _timer = null;
     super.dispose();
   }
 

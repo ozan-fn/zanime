@@ -78,8 +78,39 @@ jobs:
           cache: true
           pub-cache: true
 
+      # Keys follow the resolved toolchain versions, so an upgrade gets a fresh
+      # cache instead of reusing stale NDK/libmpv files. Flutter's default
+      # `ndkVersion` lives in its Gradle plugin; if that moves, the NDK cache is
+      # skipped and the SDK manager just installs it as before.
+      # https://github.com/actions/cache#creating-a-cache-key
+      - name: Get toolchain versions
+        id: toolchain
+        run: |
+          echo "flutter=$(flutter --version --machine | jq -r .frameworkVersion)" >> "$GITHUB_OUTPUT"
+          flutter_root="${FLUTTER_ROOT:-$(dirname "$(dirname "$(command -v flutter)")")}"
+          ndk=$(sed -n 's/.*val ndkVersion: String = "\([0-9.]*\)".*/\1/p' \
+            "$flutter_root/packages/flutter_tools/gradle/src/main/kotlin/FlutterExtension.kt" | head -1)
+          echo "ndk=$ndk" >> "$GITHUB_OUTPUT"
+
       # Caches Gradle user home, wrapper distribution, and build caches.
       - uses: gradle/actions/setup-gradle@v6
+
+      # NDK/CMake are installed by the Android SDK manager, outside Gradle's
+      # caches, and would otherwise be re-downloaded on every fresh runner.
+      - uses: actions/cache@v6
+        if: steps.toolchain.outputs.ndk != ''
+        with:
+          path: |
+            ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ steps.toolchain.outputs.ndk }}
+            ${{ env.ANDROID_SDK_ROOT }}/cmake
+          key: android-native-${{ runner.os }}-${{ steps.toolchain.outputs.ndk }}-flutter-${{ steps.toolchain.outputs.flutter }}
+
+      # media_kit's plugin downloads its libmpv jars into the module build dir;
+      # `flutter clean` or a fresh runner throws that away.
+      - uses: actions/cache@v6
+        with:
+          path: build/media_kit_libs_android_video
+          key: media-kit-libs-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
 
       - name: Resolve dependencies
         run: flutter pub get

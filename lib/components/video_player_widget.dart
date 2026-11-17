@@ -141,8 +141,17 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   int? _defaultSubtitle() => defaultSubtitleIndex(widget.subtitles);
 
   Future<void> _prepare(Player player) async {
-    await player.open(Media(_stream.url, httpHeaders: widget.headers));
-    await _applySubtitle();
+    try {
+      await player.open(Media(_stream.url, httpHeaders: widget.headers));
+      // The widget may have been removed while `open` was in flight; that
+      // player is disposed and must not be touched again.
+      if (!mounted || !identical(_player, player)) return;
+      await _applySubtitle();
+    } catch (e) {
+      if (!mounted || !identical(_player, player)) return;
+      debugPrint('video prepare failed: $e');
+      setState(() => _failed = true);
+    }
   }
 
   Future<void> _pickQuality() async {
@@ -210,7 +219,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         );
       }
     } catch (_) {
-      if (generation == _subtitleGeneration) {
+      if (mounted && generation == _subtitleGeneration) {
         await player.setSubtitleTrack(SubtitleTrack.no());
       }
     }
@@ -269,7 +278,11 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   @override
   void dispose() {
     _errorSubscription?.cancel();
-    _player?.dispose();
+    _errorSubscription = null;
+    final player = _player;
+    _player = null;
+    _videoController = null;
+    player?.dispose();
     super.dispose();
   }
 
