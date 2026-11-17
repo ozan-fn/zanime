@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:test1/components/settings_screen.dart';
 import 'package:test1/services/anilist_auth.dart';
 import 'package:test1/services/app_settings.dart';
+import 'package:test1/services/app_update.dart';
 import 'package:test1/services/image_cache.dart';
 
 void main() {
@@ -13,7 +14,7 @@ void main() {
     expect(formatCacheSize(5 * 1024 * 1024), '5.0 MB');
   });
 
-  testWidgets('Setting shows the cache size and clears it', (tester) async {
+  testWidgets('Setting shows the app cache size and clears it', (tester) async {
     var cleared = false;
 
     await tester.pumpWidget(
@@ -27,10 +28,22 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Cache gambar'), findsOneWidget);
+    expect(find.text('Cache aplikasi'), findsOneWidget);
+    expect(find.text('Cache gambar'), findsNothing);
     expect(find.text('5.0 MB'), findsOneWidget);
+    expect(find.byIcon(Icons.delete_outline), findsOneWidget);
 
-    await tester.tap(find.text('Hapus cache'));
+    await tester.tap(find.byTooltip('Hapus cache'));
+    await tester.pumpAndSettle();
+    expect(cleared, isFalse, reason: 'asks for confirmation first');
+    expect(find.text('Hapus cache aplikasi?'), findsOneWidget);
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('Hapus'),
+      ),
+    );
     await tester.pump();
     await tester.pump();
 
@@ -68,8 +81,26 @@ void main() {
 
     expect(find.text('zanime'), findsOneWidget);
     expect(find.text('ID 18615 · 42 anime · 510 episode'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, 'Keluar'))
+          .style
+          ?.foregroundColor
+          ?.resolve({}),
+      const Color(0xFFFEF2F2),
+      reason: 'solid shadcn destructive',
+    );
 
     await tester.tap(find.text('Keluar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Keluar dari AniList?'), findsOneWidget);
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('Keluar'),
+      ),
+    );
     await tester.pumpAndSettle();
 
     expect(find.text('Login dengan AniList'), findsOneWidget);
@@ -89,11 +120,8 @@ void main() {
         home: SettingsScreen(
           cacheSize: () async => 0,
           clearCache: () async {},
-          loadProfile: () async => const AniListProfile(
-            id: 1,
-            name: 'zanime',
-            avatarUrl: '',
-          ),
+          loadProfile: () async =>
+              const AniListProfile(id: 1, name: 'zanime', avatarUrl: ''),
           loadLists: () async => {
             'CURRENT': [
               const WatchingAnime(
@@ -143,19 +171,15 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(
-            context,
-          ).copyWith(textScaler: const TextScaler.linear(1.3)),
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: const TextScaler.linear(1.3)),
           child: child!,
         ),
         home: SettingsScreen(
           cacheSize: () async => 0,
           clearCache: () async {},
-          loadProfile: () async => const AniListProfile(
-            id: 1,
-            name: 'zanime',
-            avatarUrl: '',
-          ),
+          loadProfile: () async =>
+              const AniListProfile(id: 1, name: 'zanime', avatarUrl: ''),
           loadLists: () async => {
             'COMPLETED': [
               const WatchingAnime(
@@ -174,6 +198,92 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.text('Completed'), findsOneWidget);
+  });
+
+  testWidgets('Profil row links straight to GitHub when an update exists', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsScreen(
+          cacheSize: () async => 0,
+          clearCache: () async {},
+          loadProfile: () async => null,
+          checkUpdate: () async => const AppUpdateInfo(
+            installed: '1.0.1',
+            release: AppRelease(
+              version: '1.1.0',
+              name: 'Zanime v1.1.0',
+              notes: '',
+              url: '',
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Versi 1.1.0 tersedia'), findsOneWidget);
+    expect(find.text('Update'), findsOneWidget);
+    expect(find.byIcon(Icons.open_in_new), findsOneWidget);
+    expect(find.byIcon(Icons.system_update), findsOneWidget);
+  });
+
+  testWidgets('Profil row opens the update page when up to date', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsScreen(
+          cacheSize: () async => 0,
+          clearCache: () async {},
+          loadProfile: () async => null,
+          checkUpdate: () async => const AppUpdateInfo(
+            installed: '1.1.0',
+            release: AppRelease(
+              version: '1.1.0',
+              name: 'Zanime v1.1.0',
+              notes: '',
+              url: '',
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Update'), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('update-tile')),
+        matching: find.byIcon(Icons.chevron_right),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Versi 1.1.0 tersedia'), findsNothing);
+  });
+
+  testWidgets('Subtitle and update rows share the same height', (tester) async {
+    tester.view.physicalSize = const Size(900, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsScreen(
+          cacheSize: () async => 0,
+          clearCache: () async {},
+          loadProfile: () async => null,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getSize(find.byKey(const ValueKey('subtitle-tile'))).height,
+      tester.getSize(find.byKey(const ValueKey('update-tile'))).height,
+    );
   });
 
   testWidgets('Profil changes the subtitle px size', (tester) async {

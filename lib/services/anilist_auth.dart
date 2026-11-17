@@ -319,6 +319,40 @@ Future<bool> saveAniListEntry(int mediaId, String status) async {  final prefs =
   }
 }
 
+/// Removes the viewer's list entry for [mediaId] (unmark). Returns false when
+/// logged out, not on the list, rejected, or offline.
+Future<bool> removeAniListEntry(int mediaId) async {
+  final prefs = await SharedPreferences.getInstance();
+  final token = prefs.getString(_tokenKey);
+  if (token == null || token.isEmpty) return false;
+  try {
+    final found = await _aniListQuery(
+      token,
+      'query (\$mediaId: Int) { Media(id: \$mediaId, type: ANIME) { '
+      'mediaListEntry { id } } }',
+      {'mediaId': mediaId},
+    );
+    final media =
+        (found?['data'] as Map<String, dynamic>?)?['Media']
+            as Map<String, dynamic>?;
+    final entryId =
+        ((media?['mediaListEntry'] as Map<String, dynamic>?)?['id'] as num?)
+            ?.toInt();
+    if (entryId == null) return false;
+    final deleted = await _aniListQuery(
+      token,
+      'mutation (\$id: Int!) { DeleteMediaListEntry(id: \$id) { deleted } }',
+      {'id': entryId},
+    );
+    final result =
+        (deleted?['data'] as Map<String, dynamic>?)?['DeleteMediaListEntry']
+            as Map<String, dynamic>?;
+    return result?['deleted'] == true;
+  } catch (_) {
+    return false;
+  }
+}
+
 /// Returns the decoded GraphQL body; null when the token was rejected.
 Future<Map<String, dynamic>?> _aniListQuery(
   String token,

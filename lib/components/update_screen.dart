@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -25,31 +28,53 @@ class _UpdateScreenState extends State<UpdateScreen> {
   AppRelease? _release;
   bool _loading = true;
   bool _failed = false;
+  Timer? _timer;
 
   @override
   void initState() {
     super.initState();
+    // Checked when the page opens, then re-checked once a minute while it is
+    // open (the manual refresh button bypasses the wait).
     _check();
+    _timer = Timer.periodic(
+      const Duration(minutes: 1),
+      (_) => _check(silent: true),
+    );
   }
 
-  Future<void> _check() async {
-    setState(() {
-      _loading = true;
-      _failed = false;
-    });
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _check({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _loading = true;
+        _failed = false;
+      });
+    }
     String? version;
     AppRelease? release;
+    var failed = false;
     try {
       version = await widget.loadVersion();
       release = await widget.loadRelease();
     } catch (_) {
-      _failed = true;
+      failed = true;
     }
     if (!mounted) return;
+    // A background refresh must not wipe the result already on screen.
+    if (silent && failed) return;
+    if (version != null && release != null) {
+      cacheUpdateInfo(version, release);
+    }
     setState(() {
       if (version != null) _version = version;
       _release = release;
       _loading = false;
+      _failed = failed;
     });
   }
 
@@ -118,12 +143,13 @@ class _UpdateScreenState extends State<UpdateScreen> {
               ),
             ),
             if (newer)
-              ListTile(
-                leading: const Icon(Icons.open_in_browser),
-                title: const Text('Buka halaman rilis'),
-                subtitle: const Text(releasesUrl),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _openReleases(context),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                child: FilledButton.icon(
+                  onPressed: () => _openReleases(context),
+                  icon: const Icon(Icons.open_in_browser, size: 18),
+                  label: const Text('Buka halaman rilis'),
+                ),
               ),
             if (release.name.isNotEmpty && release.name != release.version)
               ListTile(
@@ -131,12 +157,28 @@ class _UpdateScreenState extends State<UpdateScreen> {
                 title: const Text('Rilis'),
                 subtitle: Text(release.name),
               ),
-            if (release.notes.isNotEmpty)
-              ListTile(
-                leading: const Icon(Icons.notes_outlined),
-                title: const Text('Catatan rilis'),
-                subtitle: Text(release.notes),
+            if (release.notes.isNotEmpty) ...[
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Row(
+                  children: [
+                    Icon(Icons.notes_outlined, size: 18),
+                    SizedBox(width: 8),
+                    Text('Catatan rilis'),
+                  ],
+                ),
               ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(4, 0, 16, 24),
+                // Markdown, full length: the page itself scrolls.
+                child: MarkdownBody(
+                  data: release.notes,
+                  onTapLink: (_, href, _) {
+                    if (href != null) launchUrl(Uri.parse(href));
+                  },
+                ),
+              ),
+            ],
           ],
         ],
       ),
@@ -144,10 +186,7 @@ class _UpdateScreenState extends State<UpdateScreen> {
   }
 
   Future<void> _openReleases(BuildContext context) async {
-    final opened = await launchUrl(
-      Uri.parse(releasesUrl),
-      mode: LaunchMode.externalApplication,
-    );
+    final opened = await openLatestRelease();
     if (!opened && context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Tidak bisa membuka browser')),

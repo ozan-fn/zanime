@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 
 import '../models/models.dart';
+import 'playback_session.dart';
 
 /// Playback that keeps running in the in-app floating player.
 class MiniPlayback {
@@ -9,7 +10,8 @@ class MiniPlayback {
     required this.episode,
     required this.streams,
     required this.headers,
-    required this.position,
+    this.session,
+    this.data,
     this.subtitles = const [],
     this.subtitleHeaders,
   });
@@ -20,7 +22,12 @@ class MiniPlayback {
   final Map<String, String>? headers;
   final List<WatchSubtitle> subtitles;
   final Map<String, String>? subtitleHeaders;
-  final Duration position;
+
+  /// The already-playing player handed over from the watch page.
+  final PlaybackSession? session;
+
+  /// Loaded watch data, so returning from PiP needs no refetch/loading.
+  final WatchData? data;
 }
 
 /// Non-null while the floating player is visible.

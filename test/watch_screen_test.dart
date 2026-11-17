@@ -5,6 +5,7 @@ import 'package:test1/components/watch_screen.dart';
 import 'package:test1/components/video_player_widget.dart'
     show VideoPlayerWidget;
 import 'package:test1/models/models.dart';
+import 'package:test1/services/anilist_auth.dart';
 import 'package:test1/services/mini_player.dart';
 
 WatchData _data(int episode) => WatchData(
@@ -58,6 +59,70 @@ WatchData _dataWithServers(int episode) => WatchData(
 );
 
 void main() {
+  testWidgets('WatchScreen falls back to episode 1 when requested is missing', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final calls = <int>[];
+    final base = _data(1);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: WatchScreen(
+          animeId: 'x',
+          episode: 99,
+          loader: (_, episode) async {
+            calls.add(episode);
+            return WatchData(
+              anime: base.anime,
+              episodes: base.episodes.take(3).toList(),
+              servers: const [],
+              currentEpisode: episode,
+              aniListId: 21,
+            );
+          },
+          statusLoader: (_) async => null,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(calls, [99, 1]);
+    expect(find.text('Gagal memuat anime'), findsNothing);
+    expect(find.text('Episode 1'), findsWidgets);
+  });
+
+  testWidgets('WatchScreen retries with episode 1 when the episode fails', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final calls = <int>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: WatchScreen(
+          animeId: 'x',
+          episode: 5,
+          loader: (_, episode) async {
+            calls.add(episode);
+            if (episode != 1) throw Exception('episode not found');
+            return _data(1);
+          },
+          statusLoader: (_) async => null,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(calls, [5, 1]);
+    expect(find.text('Gagal memuat anime'), findsNothing);
+    expect(find.text('Episode 1'), findsWidgets);
+  });
+
   testWidgets('WatchScreen caps the episode grid and switches episodes', (
     tester,
   ) async {
@@ -150,7 +215,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      tester.widget<VideoPlayerWidget>(find.byType(VideoPlayerWidget)).streams
+      tester
+          .widget<VideoPlayerWidget>(find.byType(VideoPlayerWidget))
+          .streams
           .single
           .url,
       'https://example.com/b.m3u8',
@@ -163,7 +230,9 @@ void main() {
 
     expect(find.text('bee'), findsOneWidget);
     expect(
-      tester.widget<VideoPlayerWidget>(find.byType(VideoPlayerWidget)).streams
+      tester
+          .widget<VideoPlayerWidget>(find.byType(VideoPlayerWidget))
+          .streams
           .single
           .url,
       'https://example.com/b.m3u8',
@@ -220,6 +289,21 @@ void main() {
     expect(find.text('AniList status'), findsOneWidget);
     expect(find.text('Watching'), findsOneWidget);
     expect(find.text('Completed'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(OutlinedButton),
+      ),
+      findsNothing,
+      reason: 'all status options are solid buttons',
+    );
+    expect(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(FilledButton),
+      ),
+      findsNWidgets(aniListStatusLabels.length),
+    );
 
     await tester.tap(find.text('Completed'));
     await tester.pumpAndSettle();
@@ -228,6 +312,50 @@ void main() {
     expect(find.byIcon(Icons.check), findsOneWidget, reason: 'status icon');
     expect(find.text('Status: Completed'), findsOneWidget);
     expect(find.text('Add'), findsNothing, reason: 'icon-only button');
+  });
+
+  testWidgets('WatchScreen removes the status when the active one is tapped', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final removed = <int>[];
+    final saved = <(int, String)>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: WatchScreen(
+          animeId: 'x',
+          loader: (_, episode) async => _data(episode),
+          statusLoader: (_) async => 'CURRENT',
+          saver: (mediaId, status) async {
+            saved.add((mediaId, status));
+            return true;
+          },
+          remover: (mediaId) async {
+            removed.add(mediaId);
+            return true;
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.play_arrow));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Tap status yang sedang aktif untuk menghapus dari list.'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Watching'));
+    await tester.pumpAndSettle();
+
+    expect(removed, [21]);
+    expect(saved, isEmpty);
+    expect(find.byIcon(Icons.add), findsOneWidget);
+    expect(find.text('Dihapus dari AniList'), findsOneWidget);
   });
 
   testWidgets('WatchScreen shows the saved list status icon', (tester) async {
@@ -303,14 +431,50 @@ void main() {
       reason: 'floating player has no controls',
     );
 
-    // Tapping the floating card hides it and reopens the watch page.
-    await tester.tap(
-      find.byType(VideoPlayerWidget),
-      warnIfMissed: false,
-    );
+    // Tapping the floating card hides it and reopens the watch page with the
+    // already-loaded data, so no loading indicator appears.
+    await tester.tap(find.byType(VideoPlayerWidget), warnIfMissed: false);
+    await tester.pump();
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    await tester.pump();
+    expect(find.byType(WatchScreen), findsOneWidget);
     await tester.pumpAndSettle();
     expect(miniPlayback.value, isNull);
-    expect(find.byType(WatchScreen), findsOneWidget);
+  });
+
+  testWidgets('Floating player can be dragged', (tester) async {
+    addTearDown(hideMiniPlayer);
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: navigatorKey,
+        home: const Scaffold(body: Text('home')),
+      ),
+    );
+    final data = _dataWithServers(1);
+    final server = data.servers.first;
+    showMiniPlayer(
+      MiniPlayback(
+        animeId: 'x',
+        episode: 1,
+        streams: server.streams,
+        headers: server.headers,
+        subtitles: data.subtitles,
+        subtitleHeaders: server.headers,
+      ),
+    );
+    await tester.pump();
+
+    final before = tester.getTopLeft(find.byType(VideoPlayerWidget));
+    await tester.drag(find.byType(VideoPlayerWidget), const Offset(-200, -300));
+    await tester.pump();
+    final after = tester.getTopLeft(find.byType(VideoPlayerWidget));
+
+    expect(after.dx, lessThan(before.dx));
+    expect(after.dy, lessThan(before.dy));
   });
 
   testWidgets('Floating player can be closed', (tester) async {
@@ -331,7 +495,6 @@ void main() {
         headers: server.headers,
         subtitles: data.subtitles,
         subtitleHeaders: server.headers,
-        position: Duration.zero,
       ),
     );
     await tester.pump();

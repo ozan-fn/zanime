@@ -1,10 +1,14 @@
+import 'dart:async';
+
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../models/models.dart';
 import '../services/anilist_auth.dart';
 import '../services/api.dart';
 import '../services/mini_player.dart';
+import '../services/playback_session.dart';
 import '../services/sokuja.dart';
 import 'mini_player.dart';
 import 'upcoming_countdown.dart';
@@ -32,14 +36,19 @@ class WatchScreen extends StatefulWidget {
     this.loader,
     this.saver,
     this.statusLoader,
-    this.startAt,
+    this.remover,
+    this.session,
+    this.initialData,
   });
 
   final String animeId;
   final int episode;
 
-  /// Resume point handed over by the floating player.
-  final Duration? startAt;
+  /// Player taken back from the floating player; keeps playback running.
+  final PlaybackSession? session;
+
+  /// Already-loaded data from PiP, so reopening shows no loading state.
+  final WatchData? initialData;
 
   /// Injected in tests; defaults to [fetchWatchData].
   final Future<WatchData> Function(String animeId, int episode)? loader;
@@ -50,13 +59,18 @@ class WatchScreen extends StatefulWidget {
   /// Injected in tests; defaults to [fetchAniListStatus].
   final Future<String?> Function(int mediaId)? statusLoader;
 
+  /// Injected in tests; defaults to [removeAniListEntry].
+  final Future<bool> Function(int mediaId)? remover;
+
   @override
   State<WatchScreen> createState() => _WatchScreenState();
 }
 
 class _WatchScreenState extends State<WatchScreen> {
   late int _episode = widget.episode;
-  late Future<WatchData> _future = _load();
+  late Future<WatchData> _future = widget.initialData != null
+      ? SynchronousFuture<WatchData>(widget.initialData!)
+      : _load();
   String? _provider;
   String? _listStatus;
   bool _expanded = false;
@@ -65,36 +79,60 @@ class _WatchScreenState extends State<WatchScreen> {
   WatchData? _data;
   WatchServer? _server;
 
-  /// First seek target; cleared once the episode changes.
-  Duration? _startAt;
-
-  /// Live playback position, mirrored into the floating player.
-  final ValueNotifier<Duration> _position = ValueNotifier<Duration>(
-    Duration.zero,
-  );
+  /// The running player, owned here unless handed off to PiP.
+  PlaybackSession? _session;
+  bool _handedOff = false;
 
   @override
   void initState() {
     super.initState();
-    _startAt = widget.startAt;
-    _position.value = widget.startAt ?? Duration.zero;
+    _session = widget.session;
+    _data = widget.initialData;
+    final initial = widget.initialData;
+    if (initial != null) _syncStatus(initial.aniListId);
     // Opening the watch page always takes over from the floating player.
     hideMiniPlayer();
   }
 
   @override
   void dispose() {
-    _position.dispose();
+    if (!_handedOff && _session != null) unawaited(_session!.dispose());
     super.dispose();
   }
 
   Future<WatchData> _load() async {
-    final data = await (widget.loader != null
-        ? widget.loader!(widget.animeId, _episode)
-        : fetchWatchData(widget.animeId, episode: _episode));
+    WatchData data;
+    try {
+      data = await _fetchEpisode(_episode);
+      // Requested episodes that have not aired yet are missing from the
+      // schedule; show episode 1 rather than an empty watch page.
+      if (_episode != 1 && !data.episodes.any((e) => e.number == _episode)) {
+        _episode = 1;
+        data = await _fetchEpisode(1);
+      }
+    } catch (_) {
+      // The provider may reject the requested episode outright.
+      if (_episode == 1) rethrow;
+      _episode = 1;
+      data = await _fetchEpisode(1);
+    }
     _data = data;
+    _session ??= PlaybackSession.create();
     _syncStatus(data.aniListId);
     return data;
+  }
+
+  Future<WatchData> _fetchEpisode(int episode) => widget.loader != null
+      ? widget.loader!(widget.animeId, episode)
+      : fetchWatchData(widget.animeId, episode: episode);
+
+  /// Drops the current player after the frame so its widget unmounts first.
+  void _replaceSession(PlaybackSession? next) {
+    final old = _session;
+    _session = next;
+    if (old != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
+    }
   }
 
   Future<void> _syncStatus(int? mediaId) async {
@@ -110,9 +148,16 @@ class _WatchScreenState extends State<WatchScreen> {
       _episode = number;
       _provider = null;
       _expanded = false;
-      _startAt = null;
-      _position.value = Duration.zero;
+      _replaceSession(null);
       _future = _load();
+    });
+  }
+
+  void _selectProvider(String? value) {
+    setState(() {
+      _provider = value;
+      _lastProvider = value;
+      _replaceSession(PlaybackSession.create());
     });
   }
 
@@ -124,19 +169,30 @@ class _WatchScreenState extends State<WatchScreen> {
       Navigator.of(context).pop();
       return;
     }
-    showMiniPlayer(
-      MiniPlayback(
-        animeId: widget.animeId,
-        episode: _episode,
-        streams: server.streams,
-        headers: server.headers,
-        subtitles: server.provider == sokujaProvider
-            ? const []
-            : data.subtitles,
-        subtitleHeaders: server.headers,
-        position: _position.value,
-      ),
+    _handedOff = true;
+    final playback = MiniPlayback(
+      animeId: widget.animeId,
+      episode: _episode,
+      streams: server.streams,
+      headers: server.headers,
+      subtitles: server.provider == sokujaProvider ? const [] : data.subtitles,
+      subtitleHeaders: server.headers,
+      session: _session,
+      data: data,
     );
+    // Show PiP once this page is gone, so only one Video uses the controller.
+    final animation = ModalRoute.of(context)?.animation;
+    if (animation == null) {
+      showMiniPlayer(playback);
+    } else {
+      void onStatus(AnimationStatus status) {
+        if (status != AnimationStatus.dismissed) return;
+        animation.removeStatusListener(onStatus);
+        showMiniPlayer(playback);
+      }
+
+      animation.addStatusListener(onStatus);
+    }
     Navigator.of(context).pop();
   }
 
@@ -148,67 +204,83 @@ class _WatchScreenState extends State<WatchScreen> {
         contentPadding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
         content: SizedBox(
           width: 280,
-          child: GridView.count(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            crossAxisCount: 2,
-            crossAxisSpacing: 8,
-            mainAxisSpacing: 8,
-            childAspectRatio: 2.8,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              for (final entry in aniListStatusLabels.entries)
-                _statusOption(context, entry.key, entry.value),
+              Text(
+                'Tap status yang sedang aktif untuk menghapus dari list.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              GridView.count(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                crossAxisCount: 2,
+                crossAxisSpacing: 8,
+                mainAxisSpacing: 8,
+                childAspectRatio: 2.8,
+                children: [
+                  for (final entry in aniListStatusLabels.entries)
+                    _statusOption(context, entry.key, entry.value),
+                ],
+              ),
             ],
           ),
         ),
       ),
     );
     if (status == null || !mounted) return;
-    final saved = await (widget.saver ?? saveAniListEntry)(
-      data.aniListId!,
-      status,
-    );
+    // Tapping the active status again removes the entry from the list.
+    final unmark = status == _listStatus;
+    final saved = unmark
+        ? await (widget.remover ?? removeAniListEntry)(data.aniListId!)
+        : await (widget.saver ?? saveAniListEntry)(data.aniListId!, status);
     if (!mounted) return;
-    if (saved) setState(() => _listStatus = status);
+    if (saved) setState(() => _listStatus = unmark ? null : status);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          saved
-              ? 'Status: ${aniListStatusLabels[status]}'
-              : 'Login AniList di Setting dulu',
+          !saved
+              ? 'Login AniList di Profile dulu'
+              : unmark
+              ? 'Dihapus dari AniList'
+              : 'Status: ${aniListStatusLabels[status]}',
         ),
       ),
     );
   }
 
   Widget _statusOption(BuildContext context, String status, String label) {
+    final theme = Theme.of(context);
     final selected = status == _listStatus;
     final icon = Icon(_aniListStatusIcons[status], size: 16);
     final text = Text(label, maxLines: 1, overflow: TextOverflow.ellipsis);
-    const style = ButtonStyle(
-      padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 8)),
-      minimumSize: WidgetStatePropertyAll(Size.zero),
+    // Solid buttons: the active status uses the primary fill, the others a
+    // solid zinc fill so none of them look outlined.
+    final style = FilledButton.styleFrom(
+      backgroundColor: selected
+          ? theme.colorScheme.primary
+          : const Color(0xFF3F3F46),
+      foregroundColor: selected
+          ? theme.colorScheme.onPrimary
+          : const Color(0xFFE4E4E7),
+      side: BorderSide.none,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      minimumSize: Size.zero,
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(3)),
     );
-    void pressed() => Navigator.pop(context, status);
-    return selected
-        ? FilledButton.icon(
-            onPressed: pressed,
-            icon: icon,
-            label: text,
-            style: style,
-          )
-        : OutlinedButton.icon(
-            onPressed: pressed,
-            icon: icon,
-            label: text,
-            style: style,
-          );
+    return FilledButton.icon(
+      onPressed: () => Navigator.pop(context, status),
+      icon: icon,
+      label: text,
+      style: style,
+    );
   }
 
   Widget _listButton(WatchData data) {
     final status = _listStatus;
-    final theme = Theme.of(context);
     return IconButton(
       onPressed: () => _pickStatus(data),
       tooltip: status == null
@@ -219,12 +291,14 @@ class _WatchScreenState extends State<WatchScreen> {
         size: 18,
       ),
       style: IconButton.styleFrom(
-        fixedSize: const Size(40, 40),
+        // Solid like the other action buttons in the app.
+        backgroundColor: const Color(0xFFF4F4F5),
+        foregroundColor: const Color(0xFF09090B),
+        fixedSize: const Size(32, 32),
         padding: EdgeInsets.zero,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(3),
-          side: BorderSide(color: theme.colorScheme.outlineVariant),
-        ),
+        minimumSize: Size.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(3)),
       ),
     );
   }
@@ -302,13 +376,12 @@ class _WatchScreenState extends State<WatchScreen> {
     }
     return VideoPlayerWidget(
       key: ValueKey(server.url),
+      session: _session,
       streams: server.streams,
       headers: server.headers,
       // Sokuja mirrors are self-contained mp4s without track metadata.
       subtitles: server.provider == sokujaProvider ? const [] : data.subtitles,
       subtitleHeaders: server.headers,
-      startAt: _startAt,
-      positionSink: _position,
     );
   }
 
@@ -367,13 +440,7 @@ class _WatchScreenState extends State<WatchScreen> {
                             ),
                           ),
                       ],
-                      onChanged: (value) => setState(() {
-                        _provider = value;
-                        _lastProvider = value;
-                        // Switching servers restarts the stream at the same
-                        // point rather than from zero.
-                        _startAt = _position.value;
-                      }),
+                      onChanged: _selectProvider,
                     ),
                   ],
                 ),

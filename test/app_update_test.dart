@@ -47,7 +47,6 @@ void main() {
     expect(find.text('Update tersedia'), findsOneWidget);
     expect(find.text('Versi 1.0.1 → 1.1.0'), findsOneWidget);
     expect(find.text('Buka halaman rilis'), findsOneWidget);
-    expect(find.text(releasesUrl), findsOneWidget);
     expect(find.text('Catatan rilis'), findsOneWidget);
   });
 

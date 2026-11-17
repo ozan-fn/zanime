@@ -9,6 +9,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../models/models.dart';
 import '../services/app_settings.dart';
 import '../services/http_client.dart';
+import '../services/playback_session.dart';
 import '../services/subtitle_format.dart';
 
 final http.Client _client = sharedHttpClient;
@@ -90,6 +91,8 @@ class VideoPlayerWidget extends StatefulWidget {
     this.startAt,
     this.positionSink,
     this.showControls = true,
+    this.session,
+    this.subtitlePxOverride,
   });
 
   /// Alternative qualities of one server, best first.
@@ -112,6 +115,13 @@ class VideoPlayerWidget extends StatefulWidget {
   /// False for the floating player: no controls overlay.
   final bool showControls;
 
+  /// Shared player; when omitted the widget owns the session it creates.
+  final PlaybackSession? session;
+
+  /// Fixed on-screen subtitle size, ignoring the user setting (floating
+  /// player: slightly larger than the default, independent of the slider).
+  final double? subtitlePxOverride;
+
   @override
   State<VideoPlayerWidget> createState() => _VideoPlayerWidgetState();
 }
@@ -119,6 +129,8 @@ class VideoPlayerWidget extends StatefulWidget {
 class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   Player? _player;
   VideoController? _videoController;
+  PlaybackSession? _session;
+  bool _ownsSession = false;
   StreamSubscription<String>? _errorSubscription;
   StreamSubscription<Duration>? _positionSubscription;
   bool _failed = false;
@@ -132,35 +144,30 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   void initState() {
     super.initState();
     _selectedSubtitle = _defaultSubtitle();
-    try {
-      // Idempotent; also covers entrypoints/hot-restart paths where main() did
-      // not run this session.
-      MediaKit.ensureInitialized();
-      final player = Player(
-        // libass (mpv) renders ASS/SSA natively, keeping \an top/bottom
-        // positioning that Flutter's flat text layer cannot express.
-        configuration: const PlayerConfiguration(
-          libass: true,
-          libassAndroidFont: 'assets/fonts/ComicNeue-Bold.ttf',
-          libassAndroidFontName: 'Comic Neue',
-        ),
-      );
-      _player = player;
-      _videoController = VideoController(player);
-      unawaited(_prepare(player));
-      _errorSubscription = player.stream.error.listen((_) {
-        if (mounted) setState(() => _failed = true);
-      });
-      final sink = widget.positionSink;
-      if (sink != null) {
-        _positionSubscription = player.stream.position.listen(
-          (position) => sink.value = position,
-        );
-      }
-    } catch (e) {
-      // No libmpv available (e.g. widget test) or player setup failed.
-      debugPrint('video init failed: $e');
+    final provided = widget.session;
+    final session = provided ?? PlaybackSession.create();
+    _session = session;
+    _ownsSession = provided == null;
+    if (session == null) {
       _failed = true;
+      return;
+    }
+    _player = session.player;
+    _videoController = session.controller;
+    subtitlePx.addListener(_applySubtitleScale);
+    unawaited(_applySubtitleScale());
+    _errorSubscription = session.player.stream.error.listen((_) {
+      if (mounted) setState(() => _failed = true);
+    });
+    final sink = widget.positionSink;
+    if (sink != null) {
+      _positionSubscription = session.player.stream.position.listen(
+        (position) => sink.value = position,
+      );
+    }
+    // A handed-over session is already playing; only a fresh one is prepared.
+    if (session.openedUrl == null) {
+      unawaited(_prepare(session.player));
     }
   }
 
@@ -175,6 +182,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       // The widget may have been removed while `open` was in flight; that
       // player is disposed and must not be touched again.
       if (!mounted || !identical(_player, player)) return;
+      _session?.openedUrl = _stream.url;
       final startAt = widget.startAt;
       if (startAt != null && startAt > Duration.zero) {
         await player.seek(startAt);
@@ -218,12 +226,36 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       _failed = false;
     });
     await player.open(Media(_stream.url, httpHeaders: widget.headers));
+    _session?.openedUrl = _stream.url;
     await _applySubtitle();
+  }
+
+  /// libass renders ASS/SSA tracks itself and ignores the Flutter subtitle
+  /// style, so the size setting is forwarded as mpv's `sub-scale` multiplier
+  /// (16 px is the reference size). Without it, ASS subtitles stay small no
+  /// matter what the slider says.
+  Future<void> _applySubtitleScale() async {
+    final player = _player;
+    if (player == null) return;
+    final px = widget.subtitlePxOverride ?? subtitlePx.value;
+    final scale = px / defaultSubtitlePx;
+    try {
+      final platform = player.platform;
+      if (platform == null) return;
+      // `setProperty` only exists on the native player.
+      await (platform as dynamic).setProperty(
+        'sub-scale',
+        scale.toStringAsFixed(2),
+      );
+    } catch (_) {
+      // Non-native platforms simply keep their default scale.
+    }
   }
 
   Future<void> _applySubtitle() async {
     final player = _player;
     if (player == null) return;
+    await _applySubtitleScale();
     final generation = ++_subtitleGeneration;
     final index = _selectedSubtitle;
     if (index == null) {
@@ -314,10 +346,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     _errorSubscription = null;
     _positionSubscription?.cancel();
     _positionSubscription = null;
-    final player = _player;
     _player = null;
     _videoController = null;
-    player?.dispose();
+    final session = _session;
+    _session = null;
+    subtitlePx.removeListener(_applySubtitleScale);
+    if (_ownsSession && session != null) unawaited(session.dispose());
     super.dispose();
   }
 
@@ -345,12 +379,17 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           return AnimatedBuilder(
             animation: subtitlePx,
             builder: (context, _) {
+              final px = widget.subtitlePxOverride ?? subtitlePx.value;
+              // Keep the gap below the subtitle proportional to its size so a
+              // bigger line is lifted instead of sitting lower on the video.
+              final bottomGap =
+                  32.0 + math.max(0, px - defaultSubtitlePx) * 1.5;
               final video = Video(
                 controller: controller,
                 fit: BoxFit.contain,
                 subtitleViewConfiguration: SubtitleViewConfiguration(
                   // Slightly higher than media_kit's default bottom padding.
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+                  padding: EdgeInsets.fromLTRB(16, 0, 16, bottomGap),
                   // media_kit multiplies the size by the player box scale
                   // (≈ width / 1920); divide it back out so the settings value
                   // is the on-screen px size.
@@ -360,7 +399,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                       'Noto Sans',
                       'Noto Sans Symbols 2',
                     ],
-                    fontSize: subtitlePx.value * 1920 / width,
+                    fontSize: px * 1920 / width,
                     fontWeight: FontWeight.w700,
                     height: 1.25,
                     color: const Color(0xFFFFFFFF),

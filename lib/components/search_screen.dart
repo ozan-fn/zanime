@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../models/models.dart';
 import '../services/api.dart';
+import '../services/search_history.dart';
 import 'watch_screen.dart';
 
 class SearchScreen extends StatefulWidget {
@@ -25,8 +26,13 @@ class _SearchScreenState extends State<SearchScreen> {
   String? _error;
   int _generation = 0;
 
-  /// Recent queries, newest first. In-memory only (no storage dependency).
-  final List<String> _history = [];
+  @override
+  void initState() {
+    super.initState();
+    // History is restored once from storage; the shared notifier keeps it
+    // after the app is reopened.
+    loadSearchHistory();
+  }
 
   @override
   void dispose() {
@@ -47,7 +53,18 @@ class _SearchScreenState extends State<SearchScreen> {
       });
       return;
     }
+    setState(() {}); // reflect the clear (×) button
     _debounce = Timer(const Duration(milliseconds: 500), () => _search(query));
+  }
+
+  /// Typing only searches; history is written on submit (Enter), never by the
+  /// debounce timer.
+  void _submit(String value) {
+    _debounce?.cancel();
+    final query = value.trim();
+    if (query.isEmpty) return;
+    unawaited(addSearchHistory(query));
+    _search(query);
   }
 
   Future<void> _search(String query) async {
@@ -55,10 +72,6 @@ class _SearchScreenState extends State<SearchScreen> {
     setState(() {
       _loading = true;
       _error = null;
-      _history
-        ..removeWhere((item) => item.toLowerCase() == query.toLowerCase())
-        ..insert(0, query);
-      if (_history.length > 10) _history.removeLast();
     });
     try {
       final results = await (widget.search ?? searchAnime)(query);
@@ -77,6 +90,17 @@ class _SearchScreenState extends State<SearchScreen> {
     }
   }
 
+  void _clear() {
+    _debounce?.cancel();
+    _generation++;
+    _textController.clear();
+    setState(() {
+      _results = null;
+      _loading = false;
+      _error = null;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -84,15 +108,19 @@ class _SearchScreenState extends State<SearchScreen> {
         title: TextField(
           controller: _textController,
           textInputAction: TextInputAction.search,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             hintText: 'Cari anime...',
             border: InputBorder.none,
+            suffixIcon: _textController.text.isEmpty
+                ? null
+                : IconButton(
+                    onPressed: _clear,
+                    tooltip: 'Hapus pencarian',
+                    icon: const Icon(Icons.close, size: 18),
+                  ),
           ),
           onChanged: _onChanged,
-          onSubmitted: (value) {
-            _debounce?.cancel();
-            if (value.trim().isNotEmpty) _search(value.trim());
-          },
+          onSubmitted: _submit,
         ),
       ),
       body: _body(context),
@@ -108,23 +136,33 @@ class _SearchScreenState extends State<SearchScreen> {
     }
     final results = _results;
     if (results == null) {
-      if (_history.isEmpty) {
-        return const Center(child: Text('Ketik judul anime untuk mencari'));
-      }
-      return ListView(
-        children: [
-          const ListTile(title: Text('Riwayat pencarian')),
-          for (final query in _history)
-            ListTile(
-              leading: const Icon(Icons.history),
-              title: Text(query),
-              onTap: () {
-                _debounce?.cancel();
-                _textController.text = query;
-                _search(query);
-              },
-            ),
-        ],
+      return ValueListenableBuilder<List<String>>(
+        valueListenable: searchHistory,
+        builder: (context, history, _) {
+          if (history.isEmpty) {
+            return const Center(child: Text('Ketik judul anime untuk mencari'));
+          }
+          return ListView(
+            children: [
+              const ListTile(title: Text('Riwayat pencarian')),
+              for (final query in history)
+                ListTile(
+                  leading: const Icon(Icons.history),
+                  title: Text(query),
+                  trailing: IconButton(
+                    onPressed: () => removeSearchHistory(query),
+                    tooltip: 'Hapus riwayat',
+                    icon: const Icon(Icons.close, size: 18),
+                  ),
+                  onTap: () {
+                    _debounce?.cancel();
+                    _textController.text = query;
+                    _search(query);
+                  },
+                ),
+            ],
+          );
+        },
       );
     }
     if (results.isEmpty) {

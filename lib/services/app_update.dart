@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'http_client.dart';
 
@@ -80,3 +81,50 @@ bool isNewerVersion(String candidate, String current) {
   }
   return false;
 }
+
+/// Result of one update check.
+class AppUpdateInfo {
+  const AppUpdateInfo({required this.installed, required this.release});
+
+  final String installed;
+  final AppRelease release;
+
+  bool get available => isNewerVersion(release.version, installed);
+}
+
+/// How long a check result is reused before hitting GitHub again.
+const updateCheckInterval = Duration(minutes: 1);
+
+AppUpdateInfo? _cachedCheck;
+DateTime? _cachedAt;
+
+/// Update check shared by the settings row and the update page; reuses the
+/// last result for [updateCheckInterval] and null when offline.
+Future<AppUpdateInfo?> checkForUpdate() async {
+  final now = DateTime.now();
+  final cached = _cachedCheck;
+  final at = _cachedAt;
+  if (cached != null && at != null && now.difference(at) < updateCheckInterval) {
+    return cached;
+  }
+  try {
+    final installed = await installedAppVersion();
+    final release = await fetchLatestRelease();
+    final info = AppUpdateInfo(installed: installed, release: release);
+    _cachedCheck = info;
+    _cachedAt = now;
+    return info;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Stores a check result so the settings row can reuse it.
+void cacheUpdateInfo(String installed, AppRelease release) {
+  _cachedCheck = AppUpdateInfo(installed: installed, release: release);
+  _cachedAt = DateTime.now();
+}
+
+/// Sends the user to the latest release page. Returns false if no browser.
+Future<bool> openLatestRelease() =>
+    launchUrl(Uri.parse(releasesUrl), mode: LaunchMode.externalApplication);

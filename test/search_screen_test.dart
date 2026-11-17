@@ -1,7 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:test1/components/search_screen.dart';
 import 'package:test1/models/models.dart';
+import 'package:test1/services/search_history.dart';
 
 const _frierenJson = {
   'animeId': 'wHWR9m4VQ8GLW4GP9_ZTblQXn9f0phB8',
@@ -14,6 +16,17 @@ const _frierenJson = {
 };
 
 void main() {
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    searchHistory.value = const [];
+  });
+
+  Future<void> submit(WidgetTester tester) async {
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await tester.pump();
+    await tester.pump();
+  }
+
   test('SearchResult parses the miruro search item', () {
     final result = SearchResult.fromJson(_frierenJson);
 
@@ -94,6 +107,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 600));
     await tester.pump();
     expect(find.text('Frieren: Beyond Journey’s End'), findsOneWidget);
+    await submit(tester);
 
     await tester.enterText(find.byType(TextField), '');
     await tester.pump();
@@ -116,8 +130,7 @@ void main() {
     );
 
     await tester.enterText(find.byType(TextField), 'frieren');
-    await tester.pump(const Duration(milliseconds: 600));
-    await tester.pump();
+    await submit(tester);
     await tester.enterText(find.byType(TextField), '');
     await tester.pump();
 
@@ -127,5 +140,103 @@ void main() {
 
     expect(queries, ['frieren', 'frieren']);
     expect(find.text('Frieren: Beyond Journey’s End'), findsOneWidget);
+  });
+
+  testWidgets('Debounced typing does not write search history', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SearchScreen(
+          search: (query) async => [SearchResult.fromJson(_frierenJson)],
+        ),
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField), 'frieren');
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump();
+
+    expect(searchHistory.value, isEmpty);
+  });
+
+  testWidgets('Submitting saves history once and restores it after reopen', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SearchScreen(
+          search: (query) async => [SearchResult.fromJson(_frierenJson)],
+        ),
+      ),
+    );
+
+    await tester.enterText(find.byType(TextField), 'frieren');
+    await submit(tester);
+    expect(searchHistory.value, ['frieren']);
+
+    // A fresh screen (app reopened) reads the same saved history.
+    searchHistory.value = const [];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SearchScreen(
+          key: UniqueKey(),
+          search: (query) async => [SearchResult.fromJson(_frierenJson)],
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Riwayat pencarian'), findsOneWidget);
+    expect(find.text('frieren'), findsOneWidget);
+  });
+
+  testWidgets('The search field X clears the query and results', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SearchScreen(
+          search: (query) async => [SearchResult.fromJson(_frierenJson)],
+        ),
+      ),
+    );
+    expect(find.byIcon(Icons.close), findsNothing);
+
+    await tester.enterText(find.byType(TextField), 'frieren');
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump();
+    expect(find.byIcon(Icons.close), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pump();
+
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      '',
+    );
+    expect(find.text('Frieren: Beyond Journey’s End'), findsNothing);
+    expect(find.byIcon(Icons.close), findsNothing);
+  });
+
+  testWidgets('Each history item can be deleted with its own X', (
+    tester,
+  ) async {
+    searchHistory.value = const ['frieren', 'one piece'];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SearchScreen(search: (query) async => const <SearchResult>[]),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('frieren'), findsOneWidget);
+    expect(find.text('one piece'), findsOneWidget);
+    expect(find.byIcon(Icons.close), findsNWidgets(2));
+
+    await tester.tap(find.byIcon(Icons.close).first);
+    await tester.pump();
+
+    expect(find.text('frieren'), findsNothing);
+    expect(find.text('one piece'), findsOneWidget);
+    expect(searchHistory.value, ['one piece']);
   });
 }

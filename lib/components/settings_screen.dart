@@ -3,12 +3,14 @@ import 'package:material_ui/material_ui.dart';
 
 import '../services/anilist_auth.dart';
 import '../services/app_settings.dart';
+import '../services/app_update.dart';
 import '../services/image_cache.dart';
 import 'anilist_list_screen.dart';
 import 'update_screen.dart';
 
 const _zinc900 = Color(0xFF18181B);
 const _zinc800 = Color(0xFF27272A);
+const _zinc100 = Color(0xFFF4F4F5);
 
 const _statusColors = {
   'CURRENT': Color(0xFF4ADE80),
@@ -38,6 +40,7 @@ class SettingsScreen extends StatefulWidget {
     this.loadLists = fetchAniListLists,
     this.signIn = signInWithAniList,
     this.signOut = signOutAniList,
+    this.checkUpdate = checkForUpdate,
   });
 
   /// Injected in tests.
@@ -47,6 +50,7 @@ class SettingsScreen extends StatefulWidget {
   final Future<Map<String, List<WatchingAnime>>?> Function() loadLists;
   final Future<void> Function() signIn;
   final Future<void> Function() signOut;
+  final Future<AppUpdateInfo?> Function() checkUpdate;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -59,12 +63,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Map<String, List<WatchingAnime>>? _lists;
   bool _loadingProfile = true;
   bool _signingIn = false;
+  AppUpdateInfo? _update;
 
   @override
   void initState() {
     super.initState();
     _load();
     _refreshProfile();
+    _checkUpdate();
   }
 
   Future<void> _load() async {
@@ -81,6 +87,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _lists = lists;
       _loadingProfile = false;
     });
+    _checkUpdate();
+  }
+
+  Future<void> _checkUpdate() async {
+    final update = await widget.checkUpdate();
+    if (!mounted || update == null) return;
+    setState(() => _update = update);
+  }
+
+  Future<void> _openUpdatePage() async {
+    await Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => const UpdateScreen()));
+    _checkUpdate();
+  }
+
+  Future<void> _openRelease() async {
+    final opened = await openLatestRelease();
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Tidak bisa membuka browser')),
+      );
+    }
   }
 
   Future<void> _login() async {
@@ -90,13 +118,56 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await _refreshProfile();
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Login AniList gagal')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Login AniList gagal')));
       }
     } finally {
       if (mounted) setState(() => _signingIn = false);
     }
+  }
+
+  /// Solid, muted shadcn destructive button for destructive actions.
+  ButtonStyle _destructiveStyle() => FilledButton.styleFrom(
+    backgroundColor: const Color(0xFF7F1D1D),
+    foregroundColor: const Color(0xFFFEF2F2),
+    padding: const EdgeInsets.symmetric(horizontal: 12),
+    minimumSize: const Size(0, 32),
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(3)),
+  );
+
+  Future<bool> _confirm({
+    required String title,
+    required String message,
+    required String action,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: _destructiveStyle(),
+            child: Text(action),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
+  Future<void> _confirmLogout() async {
+    final confirmed = await _confirm(
+      title: 'Keluar dari AniList?',
+      message: 'Profil dan daftar watching tidak akan ditampilkan lagi.',
+      action: 'Keluar',
+    );
+    if (confirmed && mounted) await _logout();
   }
 
   Future<void> _logout() async {
@@ -108,6 +179,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
     ScaffoldMessenger.of(context)
         .showSnackBar(const SnackBar(content: Text('Logout dari AniList')));
+  }
+
+  Future<void> _confirmClear() async {
+    final confirmed = await _confirm(
+      title: 'Hapus cache aplikasi?',
+      message: 'Gambar dan file cache akan diunduh ulang saat dibutuhkan.',
+      action: 'Hapus',
+    );
+    if (confirmed && mounted) await _clear();
   }
 
   Future<void> _clear() async {
@@ -133,34 +213,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
           physics: const AlwaysScrollableScrollPhysics(),
           children: [
             _account(),
-            if (_profile != null) ...[
-              _statusGrid(),
-              const Divider(height: 1),
-            ],
+            if (_profile != null) ...[_statusGrid(), const Divider(height: 1)],
             _fontSetting(),
             const Divider(height: 1),
-            ListTile(
-              leading: const Icon(Icons.system_update_outlined),
-              title: const Text('Cek update'),
-              subtitle: const Text('Bandingkan dengan release GitHub'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const UpdateScreen()),
-              ),
-            ),
+            _updateTile(),
             const Divider(height: 1),
             ListTile(
-              leading: const Icon(Icons.image_outlined),
-              title: const Text('Cache gambar'),
+              contentPadding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+              leading: const Icon(Icons.folder_outlined),
+              title: const Text('Cache aplikasi'),
               subtitle: Text(
                 size == null ? 'Menghitung...' : formatCacheSize(size),
               ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-              child: FilledButton(
-                onPressed: _clearing || size == null ? null : _clear,
-                child: Text(_clearing ? 'Menghapus...' : 'Hapus cache'),
+              trailing: IconButton(
+                onPressed: _clearing || size == null ? null : _confirmClear,
+                tooltip: 'Hapus cache',
+                iconSize: 24,
+                icon: _clearing
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.delete_outline),
+                style: IconButton.styleFrom(
+                  backgroundColor: const Color(0xFF7F1D1D),
+                  foregroundColor: const Color(0xFFFEF2F2),
+                  disabledBackgroundColor: const Color(0x337F1D1D),
+                  disabledForegroundColor: const Color(0x66FEF2F2),
+                  fixedSize: const Size(32, 32),
+                  padding: EdgeInsets.zero,
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                ),
               ),
             ),
           ],
@@ -271,7 +359,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 8, 4),
+          // Same 16 px gutter as the banner, so the button lines up with it.
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
           child: Row(
             children: [
               Expanded(
@@ -281,7 +370,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
-              TextButton(onPressed: _logout, child: const Text('Keluar')),
+              FilledButton(
+                onPressed: _confirmLogout,
+                style: _destructiveStyle(),
+                child: const Text('Keluar'),
+              ),
             ],
           ),
         ),
@@ -300,9 +393,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           crossAxisCount: 3,
           crossAxisSpacing: 8,
           mainAxisSpacing: 8,
-          // Fixed height so the text (and the font-size setting) cannot
-          // overflow the tile.
-          mainAxisExtent: 104,
+          // Compact height for the icon+count row and the label below.
+          mainAxisExtent: 72,
         ),
         itemCount: aniListStatusOrder.length,
         itemBuilder: (context, index) {
@@ -338,18 +430,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Icon(_statusIcons[status], size: 18, color: accent),
-              Text(
-                entries == null ? '–' : '${entries.length}',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
+              Row(
+                children: [
+                  Icon(_statusIcons[status], size: 16, color: accent),
+                  const SizedBox(width: 6),
+                  Text(
+                    entries == null ? '–' : '${entries.length}',
+                    style: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.bold),
+                  ),
+                ],
               ),
               Text(
                 label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  fontSize: 10,
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
@@ -360,22 +457,123 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _updateTile() {
+    final update = _update;
+    final available = update?.available == true;
+    final theme = Theme.of(context);
+    return ListTile(
+      key: const ValueKey('update-tile'),
+      contentPadding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+      leading: Icon(
+        available ? Icons.system_update : Icons.system_update_outlined,
+      ),
+      title: const Text('Cek update'),
+      subtitle: Text(
+        available
+            ? 'Versi ${update!.release.version} tersedia'
+            : 'Bandingkan dengan release GitHub',
+      ),
+      trailing: available
+          ? Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Update',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                const Icon(Icons.open_in_new, size: 16),
+              ],
+            )
+          : IconButton(
+              onPressed: _openUpdatePage,
+              tooltip: 'Cek update',
+              iconSize: 20,
+              icon: const Icon(Icons.chevron_right),
+              style: IconButton.styleFrom(
+                backgroundColor: _zinc100,
+                foregroundColor: const Color(0xFF09090B),
+                fixedSize: const Size(32, 32),
+                padding: EdgeInsets.zero,
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+            ),
+      // Update available: straight to the latest release on GitHub.
+      onTap: available ? _openRelease : _openUpdatePage,
+    );
+  }
+
   Widget _fontSetting() {
     return ValueListenableBuilder<double>(
       valueListenable: subtitlePx,
-      builder: (context, value, _) => ListTile(
-        leading: const Icon(Icons.subtitles_outlined),
-        title: const Text('Ukuran subtitle'),
-        trailing: Text('${value.round()} px'),
-        subtitle: Slider(
-          min: minSubtitlePx,
-          max: maxSubtitlePx,
-          divisions: (maxSubtitlePx - minSubtitlePx).round(),
-          value: value.clamp(minSubtitlePx, maxSubtitlePx),
-          label: '${value.round()} px',
-          onChanged: setSubtitlePx,
-        ),
-      ),
+      builder: (context, value, _) {
+        final theme = Theme.of(context);
+        // Same 72 px row height as the other two-line settings tiles.
+        return SizedBox(
+          key: const ValueKey('subtitle-tile'),
+          height: 72,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                const Icon(Icons.subtitles_outlined),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Ukuran subtitle',
+                              style: theme.textTheme.bodyLarge,
+                            ),
+                          ),
+                          Text(
+                            '${value.round()} px',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                      SizedBox(
+                        height: 32,
+                        child: SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            trackHeight: 2,
+                            thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 6,
+                            ),
+                            overlayShape: const RoundSliderOverlayShape(
+                              overlayRadius: 12,
+                            ),
+                            tickMarkShape: SliderTickMarkShape.noTickMark,
+                          ),
+                          child: Slider(
+                            min: minSubtitlePx,
+                            max: maxSubtitlePx,
+                            divisions: (maxSubtitlePx - minSubtitlePx).round(),
+                            value: value.clamp(minSubtitlePx, maxSubtitlePx),
+                            label: '${value.round()} px',
+                            onChanged: setSubtitlePx,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
