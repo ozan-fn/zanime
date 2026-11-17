@@ -137,6 +137,102 @@ void main() {
     });
   });
 
+  test('MAL title scoring normalizes punctuation, case and spaces', () {
+    expect(malTitleMatchScore('Frieren!', 'frieren'), 1);
+    expect(
+      malTitleMatchScore('Delicious in Dungeon', 'Dungeon Meshi'),
+      lessThan(malTitleMatchThreshold),
+    );
+    expect(
+      malTitleMatchScore('Delicious in Dungeon', 'Delicious in Dungeon'),
+      1,
+    );
+    expect(malTitleMatchScore('One Piece', 'Naruto'), 0);
+  });
+
+  test('pickMalAnimeId accepts a verified title or synonym match', () {
+    const candidates = [
+      {
+        'node': {
+          'id': 1,
+          'title': 'Dungeon Meshi',
+          'alternative_titles': {'en': 'Delicious in Dungeon'},
+        },
+      },
+      {
+        'node': {'id': 2, 'title': 'Totally Different Anime'},
+      },
+    ];
+
+    expect(pickMalAnimeId('Delicious in Dungeon', candidates), 1);
+    expect(pickMalAnimeId('dungeon   meshi!', candidates), 1);
+  });
+
+  test('pickMalAnimeId falls back to the closest similar title', () {
+    const candidates = [
+      {
+        'node': {'id': 7, 'title': 'Overlord II'},
+      },
+      {
+        'node': {'id': 9, 'title': 'Overlord'},
+      },
+    ];
+
+    // "Overlord II" shares most words but is a different entry; the exact
+    // "Overlord" must win.
+    expect(pickMalAnimeId('Overlord', candidates), 9);
+  });
+
+  test('pickMalAnimeId returns null instead of guessing an unrelated hit', () {
+    const candidates = [
+      {
+        'node': {'id': 3, 'title': 'Totally Different Anime'},
+      },
+      {
+        'node': {'id': 4, 'title': 'Another Unrelated Show'},
+      },
+    ];
+
+    expect(
+      pickMalAnimeId('Frieren: Beyond Journey\'s End', candidates),
+      isNull,
+    );
+  });
+
+  test('resolveMalAnimeId prefers the exact AniList idMal mapping', () async {
+    SharedPreferences.setMockInitialValues({});
+    var calls = 0;
+    Future<int?> lookup(int aniListId) async {
+      calls++;
+      return aniListId == 21 ? 313 : null;
+    }
+
+    expect(
+      await resolveMalAnimeId('Some Anime', aniListId: 21, malIdLookup: lookup),
+      313,
+    );
+    // The mapping is cached, so the lookup runs only once.
+    expect(
+      await resolveMalAnimeId('Some Anime', aniListId: 21, malIdLookup: lookup),
+      313,
+    );
+    expect(calls, 1);
+  });
+
+  test('resolveMalAnimeId falls back to titles without an idMal', () async {
+    SharedPreferences.setMockInitialValues({});
+
+    // No mapping + no network in tests → null instead of a guessed id.
+    expect(
+      await resolveMalAnimeId(
+        'Unknown Anime',
+        aniListId: 22,
+        malIdLookup: (_) async => null,
+      ),
+      isNull,
+    );
+  });
+
   test('the active list service is restored from storage', () async {
     expect(await loadActiveListService(), ListService.anilist);
 

@@ -205,8 +205,10 @@ merah). Token disimpan di `shared_preferences`.
 - Tab **Watching**, status di halaman tonton, simpan, dan hapus list semuanya
   mengikuti layanan aktif.
 - AniList memakai **AniList ID** dari miruro; MyAnimeList tidak memakai ID itu,
-  jadi anime dicari lewat judul di MAL lalu ID hasilnya di-cache supaya tidak
-  mencari ulang.
+  jadi anime dicari lewat judul di MAL. Hanya hasil yang judulnya terverifikasi
+  mirip (skor kemiripan ≥ 0.55, termasuk judul alternatif) yang dipakai dan
+  di-cache; hitungan pertama tidak pernah ditebak, jadi status tidak pernah
+  tertulis ke entry MAL yang salah.
 - Daftar MAL mengambil field anime (`num_episodes`, `media_type`,
   `start_season`) di level atas request, bukan di dalam `node{...}`, supaya
   total episode, format, dan tahun terisi seperti AniList. Episode `0` dari MAL

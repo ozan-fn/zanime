@@ -21,7 +21,26 @@ const _callbackScheme = 'zanime';
 const _tokenKey = 'mal_token';
 const _refreshKey = 'mal_refresh_token';
 const _expiryKey = 'mal_expiry_ms';
-const _idCachePrefix = 'mal_anime_id_';
+// v2: older caches also stored first-guess ids that were never verified.
+const _idCachePrefix = 'mal_anime_id_v2_';
+
+/// Minimum title similarity (Dice on word sets) to accept a MAL search hit.
+const malTitleMatchThreshold = 0.55;
+
+/// Dice coefficient of the normalized word sets of two titles.
+double malTitleMatchScore(String a, String b) {
+  Set<String> tokens(String value) =>
+      _normalizeTitle(value)
+          .split(RegExp(r'\s+'))
+          .where((token) => token.isNotEmpty)
+          .toSet();
+  final left = tokens(a);
+  final right = tokens(b);
+  if (left.isEmpty || right.isEmpty) return 0;
+  if (left.length == right.length && left.containsAll(right)) return 1;
+  final overlap = left.intersection(right).length;
+  return 2 * overlap / (left.length + right.length);
+}
 
 /// Extracts `code` from the OAuth callback URL.
 String? parseMalAuthCode(String resultUrl) {
@@ -287,8 +306,60 @@ Future<List<WatchingAnime>?> fetchMalWatching() async {
 String _normalizeTitle(String value) =>
     value.toLowerCase().replaceAll(RegExp('[^a-z0-9]+'), ' ').trim();
 
+/// All title strings of a MAL search node (main + alternative titles).
+List<String> malNodeTitles(Map<String, dynamic> node) {
+  final titles = <String>[(node['title'] as String?) ?? ''];
+  final alternatives = node['alternative_titles'] as Map?;
+  if (alternatives != null) {
+    for (final value in alternatives.values) {
+      if (value is String) {
+        titles.add(value);
+      } else if (value is List) {
+        titles.addAll(value.whereType<String>());
+      }
+    }
+  }
+  return titles;
+}
+
+/// Picks the MAL id whose title best matches [title], or null when no
+/// candidate is close enough. Never guesses: an unrelated first hit returns
+/// null instead of pointing the status at the wrong MAL entry.
+int? pickMalAnimeId(String title, Iterable<Map<String, dynamic>> candidates) {
+  int? best;
+  var bestScore = 0.0;
+  for (final item in candidates) {
+    final node = item['node'] as Map<String, dynamic>?;
+    final id = (node?['id'] as num?)?.toInt();
+    if (node == null || id == null) continue;
+    for (final candidate in malNodeTitles(node)) {
+      final score = malTitleMatchScore(title, candidate);
+      // An exact normalized match wins immediately.
+      if (score >= 1) return id;
+      if (score > bestScore) {
+        best = id;
+        bestScore = score;
+      }
+    }
+  }
+  if (best == null || bestScore < malTitleMatchThreshold) return null;
+  return best;
+}
+
+/// Looks up the MAL id from the AniList id; injectable in tests.
+typedef MalIdLookup = Future<int?> Function(int aniListId);
+
 /// Finds the MAL anime id for a Miruro title, cached by AniList id/title.
-Future<int?> resolveMalAnimeId(String title, {int? aniListId}) async {
+///
+/// AniList exposes the exact `idMal` mapping, so that is tried first. Only
+/// when it is missing does the title search run — and even then just a
+/// verified match is cached; the first search hit is never guessed, so a
+/// status is never written to the wrong MAL entry.
+Future<int?> resolveMalAnimeId(
+  String title, {
+  int? aniListId,
+  MalIdLookup? malIdLookup,
+}) async {
   final prefs = await SharedPreferences.getInstance();
   final cacheKey = aniListId != null
       ? '$_idCachePrefix$aniListId'
@@ -296,38 +367,30 @@ Future<int?> resolveMalAnimeId(String title, {int? aniListId}) async {
   final cached = prefs.getInt(cacheKey);
   if (cached != null && cached > 0) return cached;
 
-  final root = await _malGet('/v2/anime', {
-    'q': title,
-    'limit': '10',
-    'fields': 'id,title,alternative_titles',
-  });
+  // Exact mapping from AniList — no title matching needed.
+  if (aniListId != null) {
+    final malId = await (malIdLookup ?? fetchAniListMalId)(aniListId);
+    if (malId != null && malId > 0) {
+      await prefs.setInt(cacheKey, malId);
+      return malId;
+    }
+  }
+
+  final Map<String, dynamic>? root;
+  try {
+    root = await _malGet('/v2/anime', {
+      'q': title,
+      'limit': '10',
+      'fields': 'id,title,alternative_titles',
+      'nsfw': 'true',
+    });
+  } catch (_) {
+    return null;
+  }
   if (root == null) return null;
   final candidates = ((root['data'] as List?) ?? const [])
       .cast<Map<String, dynamic>>();
-  final wanted = _normalizeTitle(title);
-  int? best;
-  for (final item in candidates) {
-    final node = item['node'] as Map<String, dynamic>?;
-    if (node == null) continue;
-    final id = (node['id'] as num?)?.toInt();
-    if (id == null) continue;
-    final titles = <String>[(node['title'] as String?) ?? ''];
-    final alternatives = node['alternative_titles'] as Map?;
-    if (alternatives != null) {
-      for (final value in alternatives.values) {
-        if (value is String) {
-          titles.add(value);
-        } else if (value is List) {
-          titles.addAll(value.whereType<String>());
-        }
-      }
-    }
-    best ??= id;
-    if (titles.any((candidate) => _normalizeTitle(candidate) == wanted)) {
-      best = id;
-      break;
-    }
-  }
+  final best = pickMalAnimeId(title, candidates);
   if (best != null) await prefs.setInt(cacheKey, best);
   return best;
 }

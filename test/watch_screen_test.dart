@@ -547,4 +547,43 @@ void main() {
     expect(find.text('MyAnimeList status'), findsOneWidget);
     expect(find.text('AniList status'), findsNothing);
   });
+
+  testWidgets('Watch screen reports an anime missing from the list service', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({'list_service': 'myanimelist'});
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final base = _data(1);
+    final data = WatchData(
+      anime: base.anime,
+      episodes: base.episodes.take(3).toList(),
+      servers: const [],
+      currentEpisode: 1,
+      aniListId: null,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: WatchScreen(
+          animeId: 'x',
+          initialData: data,
+          loader: (_, _) async => data,
+          statusLoader: (_) async => null,
+          saver: (_, _) async => false,
+          remover: (_) async => false,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Add to MyAnimeList'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Watching'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Anime tidak tersedia di MyAnimeList'), findsOneWidget);
+  });
 }

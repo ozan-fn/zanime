@@ -354,6 +354,29 @@ Future<bool> removeAniListEntry(int mediaId) async {
   }
 }
 
+/// The MyAnimeList id of an AniList anime via public GraphQL (no login).
+/// AniList keeps this mapping itself, so it is exact — no title guessing.
+Future<int?> fetchAniListMalId(int aniListId) async {
+  try {
+    final response = await sharedHttpClient.post(
+      Uri.parse('https://graphql.anilist.co'),
+      headers: {'content-type': 'application/json'},
+      body: jsonEncode({
+        'query': 'query (\$id: Int) { Media(id: \$id, type: ANIME) { idMal } }',
+        'variables': {'id': aniListId},
+      }),
+    );
+    if (response.statusCode != 200) return null;
+    final data = jsonDecode(response.body) as Map<String, dynamic>?;
+    final media =
+        ((data?['data'] as Map<String, dynamic>?)?['Media']
+            as Map<String, dynamic>?);
+    return (media?['idMal'] as num?)?.toInt();
+  } catch (_) {
+    return null;
+  }
+}
+
 /// Returns the decoded GraphQL body; null when the token was rejected.
 Future<Map<String, dynamic>?> _aniListQuery(
   String token,

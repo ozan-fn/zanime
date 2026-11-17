@@ -255,13 +255,13 @@ class _WatchScreenState extends State<WatchScreen> {
     final saver = widget.saver;
     final saved = unmark
         ? remover != null
-              ? await remover(data.aniListId!)
+              ? await remover(data.aniListId ?? 0)
               : await removeActiveEntry(
                   title: data.anime.title,
                   aniListId: data.aniListId,
                 )
         : saver != null
-        ? await saver(data.aniListId!, status)
+        ? await saver(data.aniListId ?? 0, status)
         : await saveActiveEntry(
             title: data.anime.title,
             status: status,
@@ -273,7 +273,7 @@ class _WatchScreenState extends State<WatchScreen> {
       SnackBar(
         content: Text(
           !saved
-              ? 'Login di Profile dulu'
+              ? 'Anime tidak tersedia di $_serviceLabel'
               : unmark
               ? 'Dihapus dari list'
               : 'Status: ${aniListStatusLabels[status]}',
