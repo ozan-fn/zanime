@@ -634,10 +634,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Terkait'), findsOneWidget);
-    expect(find.text('Prequel · ★ 80 · TV · 2015'), findsOneWidget);
+    expect(find.text('Prequel · ★ 8.0 · TV · 2015'), findsOneWidget);
     expect(find.text('Rekomendasi'), findsOneWidget);
     expect(find.text('Cowboy Bebop'), findsOneWidget);
-    expect(find.text('★ 86 · TV · 1998 · 26 eps'), findsOneWidget);
+    expect(find.text('★ 8.6 · TV · 1998 · 26 eps'), findsOneWidget);
     final horizontal = tester
         .widgetList<ListView>(find.byType(ListView))
         .where((list) => list.scrollDirection == Axis.horizontal);

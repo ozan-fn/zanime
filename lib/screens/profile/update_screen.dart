@@ -1,14 +1,12 @@
 import 'dart:async';
 
-import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../services/apk_download.dart';
 import '../../services/app_update.dart';
 
-/// Update check as a settings list page: current version, latest release,
-/// release notes and an in-app APK download with pause/cancel/install.
+/// Update check as a settings list page: current version, latest release and
+/// an in-app APK download with pause/cancel/install.
 class UpdateScreen extends StatefulWidget {
   const UpdateScreen({
     super.key,
@@ -178,28 +176,6 @@ class _UpdateScreenState extends State<UpdateScreen> {
                 title: const Text('Rilis'),
                 subtitle: Text(release.name),
               ),
-            if (release.notes.isNotEmpty) ...[
-              const Padding(
-                padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-                child: Row(
-                  children: [
-                    Icon(Icons.notes_outlined, size: 18),
-                    SizedBox(width: 8),
-                    Text('Catatan rilis'),
-                  ],
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(4, 0, 16, 24),
-                // Markdown, full length: the page itself scrolls.
-                child: MarkdownBody(
-                  data: release.notes,
-                  onTapLink: (_, href, _) {
-                    if (href != null) launchUrl(Uri.parse(href));
-                  },
-                ),
-              ),
-            ],
           ],
         ],
       ),

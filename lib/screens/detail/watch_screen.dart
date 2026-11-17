@@ -88,6 +88,9 @@ class _WatchScreenState extends State<WatchScreen> {
   Future<List<AnimeRecommendation>>? _recommendations;
   Future<List<RelatedAnime>>? _related;
 
+  /// Set while resolving a tapped card, so a double tap cannot open two pages.
+  bool _openingAnime = false;
+
   /// Latest loaded data/server, captured for the floating player handoff.
   WatchData? _data;
   WatchServer? _server;
@@ -713,7 +716,7 @@ class _WatchScreenState extends State<WatchScreen> {
         imageUrl: item.imageUrl,
         meta: [
           item.relationLabel,
-          if (item.score != null) '★ ${item.score}',
+          if (item.score != null) '★ ${formatAnimeScore(item.score)}',
           ?item.format,
           if (item.year != null) '${item.year}',
         ].join(' · '),
@@ -737,7 +740,7 @@ class _WatchScreenState extends State<WatchScreen> {
         title: item.title,
         imageUrl: item.imageUrl,
         meta: [
-          if (item.score != null) '★ ${item.score}',
+          if (item.score != null) '★ ${formatAnimeScore(item.score)}',
           ?item.format,
           if (item.year != null) '${item.year}',
           if (item.episodes != null) '${item.episodes} eps',
@@ -851,6 +854,8 @@ class _WatchScreenState extends State<WatchScreen> {
   }
 
   Future<void> _openAnime(String title, int aniListId) async {
+    if (_openingAnime) return;
+    _openingAnime = true;
     String? animeId;
     try {
       animeId = await resolveMiruroAnimeId(title, aniListId);
@@ -860,13 +865,21 @@ class _WatchScreenState extends State<WatchScreen> {
     if (!mounted) return;
     final id = animeId;
     if (id == null) {
+      _openingAnime = false;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Anime tidak tersedia di Miruro')),
       );
       return;
     }
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute<void>(builder: (_) => WatchScreen(animeId: id)));
+    // Pause before the transition: the old page is still mounted while the
+    // new route animates, so both players would otherwise play at once.
+    final session = _session;
+    if (session != null) unawaited(session.player.pause());
+    // Replace instead of push. Stacking watch pages keeps one libmpv player
+    // and one video controller alive per page: overlapping audio and a steady
+    // memory leak. Replacing disposes the current page and its session.
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(builder: (_) => WatchScreen(animeId: id)),
+    );
   }
 }

@@ -44,7 +44,7 @@ void main() {
       expect(banners.first.title, 'Sousou no Frieren');
       expect(banners.first.imageUrl, 'https://img/banner.jpg');
       expect(banners.first.aired, 7);
-      expect(banners.first.meta, '★ 87 · Adventure · Drama · 2023 · 7/28 eps');
+      expect(banners.first.meta, '★ 8.7 · Adventure · Drama · 2023 · 7/28 eps');
       expect(banners.last.title, 'Dungeon Meshi');
       expect(banners.last.imageUrl, 'https://img/cover2.jpg');
       expect(banners.last.aired, 24, reason: 'no next airing episode');
@@ -80,7 +80,7 @@ void main() {
       expect(results.first.title, 'Frieren');
       expect(results.first.animeId, 'id1');
       expect(results.first.aniListId, 154587);
-      expect(results.first.subtitle, 'TV · 2023 · 28 eps · ★ 91');
+      expect(results.first.subtitle, 'TV · 2023 · 28 eps · ★ 9.1');
       expect(results.first.url, 'https://miruro.cx/watch/id1');
       expect(results.last.title, 'Only Romaji');
       expect(results.last.subtitle, isEmpty);
@@ -206,7 +206,7 @@ void main() {
 
       expect(data.anime.title, 'Sousou no Frieren');
       expect(data.anime.studios, ['Madhouse'], reason: 'only main studios');
-      expect(data.anime.meta, '★ 91 · TV · 28 eps · 24 min');
+      expect(data.anime.meta, '★ 9.1 · TV · 28 eps · 24 min');
       expect(data.anime.statusLine, 'Finished · Madhouse');
       expect(data.anime.seasonLabel, 'Fall 2023');
       expect(data.episodes, hasLength(2));
@@ -392,7 +392,7 @@ void main() {
               'edges': [
                 {
                   'relationType': 'PREQUEL',
-                  'media': {
+                  'node': {
                     'id': 100,
                     'type': 'ANIME',
                     'title': {'english': 'Season 1'},
@@ -405,7 +405,7 @@ void main() {
                 },
                 {
                   'relationType': 'SIDE_STORY',
-                  'media': {
+                  'node': {
                     'id': 101,
                     'type': 'ANIME',
                     'title': {'romaji': 'Spin-off'},
@@ -414,7 +414,7 @@ void main() {
                 },
                 {
                   'relationType': 'ADAPTATION',
-                  'media': {
+                  'node': {
                     'id': 102,
                     'type': 'MANGA',
                     'title': {'romaji': 'The Manga'},
@@ -435,6 +435,51 @@ void main() {
       expect(items.first.relationLabel, 'Prequel');
       expect(items.first.score, 80);
       expect(items.last.relationLabel, 'Side story');
+    });
+
+    test('puts prequels and sequels first and drops duplicates', () {
+      final body = jsonEncode({
+        'data': {
+          'Media': {
+            'relations': {
+              'edges': [
+                {
+                  'relationType': 'SIDE_STORY',
+                  'node': {
+                    'id': 200,
+                    'type': 'ANIME',
+                    'title': {'english': 'Special'},
+                    'coverImage': {'extraLarge': 'https://img/sp.jpg'},
+                  },
+                },
+                {
+                  'relationType': 'SEQUEL',
+                  'node': {
+                    'id': 201,
+                    'type': 'ANIME',
+                    'title': {'english': 'Season 2'},
+                    'coverImage': {'extraLarge': 'https://img/s2.jpg'},
+                  },
+                },
+                {
+                  // Legacy payload shape: same media, must not repeat.
+                  'relationType': 'SEQUEL',
+                  'media': {
+                    'id': 201,
+                    'type': 'ANIME',
+                    'title': {'english': 'Season 2'},
+                    'coverImage': {'extraLarge': 'https://img/s2.jpg'},
+                  },
+                },
+              ],
+            },
+          },
+        },
+      });
+
+      final items = parseRelated(body);
+
+      expect(items.map((item) => item.relationLabel), ['Sequel', 'Side story']);
     });
 
     test('returns empty when relations are missing', () {

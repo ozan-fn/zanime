@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../models/models.dart';
 import '../../services/anilist_auth.dart';
 import '../../services/list_service.dart';
 import '../detail/watch_screen.dart';
@@ -129,7 +130,8 @@ class _AniListListScreenState extends State<AniListListScreen> {
                 itemBuilder: (context, index) {
                   final anime = _entries[index];
                   final meta = [
-                    if (anime.score != null) '★ ${anime.score}',
+                    if (anime.score != null)
+                      '★ ${formatAnimeScore(anime.score)}',
                     ?anime.format,
                     if (anime.year != null) '${anime.year}',
                     '${anime.progress}/${anime.totalEpisodes ?? '?'}',

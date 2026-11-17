@@ -1,3 +1,7 @@
+/// AniList/MAL average score (0–100) shown as one decimal, e.g. 87 → `8.7`.
+String formatAnimeScore(int? score) =>
+    score == null ? '' : (score / 10).toStringAsFixed(1);
+
 class AnimeBannerData {
   const AnimeBannerData({
     required this.title,
@@ -30,7 +34,7 @@ class AnimeBannerData {
   final int? score;
 
   String get meta => [
-    if (score != null) '★ $score',
+    if (score != null) '★ ${formatAnimeScore(score)}',
     ...genres,
     if (year != null) '$year',
     if (episodes != null) '${aired ?? 0}/$episodes eps',
@@ -50,6 +54,7 @@ class LatestEpisode {
     this.subCount,
     this.dubCount,
     this.score,
+    this.aniListId,
   });
 
   factory LatestEpisode.fromJson(Map<String, dynamic> json) {
@@ -65,6 +70,7 @@ class LatestEpisode {
       subCount: json['subCount'] as int?,
       dubCount: json['dubCount'] as int?,
       score: json['score'] as int?,
+      aniListId: json['aniListId'] as int?,
     );
   }
 
@@ -79,6 +85,24 @@ class LatestEpisode {
   final int? subCount;
   final int? dubCount;
   final int? score;
+
+  /// AniList media id from Miruro's `externalIds`, used to fetch the rating.
+  final int? aniListId;
+
+  LatestEpisode copyWith({int? score}) => LatestEpisode(
+    animeId: animeId,
+    title: title,
+    romaji: romaji,
+    imageUrl: imageUrl,
+    episode: episode,
+    airedAt: airedAt,
+    format: format,
+    year: year,
+    subCount: subCount,
+    dubCount: dubCount,
+    score: score ?? this.score,
+    aniListId: aniListId,
+  );
 
   String get url => 'https://miruro.cx/watch/$animeId?ep=$episode';
 }
@@ -123,7 +147,7 @@ class SearchResult {
     ?format,
     if (year != null) '$year',
     if (episodes != null) '$episodes eps',
-    if (score != null) '★ $score',
+    if (score != null) '★ ${formatAnimeScore(score)}',
   ].join(' · ');
 
   String get url => 'https://miruro.cx/watch/$animeId';
@@ -188,7 +212,7 @@ class WatchAnime {
   ].join();
 
   String get meta => [
-    if (score != null) '★ $score',
+    if (score != null) '★ ${formatAnimeScore(score)}',
     if (format.isNotEmpty) format,
     if (episodes != null) '$episodes eps',
     if (duration != null) '$duration min',

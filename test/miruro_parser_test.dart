@@ -7,7 +7,8 @@ void main() {
         '<html><script>\n'
         'const a={}, b={};\n'
         'a.english="Frieren"; a.romaji="Sousou no Frieren"; b.sub=12; b.dub=3;\n'
-        'raw:{latest:[{animeId:"id1",episode:5,coverUrl:"https://img/1.jpg",'
+        'raw:{latest:[{animeId:"id1",externalIds:{anilist:["154587"]},'
+        'episode:5,coverUrl:"https://img/1.jpg",'
         'airingAt:1700000000,format:"TV",seasonYear:2024,title:a,episodeCounts:b},'
         '{animeId:"id2",episode:2,coverUrl:"https://img/2.jpg",'
         'airingAt:1700000100,format:"ONA",seasonYear:2023,'
@@ -23,6 +24,7 @@ void main() {
     expect(episodes.first.episode, 5);
     expect(episodes.first.subCount, 12);
     expect(episodes.first.dubCount, 3);
+    expect(episodes.first.aniListId, 154587);
     expect(
       episodes.first.airedAt,
       DateTime.fromMillisecondsSinceEpoch(1700000000 * 1000, isUtc: true),

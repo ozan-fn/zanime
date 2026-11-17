@@ -2,6 +2,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:test1/models/models.dart';
 
 void main() {
+  test('scores are shown with one decimal', () {
+    expect(formatAnimeScore(87), '8.7');
+    expect(formatAnimeScore(80), '8.0');
+    expect(formatAnimeScore(null), '');
+  });
+
   test('WatchData parses the server JSON contract', () {
     final data = WatchData.fromJson({
       'anime': {
@@ -63,6 +69,7 @@ void main() {
     });
 
     expect(episode.airedAt, DateTime.utc(2024, 1, 4));
+    expect(episode.copyWith(score: 88).score, 88);
     expect(episode.url, 'https://miruro.cx/watch/id1?ep=5');
   });
 }

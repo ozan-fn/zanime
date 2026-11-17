@@ -135,7 +135,7 @@ class _EpisodeCard extends StatelessWidget {
           ),
           Text(
             [
-              if (item.score != null) '★ ${item.score}',
+              if (item.score != null) '★ ${formatAnimeScore(item.score)}',
               if (item.subCount != null) '${item.subCount} sub',
               if (item.dubCount != null) '${item.dubCount} dub',
               item.format,

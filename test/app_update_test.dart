@@ -121,7 +121,8 @@ void main() {
     expect(find.text('Versi 1.0.1 → 1.1.0'), findsOneWidget);
     expect(find.text('Unduh update'), findsOneWidget);
     expect(find.text('Buka halaman rilis'), findsNothing);
-    expect(find.text('Catatan rilis'), findsOneWidget);
+    expect(find.text('Catatan rilis'), findsNothing);
+    expect(find.text('Full Changelog'), findsNothing);
   });
 
   testWidgets('UpdateScreen offers pause and cancel while downloading', (

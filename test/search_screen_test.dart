@@ -33,7 +33,7 @@ void main() {
     expect(result.animeId, 'wHWR9m4VQ8GLW4GP9_ZTblQXn9f0phB8');
     expect(result.title, 'Frieren: Beyond Journey’s End');
     expect(result.imageUrl, startsWith('https://'));
-    expect(result.subtitle, 'TV · 2023 · 28 eps · ★ 91');
+    expect(result.subtitle, 'TV · 2023 · 28 eps · ★ 9.1');
   });
 
   testWidgets('SearchScreen autosuggests after the debounce', (tester) async {
@@ -58,7 +58,7 @@ void main() {
 
     expect(queries, ['frieren']);
     expect(find.text('Frieren: Beyond Journey’s End'), findsOneWidget);
-    expect(find.text('TV · 2023 · 28 eps · ★ 91'), findsOneWidget);
+    expect(find.text('TV · 2023 · 28 eps · ★ 9.1'), findsOneWidget);
   });
 
   testWidgets('SearchScreen shows the empty, error and no-result states', (

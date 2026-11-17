@@ -122,9 +122,20 @@ List<AnimeRecommendation> parseRecommendations(String body) {
 
 const _relatedQuery =
     'query(\$id: Int) { Media(id: \$id, type: ANIME) { relations { edges { '
-    'relationType media { id type title { english romaji native } '
+    'relationType node { id type title { english romaji native } '
     'coverImage { extraLarge } format episodes seasonYear averageScore } '
     '} } } }';
+
+/// Most useful relation kinds first; the rest keep their API order.
+const _relationPriority = {
+  'PREQUEL': 0,
+  'SEQUEL': 1,
+  'PARENT': 2,
+  'SIDE_STORY': 3,
+  'SPIN_OFF': 4,
+  'ALTERNATIVE': 5,
+  'SUMMARY': 6,
+};
 
 /// AniList relations (prequel, sequel, side story, ...) for [aniListId].
 Future<List<RelatedAnime>> fetchRelated(int aniListId) async {
@@ -152,8 +163,10 @@ List<RelatedAnime> parseRelated(String body) {
           ?.cast<Map<String, dynamic>>() ??
       const [];
   final items = <RelatedAnime>[];
+  final seen = <int>{};
   for (final edge in edges) {
-    final item = edge['media'] as Map<String, dynamic>?;
+    // AniList names the related media `node`; `media` is kept for old payloads.
+    final item = (edge['node'] ?? edge['media']) as Map<String, dynamic>?;
     if (item == null || item['type'] != 'ANIME') continue;
     final titles = item['title'] as Map<String, dynamic>? ?? const {};
     final cover = item['coverImage'] as Map<String, dynamic>? ?? const {};
@@ -161,7 +174,11 @@ List<RelatedAnime> parseRelated(String body) {
     final title = (titles['english'] ?? titles['romaji'] as String?) ?? '';
     final image = (cover['extraLarge'] as String?) ?? '';
     final relation = (edge['relationType'] as String?) ?? '';
-    if (id == null || title.isEmpty || image.isEmpty || relation.isEmpty) {
+    if (id == null ||
+        title.isEmpty ||
+        image.isEmpty ||
+        relation.isEmpty ||
+        !seen.add(id)) {
       continue;
     }
     items.add(
@@ -177,7 +194,44 @@ List<RelatedAnime> parseRelated(String body) {
       ),
     );
   }
+  items.sort(
+    (a, b) => (_relationPriority[a.relationType] ?? 99).compareTo(
+      _relationPriority[b.relationType] ?? 99,
+    ),
+  );
   return items;
+}
+
+const _scoresQuery =
+    'query(\$ids: [Int]) { Page(page: 1, perPage: 50) { '
+    'media(id_in: \$ids, type: ANIME) { id averageScore } } }';
+
+/// Average scores (0–100) for [ids], keyed by AniList media id.
+Future<Map<int, int>> fetchAniListScores(List<int> ids) async {
+  final unique = ids.toSet().take(50).toList();
+  if (unique.isEmpty) return const {};
+  final response = await _client.post(
+    Uri.parse('https://graphql.anilist.co'),
+    headers: {'content-type': 'application/json'},
+    body: jsonEncode({
+      'query': _scoresQuery,
+      'variables': {'ids': unique},
+    }),
+  );
+  if (response.statusCode != 200) return const {};
+  final root = jsonDecode(response.body) as Map<String, dynamic>;
+  final media =
+      (((root['data'] as Map<String, dynamic>?)?['Page']
+                  as Map<String, dynamic>?)?['media']
+              as List?)
+          ?.cast<Map<String, dynamic>>() ??
+      const [];
+  return {
+    for (final item in media)
+      if ((item['id'] as num?)?.toInt() case final id?)
+        if (item['averageScore'] != null)
+          id: (item['averageScore'] as num).toInt(),
+  };
 }
 
 /// Same array and order as the "Latest Episodes" list on miruro.cx.
@@ -189,7 +243,21 @@ Future<List<LatestEpisode>> fetchLatestEpisodes() async {
   if (response.statusCode != 200) {
     throw http.ClientException('Miruro HTTP ${response.statusCode}');
   }
-  return parseLatestEpisodes(response.body);
+  final items = parseLatestEpisodes(response.body);
+  final ids = [for (final item in items) ?item.aniListId];
+  if (ids.isEmpty) return items;
+  // Miruro's latest payload has no rating; fill it from AniList. A failure
+  // must not hide the episodes, so keep the parsed list as-is.
+  try {
+    final scores = await fetchAniListScores(ids);
+    if (scores.isEmpty) return items;
+    return [
+      for (final item in items)
+        item.copyWith(score: scores[item.aniListId] ?? item.score),
+    ];
+  } catch (_) {
+    return items;
+  }
 }
 
 /// Parses the serialized `raw:{latest:[...]}` array out of the miruro home HTML.
@@ -258,6 +326,11 @@ LatestEpisode? _episode(
   final score = int.tryParse(
     RegExp(r'averageScore:(\d+)').firstMatch(chunk)?[1] ?? '',
   );
+  // Miruro omits scores from the latest array; keep its AniList id so the
+  // caller can fill them in with one AniList request.
+  final aniListId = int.tryParse(
+    RegExp(r'anilist:\["(\d+)"\]').firstMatch(chunk)?[1] ?? '',
+  );
   final titleToken = RegExp(r'title:(\{[^{}]*\}|[A-Za-z0-9_$]+)')
       .firstMatch(chunk)?[1];
   final countToken = RegExp(r'episodeCounts:(\{[^{}]*\}|[A-Za-z0-9_$]+)')
@@ -284,6 +357,7 @@ LatestEpisode? _episode(
     subCount: _count(countToken, 'sub', sub),
     dubCount: _count(countToken, 'dub', dub),
     score: score,
+    aniListId: aniListId,
   );
 }
 

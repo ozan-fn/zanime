@@ -15,10 +15,11 @@ concurrency:
 jobs:
   apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # tags are needed to derive the next build number
+          fetch-tags: true # tag dibutuhkan untuk menentukan build number berikutnya
 
       - name: Next version from pubspec.yaml
         id: version
@@ -28,29 +29,22 @@ jobs:
 
           text = open("pubspec.yaml", encoding="utf-8").read()
           m = re.search(
-              r"^version:\s*(\d+)\.(\d+)\.(\d+)(?:\+(\d+))?\s*$",
-              text,
-              re.M,
+              r"^version:\s*(\d+)\.(\d+)\.(\d+)(?:\+(\d+))?\s*$", text, re.M
           )
           if not m:
               sys.exit("version: major.minor.patch[+build] not found in pubspec.yaml")
-          core = tuple(int(part) for part in m.group(1, 2, 3))
+          core = tuple(map(int, m.groups()[:3]))
           build = int(m.group(4) or 1)
 
           tags = subprocess.run(
-              ["git", "tag", "--list", "v*", "--sort=-v:refname"],
+              ["git", "tag", "--list", "v*"],
               capture_output=True, text=True, check=True,
           ).stdout.split()
-          latest_core, latest_build = (0, 0, 0), 0
-          for tag in tags:
-              t = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)(?:\+(\d+))?", tag)
-              if not t:
-                  continue
-              tcore = tuple(int(part) for part in t.group(1, 2, 3))
-              if tcore > latest_core or (
-                  tcore == latest_core and int(t.group(4) or 0) > latest_build
-              ):
-                  latest_core, latest_build = tcore, int(t.group(4) or 0)
+          matches = (re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)(?:\+(\d+))?", t) for t in tags)
+          latest_core, latest_build = max(
+              ((tuple(map(int, t.groups()[:3])), int(t.group(4) or 0)) for t in matches if t),
+              default=((0, 0, 0), 0),
+          )
 
           if core < latest_core:
               sys.exit(
@@ -58,8 +52,7 @@ jobs:
                   f"latest tag {'.'.join(map(str, latest_core))}"
               )
 
-          # versionCode must keep growing for upgrades, even when only the
-          # major/minor/patch in pubspec.yaml changed.
+          # versionCode harus selalu naik agar update bisa terpasang.
           build = max(build, latest_build + 1)
           name = ".".join(map(str, core))
           print(f"name={name}")
@@ -76,66 +69,66 @@ jobs:
         with:
           channel: stable
           cache: true
-          pub-cache: true
 
-      # Keys follow the resolved toolchain versions, so an upgrade gets a fresh
-      # cache instead of reusing stale NDK/libmpv files. Flutter's default
-      # `ndkVersion` lives in its Gradle plugin; if that moves, the NDK cache is
-      # skipped and the SDK manager just installs it as before.
-      # https://github.com/actions/cache#creating-a-cache-key
-      - name: Get toolchain versions
+      # Deteksi otomatis: path SDK dari runner, versi NDK dari build.gradle
+      # aplikasi, atau default Flutter jika tidak diset di sana.
+      - name: Detect toolchain
         id: toolchain
         run: |
-          echo "flutter=$(flutter --version --machine | jq -r .frameworkVersion)" >> "$GITHUB_OUTPUT"
-          flutter_root="${FLUTTER_ROOT:-$(dirname "$(dirname "$(command -v flutter)")")}"
-          ndk=$(sed -n 's/.*val ndkVersion: String = "\([0-9.]*\)".*/\1/p' \
-            "$flutter_root/packages/flutter_tools/gradle/src/main/kotlin/FlutterExtension.kt" | head -1)
+          ndk=$(grep -rhoE 'ndkVersion[ =]+"[0-9.]+"' android/app/build.gradle* 2>/dev/null \
+            | grep -oE '[0-9][0-9.]+' | head -1 || true)
+          if [ -z "$ndk" ]; then
+            flutter_root="${FLUTTER_ROOT:-$(dirname "$(dirname "$(command -v flutter)")")}"
+            ndk=$(sed -n 's/.*ndkVersion: String = "\([0-9.]*\)".*/\1/p' \
+              "$flutter_root/packages/flutter_tools/gradle/src/main/kotlin/FlutterExtension.kt" \
+              | head -1 || true)
+          fi
+          echo "sdk=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" >> "$GITHUB_OUTPUT"
           echo "ndk=$ndk" >> "$GITHUB_OUTPUT"
+          echo "Detected NDK: ${ndk:-<none>}"
 
-      # Caches Gradle user home, wrapper distribution, and build caches.
+      # Cache Gradle user home, wrapper, dan build cache.
       - uses: gradle/actions/setup-gradle@v6
 
-      # NDK/CMake are installed by the Android SDK manager, outside Gradle's
-      # caches, and would otherwise be re-downloaded on every fresh runner.
+      # NDK & CMake dipasang oleh Android SDK manager (di luar cache Gradle),
+      # jadi tanpa cache ini akan diunduh ulang di setiap run.
       - uses: actions/cache@v6
         if: steps.toolchain.outputs.ndk != ''
         with:
-          path: |
-            ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ steps.toolchain.outputs.ndk }}
-            ${{ env.ANDROID_SDK_ROOT }}/cmake
-          key: android-native-${{ runner.os }}-${{ steps.toolchain.outputs.ndk }}-flutter-${{ steps.toolchain.outputs.flutter }}
+          path: ${{ steps.toolchain.outputs.sdk }}/ndk/${{ steps.toolchain.outputs.ndk }}
+          key: android-ndk-${{ runner.os }}-${{ steps.toolchain.outputs.ndk }}
 
-      # media_kit's plugin downloads its libmpv jars into the module build dir;
-      # `flutter clean` or a fresh runner throws that away.
+      - uses: actions/cache@v6
+        with:
+          path: ${{ steps.toolchain.outputs.sdk }}/cmake
+          key: android-cmake-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: android-cmake-${{ runner.os }}-
+
+      # Plugin media_kit mengunduh jar libmpv ke build dir; cache agar tidak
+      # diunduh ulang di runner baru.
       - uses: actions/cache@v6
         with:
           path: build/media_kit_libs_android_video
           key: media-kit-libs-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
 
-      # The release keystore arrives as one repo secret (never committed): a
-      # base64 zip holding key.properties + app/zanime-release.keystore, so
-      # every build signs with the same key and updates install cleanly.
-      # Without the secret the build falls back to debug signing.
+      # Keystore datang dari satu secret (zip base64 berisi key.properties dan
+      # app/zanime-release.keystore). Tanpa secret, build memakai debug signing.
       - name: Restore release keystore
-        if: env.KEYSTORE_B64_ZIP != ''
         env:
           KEYSTORE_B64_ZIP: ${{ secrets.KEYSTORE_B64_ZIP }}
         run: |
+          if [ -z "$KEYSTORE_B64_ZIP" ]; then
+            echo "::warning::KEYSTORE_B64_ZIP kosong, build memakai debug signing"
+            exit 0
+          fi
           echo "$KEYSTORE_B64_ZIP" | base64 --decode > /tmp/keystore.zip
-          # Compress-Archive on Windows writes backslash paths; unzip treats
-          # that as a warning and exits 1. Accept the warning, then prove the
-          # two files really landed.
-          unzip -o /tmp/keystore.zip -d . || status=$?
-          if [ "${status:-0}" -gt 1 ]; then exit "$status"; fi
+          # Zip dari Windows memakai path backslash; unzip memberi warning (exit 1).
+          unzip -o /tmp/keystore.zip -d . || [ $? -eq 1 ]
           test -f android/key.properties
           test -f android/app/zanime-release.keystore
 
-      - name: Resolve dependencies
-        run: flutter pub get
+      - run: flutter pub get
 
-      # Flutter configures AGP splits when --split-per-abi is set, so each APK
-      # contains one ABI and gets its own versionCode offset. Pass the derived
-      # version explicitly so every APK matches the release tag.
       - name: Build split APKs
         run: >
           flutter build apk --release --split-per-abi
@@ -145,17 +138,11 @@ jobs:
       - name: Name APKs after the version
         run: |
           mkdir -p dist
-          for abi in arm64-v8a armeabi-v7a x86_64; do
-            cp "build/app/outputs/flutter-apk/app-$abi-release.apk" \
-              "dist/zanime-v${{ steps.version.outputs.tag }}-$abi.apk"
+          for apk in build/app/outputs/flutter-apk/app-*-release.apk; do
+            abi="${apk##*/app-}"
+            abi="${abi%-release.apk}"
+            cp "$apk" "dist/zanime-v${{ steps.version.outputs.tag }}-$abi.apk"
           done
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: zanime-split-${{ steps.version.outputs.tag }}
-          path: dist/*.apk
-          if-no-files-found: error
-          retention-days: 14
 
       - uses: softprops/action-gh-release@v3
         with:
