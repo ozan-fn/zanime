@@ -39,6 +39,14 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    packagingOptions {
+        jniLibs {
+            // Compress .so files in the APK instead of storing them uncompressed
+            // and page-aligned. https://developer.android.com/build/releases/past-releases/agp-8-0-0-release-notes#legacy-packaging
+            useLegacyPackaging = true
+        }
+    }
 }
 
 kotlin {
