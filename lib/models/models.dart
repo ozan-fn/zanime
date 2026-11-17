@@ -231,24 +231,58 @@ class WatchSubtitle {
   final bool isDefault;
 }
 
+class WatchStream {
+  const WatchStream({required this.label, required this.url});
+
+  /// `quality`/`resolution`/`label` become the picker label; anything else
+  /// falls back to a positional name.
+  factory WatchStream.fromJson(Map<String, dynamic> json, int index) {
+    final raw = json['quality'] ?? json['resolution'] ?? json['label'];
+    return WatchStream(
+      label: raw is String && raw.trim().isNotEmpty
+          ? raw.trim()
+          : raw is num && raw > 0
+          ? '${raw.toInt()}p'
+          : 'Source ${index + 1}',
+      url: json['url'] as String,
+    );
+  }
+
+  final String label;
+  final String url;
+}
+
 class WatchServer {
   const WatchServer({
     required this.provider,
-    required this.url,
+    required this.streams,
     required this.headers,
   });
 
   factory WatchServer.fromJson(Map<String, dynamic> json) {
+    final raw = ((json['streams'] as List?) ?? const [])
+        .cast<Map<String, dynamic>>();
+    final streams = [
+      for (var i = 0; i < raw.length; i++)
+        if ((raw[i]['url'] as String?)?.isNotEmpty ?? false)
+          WatchStream.fromJson(raw[i], i),
+    ];
     return WatchServer(
       provider: json['provider'] as String,
-      url: json['url'] as String,
+      streams: streams.isNotEmpty
+          ? streams
+          : [WatchStream(label: 'Auto', url: json['url'] as String)],
       headers: (json['headers'] as Map?)?.cast<String, String>() ?? const {},
     );
   }
 
   final String provider;
-  final String url;
+
+  /// Alternative qualities of the same server, best first.
+  final List<WatchStream> streams;
   final Map<String, String> headers;
+
+  String get url => streams.first.url;
 }
 
 class WatchData {

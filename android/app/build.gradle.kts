@@ -10,6 +10,9 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
+        // Required by the IMA SDK pulled in by
+        // better_native_video_player_plus (java.time on API 24/25).
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -28,8 +31,10 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         ndk {
-            // Force one ABI: plugins otherwise ship every ABI in a fat APK.
-            abiFilters += "arm64-v8a"
+            // Hapus filter otomatis dari Flutter
+            abiFilters.clear()
+            // Tambahkan filter kustom Anda
+            abiFilters.addAll(listOf("arm64-v8a"))
         }
     }
 
@@ -46,6 +51,10 @@ kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
     }
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 }
 
 flutter {

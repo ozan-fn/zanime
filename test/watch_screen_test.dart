@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:test1/components/watch_screen.dart';
+import 'package:test1/components/video_player_widget.dart' show VideoPlayerWidget;
 import 'package:test1/models/models.dart';
 
 WatchData _data(int episode) => WatchData(
@@ -35,12 +36,12 @@ WatchData _dataWithServers(int episode) => WatchData(
   servers: const [
     WatchServer(
       provider: 'sun',
-      url: 'https://example.com/v.m3u8',
+      streams: [WatchStream(label: 'auto', url: 'https://example.com/v.m3u8')],
       headers: {},
     ),
     WatchServer(
       provider: 'bee',
-      url: 'https://example.com/b.m3u8',
+      streams: [WatchStream(label: 'auto', url: 'https://example.com/b.m3u8')],
       headers: {},
     ),
   ],
@@ -86,7 +87,7 @@ void main() {
     expect(find.textContaining('Episode 2 · Jan 4, 2024'), findsNWidgets(2));
   });
 
-  testWidgets('WatchScreen shows server and subtitle dropdowns', (
+  testWidgets('WatchScreen keeps the server picker and passes subtitles to the player', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(800, 1600);
@@ -105,8 +106,15 @@ void main() {
 
     expect(find.byIcon(Icons.dns_outlined), findsOneWidget);
     expect(find.text('sun'), findsOneWidget);
-    expect(find.byIcon(Icons.subtitles_outlined), findsOneWidget);
-    expect(find.text('English'), findsOneWidget);
+    // The subtitle picker lives inside the player, not under the title.
+    expect(find.text('English'), findsNothing);
+    final player = tester.widget<VideoPlayerWidget>(
+      find.byType(VideoPlayerWidget),
+    );
+    expect(
+      player.subtitles.map((subtitle) => subtitle.label),
+      ['English', 'Indonesian'],
+    );
   });
 
   testWidgets('WatchScreen expands the synopsis', (tester) async {

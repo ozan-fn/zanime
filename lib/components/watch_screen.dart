@@ -26,7 +26,6 @@ class _WatchScreenState extends State<WatchScreen> {
   late int _episode = widget.episode;
   late Future<WatchData> _future = _load();
   String? _provider;
-  String? _subtitleUrl;
   bool _expanded = false;
 
   Future<WatchData> _load() => widget.loader != null
@@ -38,7 +37,6 @@ class _WatchScreenState extends State<WatchScreen> {
     setState(() {
       _episode = number;
       _provider = null;
-      _subtitleUrl = null;
       _expanded = false;
       _future = _load();
     });
@@ -84,56 +82,12 @@ class _WatchScreenState extends State<WatchScreen> {
         child: Center(child: Text('Server tidak tersedia')),
       );
     }
-    final subtitle = _subtitleFor(data);
     return VideoPlayerWidget(
       key: ValueKey(server.url),
-      url: server.url,
+      streams: server.streams,
       headers: server.headers,
-      subtitleUrl: subtitle,
+      subtitles: data.subtitles,
       subtitleHeaders: server.headers,
-    );
-  }
-
-  /// null = auto (default subtitle), '' = explicitly off.
-  String? _subtitleFor(WatchData data) {
-    if (_subtitleUrl != null) {
-      return _subtitleUrl!.isEmpty ? null : _subtitleUrl;
-    }
-    for (final subtitle in data.subtitles) {
-      if (subtitle.isDefault) return subtitle.url;
-    }
-    for (final subtitle in data.subtitles) {
-      if (subtitle.label.toLowerCase().startsWith('english')) {
-        return subtitle.url;
-      }
-    }
-    return null;
-  }
-
-  Widget _subtitlePicker(WatchData data) {
-    if (data.subtitles.isEmpty) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: Row(
-        children: [
-          const Icon(Icons.subtitles_outlined, size: 18),
-          const SizedBox(width: 6),
-          DropdownButton<String>(
-            value: _subtitleFor(data) ?? '',
-            isDense: true,
-            underline: const SizedBox.shrink(),
-            items: [
-              const DropdownMenuItem(value: '', child: Text('Off')),
-              for (final subtitle in data.subtitles)
-                DropdownMenuItem(
-                  value: subtitle.url,
-                  child: Text(subtitle.label),
-                ),
-            ],
-            onChanged: (value) => setState(() => _subtitleUrl = value ?? ''),
-          ),
-        ],
-      ),
     );
   }
 
@@ -190,7 +144,6 @@ class _WatchScreenState extends State<WatchScreen> {
                       ],
                       onChanged: (value) => setState(() {
                         _provider = value;
-                        _subtitleUrl = null;
                       }),
                     ),
                   ],
@@ -198,7 +151,6 @@ class _WatchScreenState extends State<WatchScreen> {
               ],
             ],
           ),
-          _subtitlePicker(data),
         ],
       ),
     );

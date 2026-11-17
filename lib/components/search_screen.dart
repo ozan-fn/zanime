@@ -24,6 +24,9 @@ class _SearchScreenState extends State<SearchScreen> {
   String? _error;
   int _generation = 0;
 
+  /// Recent queries, newest first. In-memory only (no storage dependency).
+  final List<String> _history = [];
+
   @override
   void dispose() {
     _debounce?.cancel();
@@ -51,6 +54,10 @@ class _SearchScreenState extends State<SearchScreen> {
     setState(() {
       _loading = true;
       _error = null;
+      _history
+        ..removeWhere((item) => item.toLowerCase() == query.toLowerCase())
+        ..insert(0, query);
+      if (_history.length > 10) _history.removeLast();
     });
     try {
       final results = await (widget.search ?? searchAnime)(query);
@@ -75,7 +82,6 @@ class _SearchScreenState extends State<SearchScreen> {
       appBar: AppBar(
         title: TextField(
           controller: _textController,
-          autofocus: true,
           textInputAction: TextInputAction.search,
           decoration: const InputDecoration(
             hintText: 'Cari anime...',
@@ -101,7 +107,24 @@ class _SearchScreenState extends State<SearchScreen> {
     }
     final results = _results;
     if (results == null) {
-      return const Center(child: Text('Ketik judul anime untuk mencari'));
+      if (_history.isEmpty) {
+        return const Center(child: Text('Ketik judul anime untuk mencari'));
+      }
+      return ListView(
+        children: [
+          const ListTile(title: Text('Riwayat pencarian')),
+          for (final query in _history)
+            ListTile(
+              leading: const Icon(Icons.history),
+              title: Text(query),
+              onTap: () {
+                _debounce?.cancel();
+                _textController.text = query;
+                _search(query);
+              },
+            ),
+        ],
+      );
     }
     if (results.isEmpty) {
       return const Center(child: Text('Tidak ada hasil'));

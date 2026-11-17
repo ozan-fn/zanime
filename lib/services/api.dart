@@ -34,8 +34,13 @@ Future<List<AnimeBannerData>> fetchAnimeBanners({int perPage = 10}) async {
   if (response.statusCode != 200) {
     throw http.ClientException('AniList HTTP ${response.statusCode}');
   }
+  return parseAnimeBanners(response.body);
+}
+
+/// Parses the AniList GraphQL response returned by [fetchAnimeBanners].
+List<AnimeBannerData> parseAnimeBanners(String body) {
   final media =
-      ((jsonDecode(response.body) as Map<String, dynamic>)['data']
+      ((jsonDecode(body) as Map<String, dynamic>)['data']
               as Map<String, dynamic>)['Page']['media']
           as List;
   return media.cast<Map<String, dynamic>>().map((json) {
@@ -183,6 +188,11 @@ String _unescape(String raw) {
 /// (The `/api/search/browse` endpoint 403s for non-HTTP/2 clients.)
 Future<List<SearchResult>> searchAnime(String query) async {
   final root = await _miruroRoot('/search/__data.json', {'q': query});
+  return parseSearchResults(root);
+}
+
+/// Maps the `items` array of a SvelteKit search payload.
+List<SearchResult> parseSearchResults(Map<String, dynamic> root) {
   return ((root['items'] as List?) ?? const [])
       .cast<Map<String, dynamic>>()
       .map((item) {
@@ -205,6 +215,11 @@ Future<WatchData> fetchWatchData(String animeId, {int episode = 1}) async {
   final root = await _miruroRoot('/watch/$animeId/x/__data.json', {
     'ep': '$episode',
   });
+  return parseWatchData(root, episode);
+}
+
+/// Maps one SvelteKit watch payload to [WatchData].
+WatchData parseWatchData(Map<String, dynamic> root, int episode) {
 
   final media = root['media'] as Map<String, dynamic>;
   final titles = media['title'] as Map<String, dynamic>;
@@ -274,15 +289,18 @@ Future<WatchData> fetchWatchData(String animeId, {int episode = 1}) async {
     final serversData = (provider['servers'] as List? ?? const [])
         .cast<Map<String, dynamic>>();
     for (final server in serversData) {
-      final streams = (server['streams'] as List? ?? const [])
-          .cast<Map<String, dynamic>>()
-          .where((s) => (s['url'] as String?)?.isNotEmpty ?? false)
-          .toList();
+      final rawStreams = (server['streams'] as List? ?? const [])
+          .cast<Map<String, dynamic>>();
+      final streams = [
+        for (var i = 0; i < rawStreams.length; i++)
+          if ((rawStreams[i]['url'] as String?)?.isNotEmpty ?? false)
+            WatchStream.fromJson(rawStreams[i], i),
+      ];
       if (streams.isEmpty) continue;
       servers.add(
         WatchServer(
           provider: provider['provider'] as String,
-          url: streams.first['url'] as String,
+          streams: streams,
           headers: ((server['headers'] as Map?) ?? const {})
               .cast<String, String>(),
         ),
@@ -342,7 +360,12 @@ Future<Map<String, dynamic>> _miruroRoot(
     }
   }
 
-  return _Devalue.parse(response.body).root(1) as Map<String, dynamic>;
+  return parseMiruroRoot(response.body);
+}
+
+/// Resolves SvelteKit's line-delimited devalue payload into the page `data`.
+Map<String, dynamic> parseMiruroRoot(String body) {
+  return _Devalue.parse(body).root(1) as Map<String, dynamic>;
 }
 
 class _Devalue {

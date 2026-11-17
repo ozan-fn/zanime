@@ -40,6 +40,9 @@ dependencies:
   media_kit_libs_video: ^1.0.7
   http: ^1.6.0
   cronet_http: ^1.10.1
+  cached_network_image: ^4.0.7
+  flutter_cache_manager: ^3.5.0
+  path_provider: ^2.1.6
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -61,6 +64,13 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  fonts:
+    - family: Comic Neue
+      fonts:
+        - asset: assets/fonts/ComicNeue-Regular.ttf
+        - asset: assets/fonts/ComicNeue-Bold.ttf
+          weight: 700
 
   # To add assets to your application, add an assets section, like this:
   # assets:
