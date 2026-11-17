@@ -1,9 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:test1/components/mini_player.dart';
 import 'package:test1/components/watch_screen.dart';
 import 'package:test1/components/video_player_widget.dart'
     show VideoPlayerWidget;
 import 'package:test1/models/models.dart';
+import 'package:test1/services/mini_player.dart';
 
 WatchData _data(int episode) => WatchData(
   anime: const WatchAnime(
@@ -246,5 +248,99 @@ void main() {
 
     expect(find.byIcon(Icons.play_arrow), findsOneWidget);
     expect(find.byIcon(Icons.add), findsNothing);
+  });
+
+  testWidgets('Back keeps playback in the floating player', (tester) async {
+    addTearDown(hideMiniPlayer);
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: navigatorKey,
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => WatchScreen(
+                  animeId: 'x',
+                  loader: (_, episode) async => _dataWithServers(episode),
+                  statusLoader: (_) async => null,
+                ),
+              ),
+            ),
+            child: const Text('open'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    expect(find.byType(VideoPlayerWidget), findsOneWidget);
+    final playingUrl = tester
+        .widget<VideoPlayerWidget>(find.byType(VideoPlayerWidget))
+        .streams
+        .single
+        .url;
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(find.text('open'), findsOneWidget);
+    final playback = miniPlayback.value;
+    expect(playback, isNotNull);
+    expect(playback!.animeId, 'x');
+    expect(playback.episode, 1);
+    expect(playback.streams.single.url, playingUrl);
+    expect(
+      tester
+          .widgetList<VideoPlayerWidget>(find.byType(VideoPlayerWidget))
+          .single
+          .showControls,
+      isFalse,
+      reason: 'floating player has no controls',
+    );
+
+    // Tapping the floating card hides it and reopens the watch page.
+    await tester.tap(
+      find.byType(VideoPlayerWidget),
+      warnIfMissed: false,
+    );
+    await tester.pumpAndSettle();
+    expect(miniPlayback.value, isNull);
+    expect(find.byType(WatchScreen), findsOneWidget);
+  });
+
+  testWidgets('Floating player can be closed', (tester) async {
+    addTearDown(hideMiniPlayer);
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: navigatorKey,
+        home: const Scaffold(body: Text('home')),
+      ),
+    );
+    final data = _dataWithServers(1);
+    final server = data.servers.first;
+    showMiniPlayer(
+      MiniPlayback(
+        animeId: 'x',
+        episode: 1,
+        streams: server.streams,
+        headers: server.headers,
+        subtitles: data.subtitles,
+        subtitleHeaders: server.headers,
+        position: Duration.zero,
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(VideoPlayerWidget), findsOneWidget);
+    await tester.tap(find.byTooltip('Tutup'));
+    await tester.pump();
+
+    expect(miniPlayback.value, isNull);
+    expect(find.byType(VideoPlayerWidget), findsNothing);
   });
 }

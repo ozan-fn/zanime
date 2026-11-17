@@ -87,6 +87,9 @@ class VideoPlayerWidget extends StatefulWidget {
     this.headers,
     this.subtitles = const [],
     this.subtitleHeaders,
+    this.startAt,
+    this.positionSink,
+    this.showControls = true,
   });
 
   /// Alternative qualities of one server, best first.
@@ -99,6 +102,16 @@ class VideoPlayerWidget extends StatefulWidget {
   final List<WatchSubtitle> subtitles;
   final Map<String, String>? subtitleHeaders;
 
+  /// Where playback resumes (floating player handoff).
+  final Duration? startAt;
+
+  /// Receives the current playback position, used to hand off to the
+  /// floating player without restarting.
+  final ValueNotifier<Duration>? positionSink;
+
+  /// False for the floating player: no controls overlay.
+  final bool showControls;
+
   @override
   State<VideoPlayerWidget> createState() => _VideoPlayerWidgetState();
 }
@@ -107,6 +120,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   Player? _player;
   VideoController? _videoController;
   StreamSubscription<String>? _errorSubscription;
+  StreamSubscription<Duration>? _positionSubscription;
   bool _failed = false;
   int? _selectedSubtitle;
   int _subtitleGeneration = 0;
@@ -137,6 +151,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       _errorSubscription = player.stream.error.listen((_) {
         if (mounted) setState(() => _failed = true);
       });
+      final sink = widget.positionSink;
+      if (sink != null) {
+        _positionSubscription = player.stream.position.listen(
+          (position) => sink.value = position,
+        );
+      }
     } catch (e) {
       // No libmpv available (e.g. widget test) or player setup failed.
       debugPrint('video init failed: $e');
@@ -155,6 +175,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       // The widget may have been removed while `open` was in flight; that
       // player is disposed and must not be touched again.
       if (!mounted || !identical(_player, player)) return;
+      final startAt = widget.startAt;
+      if (startAt != null && startAt > Duration.zero) {
+        await player.seek(startAt);
+      }
       await _applySubtitle();
     } catch (e) {
       if (!mounted || !identical(_player, player)) return;
@@ -288,6 +312,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   void dispose() {
     _errorSubscription?.cancel();
     _errorSubscription = null;
+    _positionSubscription?.cancel();
+    _positionSubscription = null;
     final player = _player;
     _player = null;
     _videoController = null;
@@ -318,26 +344,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
               : constraints.maxWidth;
           return AnimatedBuilder(
             animation: subtitlePx,
-            builder: (context, _) => MaterialVideoControlsTheme(
-              normal: kDefaultMaterialVideoControlsThemeData.copyWith(
-                topButtonBar: [_qualityButton(), _subtitleButton()],
-                primaryButtonBar: _primaryButtonBar,
-                seekGesture: true,
-                seekOnDoubleTap: true,
-              ),
-              // Built-in fullscreen defaults bring the safe-area padding, seek
-              // bar position and double-tap ±10s gestures; only the buttons
-              // change.
-              fullscreen: kDefaultMaterialVideoControlsThemeDataFullscreen
-                  .copyWith(
-                    topButtonBar: [_qualityButton(), _subtitleButton()],
-                    seekBarMargin: const EdgeInsets.only(
-                      left: 16,
-                      right: 16,
-                      bottom: 28,
-                    ),
-                  ),
-              child: Video(
+            builder: (context, _) {
+              final video = Video(
                 controller: controller,
                 fit: BoxFit.contain,
                 subtitleViewConfiguration: SubtitleViewConfiguration(
@@ -348,6 +356,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                   // is the on-screen px size.
                   style: TextStyle(
                     fontFamily: 'Comic Neue',
+                    fontFamilyFallback: const [
+                      'Noto Sans',
+                      'Noto Sans Symbols 2',
+                    ],
                     fontSize: subtitlePx.value * 1920 / width,
                     fontWeight: FontWeight.w700,
                     height: 1.25,
@@ -356,8 +368,30 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                     shadows: _subtitleShadows,
                   ),
                 ),
-              ),
-            ),
+              );
+              if (!widget.showControls) return video;
+              return MaterialVideoControlsTheme(
+                normal: kDefaultMaterialVideoControlsThemeData.copyWith(
+                  topButtonBar: [_qualityButton(), _subtitleButton()],
+                  primaryButtonBar: _primaryButtonBar,
+                  seekGesture: true,
+                  seekOnDoubleTap: true,
+                ),
+                // Built-in fullscreen defaults bring the safe-area padding,
+                // seek bar position and double-tap ±10s gestures; only the
+                // buttons change.
+                fullscreen: kDefaultMaterialVideoControlsThemeDataFullscreen
+                    .copyWith(
+                      topButtonBar: [_qualityButton(), _subtitleButton()],
+                      seekBarMargin: const EdgeInsets.only(
+                        left: 16,
+                        right: 16,
+                        bottom: 28,
+                      ),
+                    ),
+                child: video,
+              );
+            },
           );
         },
       ),

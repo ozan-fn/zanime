@@ -9,6 +9,7 @@ import 'components/watching_screen.dart';
 import 'models/models.dart';
 import 'services/api.dart';
 import 'services/app_settings.dart';
+import 'services/mini_player.dart';
 
 const _zinc950 = Color(0xFF09090B);
 const _zinc900 = Color(0xFF18181B);
@@ -36,6 +37,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Zanime',
+      navigatorKey: navigatorKey,
       theme: ThemeData(
         brightness: Brightness.dark,
           scaffoldBackgroundColor: _zinc950,

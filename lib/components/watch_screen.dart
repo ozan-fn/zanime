@@ -4,7 +4,9 @@ import 'package:material_ui/material_ui.dart';
 import '../models/models.dart';
 import '../services/anilist_auth.dart';
 import '../services/api.dart';
+import '../services/mini_player.dart';
 import '../services/sokuja.dart';
+import 'mini_player.dart';
 import 'upcoming_countdown.dart';
 import 'video_player_widget.dart';
 
@@ -30,10 +32,14 @@ class WatchScreen extends StatefulWidget {
     this.loader,
     this.saver,
     this.statusLoader,
+    this.startAt,
   });
 
   final String animeId;
   final int episode;
+
+  /// Resume point handed over by the floating player.
+  final Duration? startAt;
 
   /// Injected in tests; defaults to [fetchWatchData].
   final Future<WatchData> Function(String animeId, int episode)? loader;
@@ -55,10 +61,38 @@ class _WatchScreenState extends State<WatchScreen> {
   String? _listStatus;
   bool _expanded = false;
 
+  /// Latest loaded data/server, captured for the floating player handoff.
+  WatchData? _data;
+  WatchServer? _server;
+
+  /// First seek target; cleared once the episode changes.
+  Duration? _startAt;
+
+  /// Live playback position, mirrored into the floating player.
+  final ValueNotifier<Duration> _position = ValueNotifier<Duration>(
+    Duration.zero,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _startAt = widget.startAt;
+    _position.value = widget.startAt ?? Duration.zero;
+    // Opening the watch page always takes over from the floating player.
+    hideMiniPlayer();
+  }
+
+  @override
+  void dispose() {
+    _position.dispose();
+    super.dispose();
+  }
+
   Future<WatchData> _load() async {
     final data = await (widget.loader != null
         ? widget.loader!(widget.animeId, _episode)
         : fetchWatchData(widget.animeId, episode: _episode));
+    _data = data;
     _syncStatus(data.aniListId);
     return data;
   }
@@ -76,8 +110,34 @@ class _WatchScreenState extends State<WatchScreen> {
       _episode = number;
       _provider = null;
       _expanded = false;
+      _startAt = null;
+      _position.value = Duration.zero;
       _future = _load();
     });
+  }
+
+  /// Leaves the page but keeps playback going in the floating player.
+  void _minimize() {
+    final data = _data;
+    final server = _server;
+    if (data == null || server == null) {
+      Navigator.of(context).pop();
+      return;
+    }
+    showMiniPlayer(
+      MiniPlayback(
+        animeId: widget.animeId,
+        episode: _episode,
+        streams: server.streams,
+        headers: server.headers,
+        subtitles: server.provider == sokujaProvider
+            ? const []
+            : data.subtitles,
+        subtitleHeaders: server.headers,
+        position: _position.value,
+      ),
+    );
+    Navigator.of(context).pop();
   }
 
   Future<void> _pickStatus(WatchData data) async {
@@ -171,45 +231,53 @@ class _WatchScreenState extends State<WatchScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: FutureBuilder<WatchData>(
-          future: _future,
-          builder: (context, snapshot) =>
-              Text(snapshot.data?.anime.title ?? ''),
+    return PopScope(
+      // Back keeps the stream alive in the floating player instead of
+      // tearing the player down.
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _minimize();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: FutureBuilder<WatchData>(
+            future: _future,
+            builder: (context, snapshot) =>
+                Text(snapshot.data?.anime.title ?? ''),
+          ),
         ),
-      ),
-      body: FutureBuilder<WatchData>(
-        future: _future,
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return const Center(child: Text('Gagal memuat anime'));
-          }
-          final data = snapshot.data;
-          if (data == null) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final server = data.servers.isEmpty
-              ? null
-              : data.servers.firstWhere(
-                  (item) => item.provider == (_provider ?? _lastProvider),
-                  orElse: () => data.servers.first,
-                );
-          final upcoming = _upcoming(data);
-          return ListView(
-            children: [
-              if (upcoming != null)
-                UpcomingCountdown(
-                  episode: upcoming.number,
-                  airDate: DateTime.parse(upcoming.airDate!),
-                ),
-              _player(server, data),
-              _episodeBar(data, server),
-              _episodeGrid(data),
-              _about(data),
-            ],
-          );
-        },
+        body: FutureBuilder<WatchData>(
+          future: _future,
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return const Center(child: Text('Gagal memuat anime'));
+            }
+            final data = snapshot.data;
+            if (data == null) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final server = data.servers.isEmpty
+                ? null
+                : data.servers.firstWhere(
+                    (item) => item.provider == (_provider ?? _lastProvider),
+                    orElse: () => data.servers.first,
+                  );
+            final upcoming = _upcoming(data);
+            return ListView(
+              children: [
+                if (upcoming != null)
+                  UpcomingCountdown(
+                    episode: upcoming.number,
+                    airDate: DateTime.parse(upcoming.airDate!),
+                  ),
+                _player(server, data),
+                _episodeBar(data, server),
+                _episodeGrid(data),
+                _about(data),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -225,6 +293,7 @@ class _WatchScreenState extends State<WatchScreen> {
   }
 
   Widget _player(WatchServer? server, WatchData data) {
+    _server = server;
     if (server == null) {
       return const AspectRatio(
         aspectRatio: 16 / 9,
@@ -238,6 +307,8 @@ class _WatchScreenState extends State<WatchScreen> {
       // Sokuja mirrors are self-contained mp4s without track metadata.
       subtitles: server.provider == sokujaProvider ? const [] : data.subtitles,
       subtitleHeaders: server.headers,
+      startAt: _startAt,
+      positionSink: _position,
     );
   }
 
@@ -299,6 +370,9 @@ class _WatchScreenState extends State<WatchScreen> {
                       onChanged: (value) => setState(() {
                         _provider = value;
                         _lastProvider = value;
+                        // Switching servers restarts the stream at the same
+                        // point rather than from zero.
+                        _startAt = _position.value;
                       }),
                     ),
                   ],

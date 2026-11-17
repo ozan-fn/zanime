@@ -12,12 +12,23 @@ AniList, halaman tonton dari miruro.cx, dan server tambahan dari sokuja.
 - Riwayat pencarian dalam sesi (maks. 10, tanpa penyimpanan permanen).
 - Tab **Watching** menampilkan anime berstatus CURRENT/REPEATING dari akun
   AniList (progress + episode berikutnya, tap untuk memutar). Tab **Profile**
-  berisi login/profil AniList dan pengaturan cache.
+  berisi login/profil AniList, total per status (grid yang bisa dibuka menjadi
+  daftar), pengaturan subtitle, cache, dan cek update.
 - Halaman tonton: grid episode, ganti provider/server, kualitas video, subtitle.
   Provider terakhir yang dipilih diingat selama sesi; kalau tidak tersedia,
   dipakai server paling atas.
+- **PiP dalam aplikasi**: menekan back dari player menyisakan player kecil di
+  pojok kanan bawah di semua halaman; tap player kecil membuka halaman tonton
+  lagi dan melanjutkan dari posisi terakhir.
 - Player `media_kit`/libmpv + libass (ASS/SSA dipakai apa adanya agar posisi
   subtitle `\an8` dihormati; VTT/SRT dibersihkan dari cue kosong/duplikat).
+  Entitas HTML (`&amp;`, `&#39;`, `&#x266A;`) dan escape ASS (`\N`,
+  `\h`) diterjemahkan supaya tidak muncul simbol aneh.
+- Ukuran subtitle diatur lewat slider 12–32 px (default 16 px), tersimpan dan
+  hanya memengaruhi subtitle, bukan font UI. Font fallback (Noto Sans/Symbols)
+  dipakai agar glyph simbol tetap dirender.
+- Cek update di **Profile** → membandingkan versi aplikasi dengan GitHub
+  Release terbaru (hanya major.minor.patch) dan menautkan ke halaman rilis.
 - Cache gambar (`cached_network_image` + `flutter_cache_manager`) dengan
   pengaturan ukuran dan hapus cache.
 - Hitung mundur episode berikutnya yang belum tayang.
@@ -36,12 +47,17 @@ lib/
     watching_screen.dart        Anime CURRENT/REPEATING dari AniList
     watch_screen.dart           Detail anime, episode, pemilihan server
     video_player_widget.dart    Player media_kit, kontrol, subtitle
+    mini_player.dart            Overlay PiP dalam aplikasi
+    update_screen.dart          Halaman cek update (list)
     upcoming_countdown.dart     Hitung mundur tayang
-    settings_screen.dart        Cache gambar
+    settings_screen.dart        Profil, subtitle, cache, cek update
   models/models.dart            Model data + label/format helper
   services/
     api.dart                    AniList + miruro.cx (parser SvelteKit)
     anilist_auth.dart           OAuth AniList, profil, daftar watching
+    app_settings.dart           Ukuran subtitle (px) + persistensi
+    app_update.dart             Release GitHub + perbandingan versi
+    mini_player.dart            Status playback PiP + navigator key
     sokuja.dart                 Provider sokuja + pencocokan anime
     http_client.dart            Cronet di Android, dart:io di desktop
     subtitle_format.dart        Normalisasi subtitle
@@ -117,9 +133,38 @@ memakai aksi pihak ketiga (`subosito/flutter-action`,
 `gradle/actions/setup-gradle`, `softprops/action-gh-release`) dengan cache
 Flutter SDK, cache pub, dan cache Gradle; tidak ada `apt install`.
 
+## PiP dalam aplikasi
+
+Back dari halaman tonton tidak menutup player. `PopScope` menangkap back,
+membuat `MiniPlayback` (stream/headers/subtitle/episode + posisi terakhir),
+lalu menaruh player kecil (≈176 px, 16:9) lewat `OverlayEntry` di atas semua
+route. Pemutaran berlanjut karena widget player baru dibuat dengan `startAt`;
+posisi berjalan dilaporkan balik lewat `positionSink`.
+
+- Tap player kecil → overlay ditutup dan `WatchScreen(startAt: ...)` dibuka
+  kembali, resume dari posisi saat itu (data server diambil ulang).
+- Tombol tutup (×) menghentikan dan membuang player kecil.
+- Membuka halaman tonton mana pun otomatis menutup player kecil.
+- Hanya PiP dalam aplikasi, bukan PiP sistem operasi.
+
+## Cek update
+
+Profile → **Cek update** membuka halaman list (tanpa dialog) yang mengambil
+`GET https://api.github.com/repos/ozan-fn/zanime/releases/latest`.
+
+- Versi terpasang dibaca lewat `package_info_plus`.
+- Perbandingan hanya **major.minor.patch**; build metadata (`+8`) dan awalan
+  `v` diabaikan, jadi `v1.0.1+8` dianggap sama dengan `1.0.1`.
+- Jika lebih baru, muncul status **Update tersedia** beserta baris
+  **Buka halaman rilis** yang membuka
+  `https://github.com/ozan-fn/zanime/releases/latest` di browser
+  (`url_launcher`).
+- Gagal jaringan menampilkan tile error dan tombol coba lagi; versi terpasang
+  tetap ditampilkan.
+
 ## Login AniList
 
-Tab **Setting** punya tombol login dan profil AniList (nama, ID, jumlah anime,
+Tab **Profile** punya tombol login dan profil AniList (nama, ID, jumlah anime,
 episode ditonton, tombol keluar). Token disimpan di `shared_preferences`.
 
 - Client ID: `18615` (hardcoded, aman karena publik).
@@ -172,6 +217,8 @@ Cloudflare `403` dengan body HTML `Just a moment...` alih-alih JSON.
 - Riwayat pencarian hilang saat aplikasi ditutup.
 - Subtitle hanya dari miruro; mirror sokuja berupa mp4 mandiri tanpa track
   subtitle terpisah.
+- Cek update memakai GitHub API tanpa token, jadi tunduk pada rate limit
+  60 permintaan/jam per IP (cukup untuk pengecekan manual).
 - Warning Flutter: `cronet_http` masih memakai Kotlin Gradle Plugin (non-fatal
   saat ini, upstream: dart-lang/http#1920).
 - Test tidak memutar video sungguhan; `libmpv` tidak tersedia di lingkungan

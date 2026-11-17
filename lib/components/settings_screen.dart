@@ -5,6 +5,7 @@ import '../services/anilist_auth.dart';
 import '../services/app_settings.dart';
 import '../services/image_cache.dart';
 import 'anilist_list_screen.dart';
+import 'update_screen.dart';
 
 const _zinc900 = Color(0xFF18181B);
 const _zinc800 = Color(0xFF27272A);
@@ -137,6 +138,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const Divider(height: 1),
             ],
             _fontSetting(),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.system_update_outlined),
+              title: const Text('Cek update'),
+              subtitle: const Text('Bandingkan dengan release GitHub'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const UpdateScreen()),
+              ),
+            ),
             const Divider(height: 1),
             ListTile(
               leading: const Icon(Icons.image_outlined),

@@ -53,10 +53,37 @@ String _dropEmptyCues(String text) {
   return kept.join('\n\n');
 }
 
-String _plainText(String line) => line
-    .replaceAll(RegExp(r'<[^>]*>'), '')
-    .replaceAll(RegExp(r'\{[^}]*\}'), '')
-    .trim();
+String _plainText(String line) {
+  final stripped = line
+      .replaceAll(RegExp(r'<[^>]*>'), '')
+      .replaceAll(RegExp(r'\{[^}]*\}'), '');
+  return _decodeEntities(
+    stripped
+        // ASS escapes that leaked into a plain text track.
+        .replaceAll(r'\N', '\n')
+        .replaceAll(r'\n', '\n')
+        .replaceAll(r'\h', ' '),
+  ).trim();
+}
+
+/// Providers often ship HTML entities; left raw they render as stray symbols.
+String _decodeEntities(String text) {
+  var result = text
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&apos;', "'")
+      .replaceAll('&#39;', "'");
+  return result.replaceAllMapped(RegExp(r'&#(x?)([0-9a-fA-F]+);'), (match) {
+    final code = match[1] == 'x'
+        ? int.tryParse(match[2]!, radix: 16)
+        : int.tryParse(match[2]!);
+    if (code == null || code <= 0 || code > 0x10FFFF) return '';
+    return String.fromCharCode(code);
+  });
+}
 
 /// Keeps the first occurrence of each line, dropping repeats inside a cue.
 String _dedupeLines(List<String> lines) {

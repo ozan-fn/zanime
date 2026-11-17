@@ -59,6 +59,21 @@ Dialogue: 0,0:00:04.00,0:00:06.50,Default,,0,0,0,,Bottom line\\NSecond line
     expect(normalizeSubtitle('\uFEFFWEBVTT\n'), 'WEBVTT\n');
   });
 
+  test('HTML entities and ASS escapes become plain characters', () {
+    const vtt =
+        'WEBVTT\n\n'
+        '00:00:01.000 --> 00:00:02.000\n'
+        r'A &amp; B &#39;quoted&#39; &#x266A; C\Nnext line'
+        '\n';
+
+    final result = normalizeSubtitle(vtt);
+
+    expect(result, contains("A & B 'quoted' \u266A C\nnext line"));
+    expect(result, isNot(contains('&amp;')));
+    expect(result, isNot(contains('&#39;')));
+    expect(result, isNot(contains(r'\N')));
+  });
+
   test('malformed ASS does not throw', () {
     const broken = '''
 [Events]
