@@ -80,6 +80,7 @@ class WatchingAnime {
     this.year,
     this.status,
     this.updatedAt = 0,
+    this.score,
   });
 
   final int mediaId;
@@ -92,6 +93,9 @@ class WatchingAnime {
   final int? year;
   final String? status;
   final int updatedAt;
+
+  /// AniList/MAL average score (0–100).
+  final int? score;
 
   int get nextWatchEpisode => nextEpisode ?? (progress + 1);
 }
@@ -153,6 +157,7 @@ List<(int, WatchingAnime)> _aniListEntries(String body) {
           year: (media['seasonYear'] as num?)?.toInt(),
           status: status,
           updatedAt: updated,
+          score: (media['averageScore'] as num?)?.toInt(),
         ),
       ));
     }
@@ -274,7 +279,7 @@ const _listCollectionQuery =
     'query (\$userId: Int!) { MediaListCollection(userId: \$userId, '
     'type: ANIME) { lists { entries { status progress updatedAt media { '
     'id title { romaji english } coverImage { large } episodes format '
-    'seasonYear nextAiringEpisode { episode } } } } } }';
+    'seasonYear averageScore nextAiringEpisode { episode } } } } } }';
 
 /// The viewer's list status for [mediaId], or null when logged out or not
 /// on their list.

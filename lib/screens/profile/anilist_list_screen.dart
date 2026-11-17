@@ -129,6 +129,7 @@ class _AniListListScreenState extends State<AniListListScreen> {
                 itemBuilder: (context, index) {
                   final anime = _entries[index];
                   final meta = [
+                    if (anime.score != null) '★ ${anime.score}',
                     ?anime.format,
                     if (anime.year != null) '${anime.year}',
                     '${anime.progress}/${anime.totalEpisodes ?? '?'}',

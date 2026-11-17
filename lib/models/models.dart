@@ -6,6 +6,7 @@ class AnimeBannerData {
     this.year,
     this.episodes,
     this.aired,
+    this.score,
   });
 
   factory AnimeBannerData.fromJson(Map<String, dynamic> json) {
@@ -16,6 +17,7 @@ class AnimeBannerData {
       year: json['year'] as int?,
       episodes: json['episodes'] as int?,
       aired: json['aired'] as int?,
+      score: json['score'] as int?,
     );
   }
 
@@ -25,8 +27,10 @@ class AnimeBannerData {
   final int? year;
   final int? episodes;
   final int? aired;
+  final int? score;
 
   String get meta => [
+    if (score != null) '★ $score',
     ...genres,
     if (year != null) '$year',
     if (episodes != null) '${aired ?? 0}/$episodes eps',
@@ -45,6 +49,7 @@ class LatestEpisode {
     required this.year,
     this.subCount,
     this.dubCount,
+    this.score,
   });
 
   factory LatestEpisode.fromJson(Map<String, dynamic> json) {
@@ -59,6 +64,7 @@ class LatestEpisode {
       year: json['year'] as int,
       subCount: json['subCount'] as int?,
       dubCount: json['dubCount'] as int?,
+      score: json['score'] as int?,
     );
   }
 
@@ -72,6 +78,7 @@ class LatestEpisode {
   final int year;
   final int? subCount;
   final int? dubCount;
+  final int? score;
 
   String get url => 'https://miruro.cx/watch/$animeId?ep=$episode';
 }
@@ -136,6 +143,7 @@ class WatchAnime {
     this.episodes,
     this.duration,
     this.score,
+    this.japaneseTitle = '',
   });
 
   factory WatchAnime.fromJson(Map<String, dynamic> json) {
@@ -152,6 +160,7 @@ class WatchAnime {
       episodes: json['episodes'] as int?,
       duration: json['duration'] as int?,
       score: json['score'] as int?,
+      japaneseTitle: json['japaneseTitle'] as String? ?? '',
     );
   }
 
@@ -168,6 +177,9 @@ class WatchAnime {
   final int? duration;
   final int? score;
 
+  /// Original Japanese title (`native`, else romaji) shown under the title.
+  final String japaneseTitle;
+
   String get seasonLabel => [
     if (season.isNotEmpty)
       '${season[0]}${season.substring(1).toLowerCase()}${year == null ? '' : ' $year'}'
@@ -176,6 +188,7 @@ class WatchAnime {
   ].join();
 
   String get meta => [
+    if (score != null) '★ $score',
     if (format.isNotEmpty) format,
     if (episodes != null) '$episodes eps',
     if (duration != null) '$duration min',
@@ -368,6 +381,7 @@ class AnimeRecommendation {
     this.format,
     this.year,
     this.episodes,
+    this.score,
   });
 
   final int aniListId;
@@ -376,4 +390,38 @@ class AnimeRecommendation {
   final String? format;
   final int? year;
   final int? episodes;
+  final int? score;
+}
+
+/// One AniList relation (prequel, sequel, side story, ...) of an anime.
+class RelatedAnime {
+  const RelatedAnime({
+    required this.aniListId,
+    required this.title,
+    required this.imageUrl,
+    required this.relationType,
+    this.format,
+    this.year,
+    this.episodes,
+    this.score,
+  });
+
+  final int aniListId;
+  final String title;
+  final String imageUrl;
+
+  /// AniList code: `PREQUEL`, `SEQUEL`, `SIDE_STORY`, `SPIN_OFF`, ...
+  final String relationType;
+  final String? format;
+  final int? year;
+  final int? episodes;
+  final int? score;
+
+  /// `SIDE_STORY` → `Side story`.
+  String get relationLabel {
+    final words = relationType.toLowerCase().replaceAll('_', ' ');
+    return words.isEmpty
+        ? words
+        : '${words[0].toUpperCase()}${words.substring(1)}';
+  }
 }

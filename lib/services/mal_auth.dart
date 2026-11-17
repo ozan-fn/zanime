@@ -201,7 +201,7 @@ const aniListStatusToMalStatus = {
 /// wrapping them in `node{...}` is ignored by the API and leaves episodes,
 /// format and season empty.
 const malListFields =
-    'id,title,main_picture,media_type,start_season,num_episodes,'
+    'id,title,main_picture,media_type,start_season,num_episodes,mean,'
     'list_status{status,score,num_episodes_watched,updated_at,is_rewatching}';
 
 /// MAL media types renamed to the AniList format codes used by the UI.
@@ -234,6 +234,8 @@ Map<String, List<WatchingAnime>> parseMalLists(String body) {
     final picture = node['main_picture'] as Map<String, dynamic>?;
     final season = node['start_season'] as Map<String, dynamic>?;
     final episodes = (node['num_episodes'] as num?)?.toInt();
+    // MAL `mean` is 0–10; the UI uses AniList's 0–100 scale everywhere.
+    final mean = (node['mean'] as num?)?.toDouble();
     final updated =
         DateTime.tryParse((listStatus['updated_at'] as String?) ?? '')
             ?.millisecondsSinceEpoch ??
@@ -257,6 +259,7 @@ Map<String, List<WatchingAnime>> parseMalLists(String body) {
             year: (season?['year'] as num?)?.toInt(),
             status: mapped,
             updatedAt: updated,
+            score: mean == null ? null : (mean * 10).round(),
           ),
         );
   }

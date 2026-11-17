@@ -158,6 +158,7 @@ class _WatchingScreenState extends State<WatchingScreen> {
 
   Widget _tile(WatchingAnime anime) {
     final meta = [
+      if (anime.score != null) '★ ${anime.score}',
       anime.format,
       if (anime.year != null) '${anime.year}',
       if (anime.totalEpisodes != null)

@@ -21,7 +21,7 @@ const _bannersQuery =
     'query(\$perPage: Int) { Page(page: 1, perPage: \$perPage) { '
     'media(type: ANIME, status: RELEASING, sort: TRENDING_DESC) { '
     'title { romaji english } bannerImage coverImage { extraLarge } '
-    'genres seasonYear episodes nextAiringEpisode { episode } } } }';
+    'genres seasonYear episodes averageScore nextAiringEpisode { episode } } } }';
 
 Future<List<AnimeBannerData>> fetchAnimeBanners({int perPage = 10}) async {
   final response = await _client.post(
@@ -57,6 +57,7 @@ List<AnimeBannerData> parseAnimeBanners(String body) {
       year: json['seasonYear'] as int?,
       episodes: episodes,
       aired: next != null ? (next['episode'] as int) - 1 : episodes,
+      score: (json['averageScore'] as num?)?.toInt(),
     );
   }).toList();
 }
@@ -65,7 +66,8 @@ const _recommendationsQuery =
     'query(\$id: Int) { Media(id: \$id, type: ANIME) { '
     'recommendations(sort: RATING_DESC, perPage: 12) { nodes { '
     'mediaRecommendation { id title { english romaji } '
-    'coverImage { extraLarge } format episodes seasonYear } } } } }';
+    'coverImage { extraLarge } format episodes seasonYear averageScore } '
+    '} } } }';
 
 /// AniList community recommendations for [aniListId], best rated first.
 Future<List<AnimeRecommendation>> fetchRecommendations(int aniListId) async {
@@ -111,6 +113,67 @@ List<AnimeRecommendation> parseRecommendations(String body) {
         format: item['format'] as String?,
         year: item['seasonYear'] as int?,
         episodes: item['episodes'] as int?,
+        score: (item['averageScore'] as num?)?.toInt(),
+      ),
+    );
+  }
+  return items;
+}
+
+const _relatedQuery =
+    'query(\$id: Int) { Media(id: \$id, type: ANIME) { relations { edges { '
+    'relationType media { id type title { english romaji native } '
+    'coverImage { extraLarge } format episodes seasonYear averageScore } '
+    '} } } }';
+
+/// AniList relations (prequel, sequel, side story, ...) for [aniListId].
+Future<List<RelatedAnime>> fetchRelated(int aniListId) async {
+  final response = await _client.post(
+    Uri.parse('https://graphql.anilist.co'),
+    headers: {'content-type': 'application/json'},
+    body: jsonEncode({
+      'query': _relatedQuery,
+      'variables': {'id': aniListId},
+    }),
+  );
+  if (response.statusCode != 200) {
+    throw http.ClientException('AniList HTTP ${response.statusCode}');
+  }
+  return parseRelated(response.body);
+}
+
+/// Parses the GraphQL payload from [fetchRelated], keeping anime only.
+List<RelatedAnime> parseRelated(String body) {
+  final media =
+      (jsonDecode(body) as Map<String, dynamic>)['data']?['Media']
+          as Map<String, dynamic>?;
+  final edges =
+      ((media?['relations'] as Map<String, dynamic>?)?['edges'] as List?)
+          ?.cast<Map<String, dynamic>>() ??
+      const [];
+  final items = <RelatedAnime>[];
+  for (final edge in edges) {
+    final item = edge['media'] as Map<String, dynamic>?;
+    if (item == null || item['type'] != 'ANIME') continue;
+    final titles = item['title'] as Map<String, dynamic>? ?? const {};
+    final cover = item['coverImage'] as Map<String, dynamic>? ?? const {};
+    final id = (item['id'] as num?)?.toInt();
+    final title = (titles['english'] ?? titles['romaji'] as String?) ?? '';
+    final image = (cover['extraLarge'] as String?) ?? '';
+    final relation = (edge['relationType'] as String?) ?? '';
+    if (id == null || title.isEmpty || image.isEmpty || relation.isEmpty) {
+      continue;
+    }
+    items.add(
+      RelatedAnime(
+        aniListId: id,
+        title: title,
+        imageUrl: image,
+        relationType: relation,
+        format: item['format'] as String?,
+        year: item['seasonYear'] as int?,
+        episodes: item['episodes'] as int?,
+        score: (item['averageScore'] as num?)?.toInt(),
       ),
     );
   }
@@ -192,6 +255,9 @@ LatestEpisode? _episode(
   final year = int.tryParse(
     RegExp(r'seasonYear:(\d+)').firstMatch(chunk)?[1] ?? '',
   );
+  final score = int.tryParse(
+    RegExp(r'averageScore:(\d+)').firstMatch(chunk)?[1] ?? '',
+  );
   final titleToken = RegExp(r'title:(\{[^{}]*\}|[A-Za-z0-9_$]+)')
       .firstMatch(chunk)?[1];
   final countToken = RegExp(r'episodeCounts:(\{[^{}]*\}|[A-Za-z0-9_$]+)')
@@ -217,6 +283,7 @@ LatestEpisode? _episode(
     year: year,
     subCount: _count(countToken, 'sub', sub),
     dubCount: _count(countToken, 'dub', dub),
+    score: score,
   );
 }
 
@@ -330,6 +397,8 @@ Future<WatchData> fetchWatchData(String animeId, {int episode = 1}) async {
 WatchData parseWatchData(Map<String, dynamic> root, int episode) {
   final media = root['media'] as Map<String, dynamic>;
   final titles = media['title'] as Map<String, dynamic>;
+  final native = (titles['native'] as String?)?.trim();
+  final romaji = (titles['romaji'] as String?)?.trim();
   final cover = media['coverImage'] as Map<String, dynamic>;
   final studios =
       ((media['studios'] as Map<String, dynamic>?)?['edges'] as List? ??
@@ -436,6 +505,7 @@ WatchData parseWatchData(Map<String, dynamic> root, int episode) {
       episodes: media['episodes'] as int?,
       duration: media['duration'] as int?,
       score: media['averageScore'] as int?,
+      japaneseTitle: (native?.isNotEmpty ?? false) ? native! : (romaji ?? ''),
     ),
     episodes: episodes,
     servers: servers,

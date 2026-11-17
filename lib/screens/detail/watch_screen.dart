@@ -41,6 +41,7 @@ class WatchScreen extends StatefulWidget {
     this.session,
     this.initialData,
     this.recommendationLoader,
+    this.relatedLoader,
   });
 
   final String animeId;
@@ -68,6 +69,9 @@ class WatchScreen extends StatefulWidget {
   final Future<List<AnimeRecommendation>> Function(int aniListId)?
   recommendationLoader;
 
+  /// Injected in tests; defaults to [fetchRelated].
+  final Future<List<RelatedAnime>> Function(int aniListId)? relatedLoader;
+
   @override
   State<WatchScreen> createState() => _WatchScreenState();
 }
@@ -82,6 +86,7 @@ class _WatchScreenState extends State<WatchScreen> {
   ListService _service = ListService.anilist;
   bool _expanded = false;
   Future<List<AnimeRecommendation>>? _recommendations;
+  Future<List<RelatedAnime>>? _related;
 
   /// Latest loaded data/server, captured for the floating player handoff.
   WatchData? _data;
@@ -153,6 +158,7 @@ class _WatchScreenState extends State<WatchScreen> {
     setState(() {
       _future = future;
       _recommendations = null;
+      _related = null;
     });
     try {
       await future;
@@ -414,6 +420,7 @@ class _WatchScreenState extends State<WatchScreen> {
                   _episodeBar(data, server),
                   _episodeGrid(data),
                   _about(data),
+                  _relatedSection(data),
                   _recommendationsSection(data),
                 ],
               ),
@@ -601,6 +608,16 @@ class _WatchScreenState extends State<WatchScreen> {
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.titleLarge,
                     ),
+                    if (anime.japaneseTitle.isNotEmpty &&
+                        anime.japaneseTitle != anime.title)
+                      Text(
+                        anime.japaneseTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
                     const SizedBox(height: 4),
                     Text(
                       [
@@ -681,6 +698,30 @@ class _WatchScreenState extends State<WatchScreen> {
     );
   }
 
+  /// Related anime (prequel, sequel, ...) above the recommendations.
+  Widget _relatedSection(WatchData data) {
+    final aniListId = data.aniListId;
+    if (aniListId == null) return const SizedBox.shrink();
+    final loader = widget.relatedLoader ?? fetchRelated;
+    final future = _related ??= loader(aniListId);
+    return _horizontalSection<RelatedAnime>(
+      title: 'Terkait',
+      icon: Icons.account_tree_outlined,
+      future: future,
+      card: (item) => _animeCard(
+        title: item.title,
+        imageUrl: item.imageUrl,
+        meta: [
+          item.relationLabel,
+          if (item.score != null) '★ ${item.score}',
+          ?item.format,
+          if (item.year != null) '${item.year}',
+        ].join(' · '),
+        onTap: () => _openAnime(item.title, item.aniListId),
+      ),
+    );
+  }
+
   /// Horizontal AniList recommendations; hidden while loading, on error, or
   /// when the anime has no AniList id.
   Widget _recommendationsSection(WatchData data) {
@@ -688,7 +729,31 @@ class _WatchScreenState extends State<WatchScreen> {
     if (aniListId == null) return const SizedBox.shrink();
     final loader = widget.recommendationLoader ?? fetchRecommendations;
     final future = _recommendations ??= loader(aniListId);
-    return FutureBuilder<List<AnimeRecommendation>>(
+    return _horizontalSection<AnimeRecommendation>(
+      title: 'Rekomendasi',
+      icon: Icons.recommend_outlined,
+      future: future,
+      card: (item) => _animeCard(
+        title: item.title,
+        imageUrl: item.imageUrl,
+        meta: [
+          if (item.score != null) '★ ${item.score}',
+          ?item.format,
+          if (item.year != null) '${item.year}',
+          if (item.episodes != null) '${item.episodes} eps',
+        ].join(' · '),
+        onTap: () => _openAnime(item.title, item.aniListId),
+      ),
+    );
+  }
+
+  Widget _horizontalSection<T>({
+    required String title,
+    required IconData icon,
+    required Future<List<T>> future,
+    required Widget Function(T item) card,
+  }) {
+    return FutureBuilder<List<T>>(
       future: future,
       builder: (context, snapshot) {
         final items = snapshot.data;
@@ -701,9 +766,9 @@ class _WatchScreenState extends State<WatchScreen> {
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: Row(
                 children: [
-                  const Icon(Icons.recommend_outlined, size: 18),
+                  Icon(icon, size: 18),
                   const SizedBox(width: 8),
-                  Text('Rekomendasi', style: theme.textTheme.titleMedium),
+                  Text(title, style: theme.textTheme.titleMedium),
                 ],
               ),
             ),
@@ -714,8 +779,7 @@ class _WatchScreenState extends State<WatchScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 itemCount: items.length,
                 separatorBuilder: (_, _) => const SizedBox(width: 12),
-                itemBuilder: (context, index) =>
-                    _recommendationCard(items[index]),
+                itemBuilder: (context, index) => card(items[index]),
               ),
             ),
             const SizedBox(height: 16),
@@ -725,18 +789,18 @@ class _WatchScreenState extends State<WatchScreen> {
     );
   }
 
-  Widget _recommendationCard(AnimeRecommendation item) {
+  Widget _animeCard({
+    required String title,
+    required String imageUrl,
+    required String meta,
+    required VoidCallback onTap,
+  }) {
     final theme = Theme.of(context);
-    final meta = [
-      ?item.format,
-      if (item.year != null) '${item.year}',
-      if (item.episodes != null) '${item.episodes} eps',
-    ].join(' · ');
     return SizedBox(
       width: 108,
       child: InkWell(
         borderRadius: BorderRadius.circular(3),
-        onTap: () => _openRecommendation(item),
+        onTap: onTap,
         // Clamp the scale so a huge system font cannot overflow the fixed card.
         child: MediaQuery.withClampedTextScaling(
           maxScaleFactor: 1.2,
@@ -749,7 +813,7 @@ class _WatchScreenState extends State<WatchScreen> {
                   width: 108,
                   height: 152,
                   child: CachedNetworkImage(
-                    imageUrl: item.imageUrl,
+                    imageUrl: imageUrl,
                     fit: BoxFit.cover,
                     errorWidget: (_, _, _) =>
                         const ColoredBox(color: Colors.black),
@@ -762,7 +826,7 @@ class _WatchScreenState extends State<WatchScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      item.title,
+                      title,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.titleSmall,
@@ -786,10 +850,10 @@ class _WatchScreenState extends State<WatchScreen> {
     );
   }
 
-  Future<void> _openRecommendation(AnimeRecommendation item) async {
+  Future<void> _openAnime(String title, int aniListId) async {
     String? animeId;
     try {
-      animeId = await resolveMiruroAnimeId(item.title, item.aniListId);
+      animeId = await resolveMiruroAnimeId(title, aniListId);
     } catch (_) {
       animeId = null;
     }

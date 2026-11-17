@@ -18,6 +18,7 @@ void main() {
                 'genres': ['Adventure', 'Drama'],
                 'seasonYear': 2023,
                 'episodes': 28,
+                'averageScore': 87,
                 'nextAiringEpisode': {'episode': 8},
               },
               {
@@ -43,7 +44,7 @@ void main() {
       expect(banners.first.title, 'Sousou no Frieren');
       expect(banners.first.imageUrl, 'https://img/banner.jpg');
       expect(banners.first.aired, 7);
-      expect(banners.first.meta, 'Adventure · Drama · 2023 · 7/28 eps');
+      expect(banners.first.meta, '★ 87 · Adventure · Drama · 2023 · 7/28 eps');
       expect(banners.last.title, 'Dungeon Meshi');
       expect(banners.last.imageUrl, 'https://img/cover2.jpg');
       expect(banners.last.aired, 24, reason: 'no next airing episode');
@@ -205,7 +206,7 @@ void main() {
 
       expect(data.anime.title, 'Sousou no Frieren');
       expect(data.anime.studios, ['Madhouse'], reason: 'only main studios');
-      expect(data.anime.meta, 'TV · 28 eps · 24 min');
+      expect(data.anime.meta, '★ 91 · TV · 28 eps · 24 min');
       expect(data.anime.statusLine, 'Finished · Madhouse');
       expect(data.anime.seasonLabel, 'Fall 2023');
       expect(data.episodes, hasLength(2));
@@ -334,6 +335,7 @@ void main() {
                     'format': 'TV',
                     'episodes': 64,
                     'seasonYear': 2009,
+                    'averageScore': 92,
                   },
                 },
                 {'mediaRecommendation': null},
@@ -356,6 +358,7 @@ void main() {
       expect(items.first.title, 'Fullmetal Alchemist');
       expect(items.first.aniListId, 5114);
       expect(items.first.episodes, 64);
+      expect(items.first.score, 92);
       expect(items.last.title, 'Cowboy Bebop');
       expect(items.last.format, isNull);
     });
@@ -363,6 +366,65 @@ void main() {
     test('returns empty when Media or nodes are missing', () {
       expect(parseRecommendations('{"data":null}'), isEmpty);
       expect(parseRecommendations('{"data":{"Media":null}}'), isEmpty);
+    });
+  });
+
+  group('parseRelated', () {
+    test('maps anime relations and labels their type', () {
+      final body = jsonEncode({
+        'data': {
+          'Media': {
+            'relations': {
+              'edges': [
+                {
+                  'relationType': 'PREQUEL',
+                  'media': {
+                    'id': 100,
+                    'type': 'ANIME',
+                    'title': {'english': 'Season 1'},
+                    'coverImage': {'extraLarge': 'https://img/s1.jpg'},
+                    'format': 'TV',
+                    'seasonYear': 2015,
+                    'episodes': 12,
+                    'averageScore': 80,
+                  },
+                },
+                {
+                  'relationType': 'SIDE_STORY',
+                  'media': {
+                    'id': 101,
+                    'type': 'ANIME',
+                    'title': {'romaji': 'Spin-off'},
+                    'coverImage': {'extraLarge': 'https://img/sp.jpg'},
+                  },
+                },
+                {
+                  'relationType': 'ADAPTATION',
+                  'media': {
+                    'id': 102,
+                    'type': 'MANGA',
+                    'title': {'romaji': 'The Manga'},
+                    'coverImage': {'extraLarge': 'https://img/m.jpg'},
+                  },
+                },
+              ],
+            },
+          },
+        },
+      });
+
+      final items = parseRelated(body);
+
+      expect(items, hasLength(2), reason: 'manga adaptations are skipped');
+      expect(items.first.title, 'Season 1');
+      expect(items.first.relationType, 'PREQUEL');
+      expect(items.first.relationLabel, 'Prequel');
+      expect(items.first.score, 80);
+      expect(items.last.relationLabel, 'Side story');
+    });
+
+    test('returns empty when relations are missing', () {
+      expect(parseRelated('{"data":{"Media":null}}'), isEmpty);
     });
   });
 }
