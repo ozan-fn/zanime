@@ -283,6 +283,50 @@ void main() {
       );
     });
 
+    test('extra mirror hosts become invisible fallbacks, not servers', () {
+      // ya.har shape: sun exposes four mirror hosts, bun only iframes.
+      final root = payload();
+      final provider =
+          ((root['sourcesData']['tracks'] as List)[0] as Map)['providers']
+              as List;
+      provider.first['servers'] = [
+        for (var i = 1; i <= 3; i++)
+          {
+            'streams': [
+              {'url': 'https://mirror/m$i.m3u8'},
+            ],
+            'headers': {'Referer': 'https://ultracloud.cc/'},
+          },
+        {'streams': <dynamic>[], 'embed': 'https://bun.example/iframe'},
+      ];
+      provider.add({
+        'provider': 'bee',
+        'servers': [
+          {
+            'streams': [
+              {'url': 'https://bee/a.m3u8'},
+            ],
+            'headers': {'Referer': 'https://megaplay.buzz/'},
+          },
+        ],
+        'subtitles': <dynamic>[],
+      });
+      final data = parseWatchData(
+        jsonDecode(jsonEncode(root)) as Map<String, dynamic>,
+        1,
+      );
+
+      expect(data.servers.map((server) => server.provider), ['sun', 'bee']);
+      expect(data.servers.first.url, 'https://mirror/m1.m3u8');
+      expect(data.servers.first.fallbacks, [
+        'https://mirror/m2.m3u8',
+        'https://mirror/m3.m3u8',
+      ], reason: 'other hosts only exist as failover, never in the picker');
+      expect(data.servers.last.fallbacks, isEmpty);
+      expect(data.servers.first.headers['Referer'], 'https://ultracloud.cc/');
+      expect(data.servers.last.headers['Referer'], 'https://megaplay.buzz/');
+    });
+
     test('falls back to the requested episode when unspecified', () {
       final data = parseWatchData(payload(includeCurrentEpisode: false), 7);
 

@@ -1,7 +1,5 @@
 import 'dart:convert';
 
-import 'package:http/http.dart' as http;
-
 import '../models/models.dart';
 import 'http_client.dart';
 import 'sokuja.dart';
@@ -15,7 +13,7 @@ const _miruroHeaders = {
       '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
 };
 
-final http.Client _client = sharedHttpClient;
+final _client = sharedHttpClient;
 
 const _bannersQuery =
     'query(\$perPage: Int) { Page(page: 1, perPage: \$perPage) { '
@@ -33,7 +31,7 @@ Future<List<AnimeBannerData>> fetchAnimeBanners({int perPage = 10}) async {
     }),
   );
   if (response.statusCode != 200) {
-    throw http.ClientException('AniList HTTP ${response.statusCode}');
+    throw ApiException('AniList HTTP ${response.statusCode}');
   }
   return parseAnimeBanners(response.body);
 }
@@ -80,7 +78,7 @@ Future<List<AnimeRecommendation>> fetchRecommendations(int aniListId) async {
     }),
   );
   if (response.statusCode != 200) {
-    throw http.ClientException('AniList HTTP ${response.statusCode}');
+    throw ApiException('AniList HTTP ${response.statusCode}');
   }
   return parseRecommendations(response.body);
 }
@@ -148,7 +146,7 @@ Future<List<RelatedAnime>> fetchRelated(int aniListId) async {
     }),
   );
   if (response.statusCode != 200) {
-    throw http.ClientException('AniList HTTP ${response.statusCode}');
+    throw ApiException('AniList HTTP ${response.statusCode}');
   }
   return parseRelated(response.body);
 }
@@ -243,7 +241,7 @@ Future<List<LatestEpisode>> fetchLatestEpisodes() async {
     headers: {..._miruroHeaders, 'accept': 'text/html'},
   );
   if (response.statusCode != 200) {
-    throw http.ClientException('Miruro HTTP ${response.statusCode}');
+    throw ApiException('Miruro HTTP ${response.statusCode}');
   }
   final items = parseLatestEpisodes(response.body);
   final ids = [for (final item in items) ?item.aniListId];
@@ -562,27 +560,42 @@ WatchData parseWatchData(Map<String, dynamic> root, int episode) {
         );
       }
     }
-    final serversData = (provider['servers'] as List? ?? const [])
+    // Miruro lists one `servers[]` entry per mirror host (sun: icarus,
+    // cloudflare, vault-7, vault-6). Only the provider is shown; the other
+    // hosts ride along as fallbacks for when the first one fails to play.
+    final mirrors = [
+      for (final server
+          in ((provider['servers'] as List?) ?? const [])
+              .cast<Map<String, dynamic>>())
+        if ((server['streams'] as List? ?? const []).isNotEmpty) server,
+    ];
+    if (mirrors.isEmpty) continue;
+    final rawStreams = ((mirrors.first['streams'] as List?) ?? const [])
         .cast<Map<String, dynamic>>();
-    for (final server in serversData) {
-      final rawStreams = (server['streams'] as List? ?? const [])
-          .cast<Map<String, dynamic>>();
-      final streams = [
-        for (var i = 0; i < rawStreams.length; i++)
-          if ((rawStreams[i]['url'] as String?)?.isNotEmpty ?? false)
-            WatchStream.fromJson(rawStreams[i], i),
-      ];
-      if (streams.isEmpty) continue;
-      servers.add(
-        WatchServer(
-          provider: provider['provider'] as String,
-          streams: streams,
-          headers: ((server['headers'] as Map?) ?? const {})
-              .cast<String, String>(),
-        ),
-      );
-      break;
+    final streams = [
+      for (var i = 0; i < rawStreams.length; i++)
+        if ((rawStreams[i]['url'] as String?)?.isNotEmpty ?? false)
+          WatchStream.fromJson(rawStreams[i], i),
+    ];
+    if (streams.isEmpty) continue;
+    final fallbacks = <String>[];
+    for (final mirror in mirrors.skip(1)) {
+      for (final stream
+          in ((mirror['streams'] as List?) ?? const [])
+              .cast<Map<String, dynamic>>()) {
+        final url = ((stream['url'] as String?) ?? '').trim();
+        if (url.isEmpty || fallbacks.contains(url)) continue;
+        fallbacks.add(url);
+      }
     }
+    servers.add(
+      WatchServer(
+        provider: providerId,
+        streams: streams,
+        headers: providerHeaders,
+        fallbacks: fallbacks,
+      ),
+    );
   }
 
   return WatchData(
@@ -619,7 +632,7 @@ Future<Map<String, dynamic>> _miruroRoot(
   var uri = Uri.parse('$_miruroBase$path').replace(queryParameters: query);
   var response = await _client.get(uri, headers: _miruroHeaders);
   if (response.statusCode != 200) {
-    throw http.ClientException('Miruro HTTP ${response.statusCode}', uri);
+    throw ApiException('Miruro HTTP ${response.statusCode}', uri);
   }
 
   // SvelteKit signals slug redirects in the JSON body, not with HTTP 3xx.
@@ -632,7 +645,7 @@ Future<Map<String, dynamic>> _miruroRoot(
         .replace(queryParameters: nextQuery);
     response = await _client.get(uri, headers: _miruroHeaders);
     if (response.statusCode != 200) {
-      throw http.ClientException('Miruro HTTP ${response.statusCode}', uri);
+      throw ApiException('Miruro HTTP ${response.statusCode}', uri);
     }
   }
 

@@ -3,12 +3,10 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'app_update.dart';
-import 'http_client.dart';
 
 /// Android ABI token used by the release asset names (`-arm64-v8a.apk`, ...).
 String? currentApkAbi() {
@@ -85,11 +83,12 @@ class ApkDownloadState {
 
 /// Downloads a release APK with pause/resume (HTTP `Range`) and cancel.
 class ApkDownloader {
-  ApkDownloader({http.Client? client, Future<Directory> Function()? directory})
-    : _client = client ?? sharedHttpClient,
-      _directory = directory ?? getApplicationSupportDirectory;
+  ApkDownloader({Future<Directory> Function()? directory})
+    : _directory = directory ?? getApplicationSupportDirectory;
 
-  final http.Client _client;
+  /// Recreated per attempt: pausing closes the socket, so the resume needs a
+  /// fresh one. libcurl buffers whole bodies, which is no way to fetch an APK.
+  HttpClient? _client;
   final Future<Directory> Function() _directory;
   final ValueNotifier<ApkDownloadState> state = ValueNotifier(
     const ApkDownloadState(),
@@ -121,24 +120,26 @@ class ApkDownloader {
     _paused = false;
     _publish(ApkDownloadStatus.downloading);
     try {
-      final request = http.Request('GET', url);
+      final request = await (_client ??= HttpClient()).getUrl(url);
       // GitHub's asset CDN honours Range, so a paused download resumes
       // instead of starting from zero.
-      if (offset > 0) request.headers['Range'] = 'bytes=$offset-';
-      final response = await _client.send(request);
+      if (offset > 0) {
+        request.headers.set(HttpHeaders.rangeHeader, 'bytes=$offset-');
+      }
+      final response = await request.close();
       if (_disposed) return;
       if (response.statusCode != 200 && response.statusCode != 206) {
-        throw http.ClientException('HTTP ${response.statusCode}', url);
+        throw HttpException('HTTP ${response.statusCode}', uri: url);
       }
       final appended = offset > 0 && response.statusCode == 206;
       if (!appended) offset = 0;
       _received = offset;
       final length = response.contentLength;
-      if (length != null && length > 0) _total = offset + length;
+      if (length > 0) _total = offset + length;
       _sink = file.openWrite(mode: appended ? FileMode.append : FileMode.write);
       _publish(ApkDownloadStatus.downloading);
       _done = Completer<void>();
-      _subscription = response.stream.listen(
+      _subscription = response.listen(
         (chunk) {
           _received += chunk.length;
           _sink?.add(chunk);
@@ -217,6 +218,8 @@ class ApkDownloader {
   Future<void> _stopStream() async {
     await _subscription?.cancel();
     _subscription = null;
+    _client?.close(force: true);
+    _client = null;
     try {
       await _sink?.flush();
       await _sink?.close();

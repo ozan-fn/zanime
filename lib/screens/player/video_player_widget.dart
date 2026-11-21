@@ -1,10 +1,9 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:http/http.dart' as http;
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
+import 'package:video_player/video_player.dart';
 
 import '../../models/models.dart';
 import '../../services/app_settings.dart';
@@ -12,25 +11,7 @@ import '../../services/http_client.dart';
 import '../../services/playback_session.dart';
 import '../../services/subtitle_format.dart';
 
-final http.Client _client = sharedHttpClient;
-
-/// media_kit centers the primary bar between the 56 px top bar and the 92 px
-/// bottom area (56 px buttons + 36 px seek bar), which sits 18 px above the
-/// video's true center. Nudge it back down by exactly that difference.
-const _primaryButtonOffset = 18.0;
-
-final List<Widget> _primaryButtonBar = [
-  Spacer(flex: 2),
-  MaterialSkipPreviousButton(),
-  Spacer(),
-  Transform.translate(
-    offset: const Offset(0, _primaryButtonOffset),
-    child: MaterialPlayOrPauseButton(iconSize: 48.0),
-  ),
-  Spacer(),
-  MaterialSkipNextButton(),
-  Spacer(flex: 2),
-];
+final _client = sharedHttpClient;
 
 /// Axis-aligned shadows leave blocky corners on round glyphs; two staggered
 /// rings with a little blur read as a smooth outline.
@@ -48,8 +29,8 @@ final List<Shadow> _subtitleShadows = [
     Shadow(
       color: const Color(0xFF000000),
       offset: Offset(
-        math.cos((i + 0.5) * math.pi / 6),
-        math.sin((i + 0.5) * math.pi / 6),
+        math.cos((i + 0.5) * math.pi / 6) * 2,
+        math.sin((i + 0.5) * math.pi / 6) * 2,
       ),
       blurRadius: 1,
     ),
@@ -91,13 +72,66 @@ int? defaultSubtitleIndex(List<WatchSubtitle> subtitles) {
   return null;
 }
 
-/// media_kit video player. Pass the server's streams (mp4/HLS `.m3u8`);
-/// quality, subtitles and the subtitle picker live inside the player controls.
+int _height(String label) =>
+    int.tryParse(RegExp(r'\d+').firstMatch(label)?.group(0) ?? '') ?? 0;
+
+/// Quality variants inside an HLS master playlist (`#EXT-X-STREAM-INF`),
+/// best first. Relative segment URIs resolve against [base].
+List<WatchStream> parseHlsVariants(String master, Uri base) {
+  final lines = master.split('\n').map((line) => line.trim()).toList();
+  final variants = <WatchStream>[];
+  final seen = <String>{};
+  for (var i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith('#EXT-X-STREAM-INF')) continue;
+    final uri = i + 1 < lines.length ? lines[i + 1] : '';
+    if (uri.isEmpty || uri.startsWith('#')) continue;
+    final url = base.resolve(uri).toString();
+    if (!seen.add(url)) continue;
+    final height = RegExp(r'RESOLUTION=\d+x(\d+)')
+        .firstMatch(lines[i])
+        ?.group(1);
+    final name = RegExp(r'NAME="([^"]+)"').firstMatch(lines[i])?.group(1);
+    variants.add(
+      WatchStream(
+        label: height != null
+            ? '${height}p'
+            : (name ?? 'Source ${variants.length + 1}'),
+        url: url,
+      ),
+    );
+  }
+  variants.sort((a, b) => _height(b.label).compareTo(_height(a.label)));
+  return variants;
+}
+
+/// Quality picker entries. A server's lone URL is the adaptive stream (its
+/// master playlist picks the rendition), so the positional "Source 1" label
+/// from the API is renamed instead of sitting next to the real qualities.
+List<WatchStream> qualityOptions(
+  List<WatchStream> streams,
+  List<WatchStream> variants,
+) {
+  if (streams.length != 1 || !streams.first.label.startsWith('Source ')) {
+    return [...streams, ...variants];
+  }
+  return [WatchStream(label: 'Auto', url: streams.first.url), ...variants];
+}
+
+String _formatDuration(Duration duration) {
+  final hours = duration.inHours;
+  final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
+  final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
+  return hours > 0 ? '$hours:$minutes:$seconds' : '$minutes:$seconds';
+}
+
+/// video_player player. Pass the server's streams (mp4/HLS `.m3u8`); quality,
+/// subtitles and the subtitle picker live inside the player controls.
 class VideoPlayerWidget extends StatefulWidget {
   const VideoPlayerWidget({
     super.key,
     required this.streams,
     this.headers,
+    this.fallbacks = const [],
     this.subtitles = const [],
     this.subtitleHeaders,
     this.startAt,
@@ -112,6 +146,10 @@ class VideoPlayerWidget extends StatefulWidget {
 
   /// Stream request headers (Referer/Origin) required by some mirrors.
   final Map<String, String>? headers;
+
+  /// Mirror hosts of the same episode, tried in order when a stream fails to
+  /// open. They are never offered in the picker.
+  final List<String> fallbacks;
 
   /// Subtitle tracks offered in the player's picker.
   final List<WatchSubtitle> subtitles;
@@ -139,53 +177,66 @@ class VideoPlayerWidget extends StatefulWidget {
 }
 
 class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
-  Player? _player;
-  VideoController? _videoController;
+  VideoPlayerController? _controller;
+  VideoPlayerController? _positionSource;
   PlaybackSession? _session;
   bool _ownsSession = false;
-  StreamSubscription<String>? _errorSubscription;
-  StreamSubscription<Duration>? _positionSubscription;
   bool _failed = false;
+  bool _fullscreen = false;
+  bool _controlsVisible = true;
+  Timer? _hideTimer;
+  double? _drag;
   int? _selectedSubtitle;
   int _subtitleGeneration = 0;
   int _selectedStream = 0;
 
-  WatchStream get _stream => widget.streams[_selectedStream];
+  /// Real qualities of a master playlist, appended after the server's own
+  /// streams; empty until the playlist is parsed.
+  List<WatchStream> _variants = const [];
+
+  /// Mirrors not tried yet; a dead first host should not end playback.
+  final List<String> _fallbacks = [];
+
+  /// Indexes both lists: the server's streams first, then [_variants].
+  List<WatchStream> get _qualityOptions =>
+      qualityOptions(widget.streams, _variants);
+
+  WatchStream get _stream {
+    final options = _qualityOptions;
+    return options[_selectedStream.clamp(0, options.length - 1)];
+  }
 
   @override
   void initState() {
     super.initState();
     _selectedSubtitle = _defaultSubtitle();
     final provided = widget.session;
-    final session = provided ?? PlaybackSession.create();
+    final session = provided ?? PlaybackSession();
     _session = session;
     _ownsSession = provided == null;
-    if (session == null) {
-      _failed = true;
-      return;
-    }
-    _player = session.player;
-    _videoController = session.controller;
-    subtitlePx.addListener(_applySubtitleScale);
-    unawaited(_applySubtitleScale());
-    _errorSubscription = session.player.stream.error.listen((_) {
-      if (mounted) setState(() => _failed = true);
-    });
-    final sink = widget.positionSink;
-    if (sink != null) {
-      _positionSubscription = session.player.stream.position.listen(
-        (position) => sink.value = position,
-      );
-    }
-    // A handed-over session is already playing; only a fresh one is prepared.
-    if (session.openedUrl == null) {
-      unawaited(_prepare(session.player));
+    _fallbacks.addAll(widget.fallbacks);
+    // A handed-over session is already playing; only a fresh one is opened.
+    final existing = session.controller;
+    if (existing != null) {
+      _controller = existing;
+      _listenPosition(existing);
+    } else {
+      unawaited(_open(_stream.url));
     }
   }
 
   @override
   void didUpdateWidget(covariant VideoPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.streams.isEmpty ||
+        widget.streams.isEmpty ||
+        oldWidget.streams.first.url != widget.streams.first.url) {
+      // Variants belong to the old playlist; a fresh `_open` refetches.
+      _variants = const [];
+      _fallbacks
+        ..clear()
+        ..addAll(widget.fallbacks);
+    }
     if (identical(oldWidget.subtitles, widget.subtitles)) return;
     // The track list can change while the player stays mounted (episode or
     // server refresh). Keep the same file selected when it is still offered;
@@ -208,7 +259,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     final nextIndex = next == -1 ? null : next;
     if (nextIndex == _selectedSubtitle) return;
     _selectedSubtitle = nextIndex;
-    if (_player != null) unawaited(_applySubtitle());
+    if (_controller != null) unawaited(_applySubtitle());
   }
 
   /// Indonesian first, then the provider's order.
@@ -216,26 +267,101 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   int? _defaultSubtitle() => defaultSubtitleIndex(widget.subtitles);
 
-  Future<void> _prepare(Player player) async {
+  /// Opens [url] in a new controller and resumes at [startAt]. A controller is
+  /// bound to one media, so a quality switch replaces it.
+  Future<void> _open(String url, {Duration? startAt}) async {
+    final next = VideoPlayerController.networkUrl(
+      Uri.parse(url),
+      httpHeaders: widget.headers ?? const {},
+    );
     try {
-      await player.open(Media(_stream.url, httpHeaders: widget.headers));
-      // The widget may have been removed while `open` was in flight; that
-      // player is disposed and must not be touched again.
-      if (!mounted || !identical(_player, player)) return;
-      _session?.openedUrl = _stream.url;
-      final startAt = widget.startAt;
-      if (startAt != null && startAt > Duration.zero) {
-        await player.seek(startAt);
+      await next.initialize();
+      if (!mounted) {
+        await _disposeQuietly(next);
+        return;
       }
+      final previous = _controller;
+      setState(() {
+        _controller = next;
+        _failed = false;
+      });
+      _session?.controller = next;
+      _listenPosition(next);
+      if (previous != null && !identical(previous, next)) {
+        // The VideoPlayer for it is being unmounted in this frame.
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _disposeQuietly(previous),
+        );
+      }
+      final resume = startAt ?? widget.startAt;
+      if (resume != null && resume > Duration.zero) await next.seekTo(resume);
+      await next.play();
+      _scheduleHide();
       await _applySubtitle();
+      // Only the provider's own host exposes qualities to the picker.
+      if (url == widget.streams.first.url) unawaited(_loadQualityVariants());
     } catch (e) {
-      if (!mounted || !identical(_player, player)) return;
       debugPrint('video prepare failed: $e');
-      setState(() => _failed = true);
+      // Mirror hosts go down one at a time; the next one is a fallback, not
+      // an error the user has to fix.
+      if (_fallbacks.isNotEmpty) {
+        final fallback = _fallbacks.removeAt(0);
+        await _disposeQuietly(next);
+        if (mounted) return _open(fallback);
+        return;
+      }
+      // A failed quality switch must not replace a stream that still plays.
+      if (_controller != null) return;
+      if (mounted) setState(() => _failed = true);
+      await _disposeQuietly(next);
+    }
+  }
+
+  static Future<void> _disposeQuietly(VideoPlayerController controller) async {
+    try {
+      await controller.dispose();
+    } catch (_) {
+      // Navigating away while `initialize` was in flight is not an error.
+    }
+  }
+
+  void _listenPosition(VideoPlayerController controller) {
+    final sink = widget.positionSink;
+    if (sink == null) return;
+    _positionSource?.removeListener(_pushPosition);
+    _positionSource = controller;
+    controller.addListener(_pushPosition);
+  }
+
+  void _pushPosition() {
+    final sink = widget.positionSink;
+    final controller = _positionSource;
+    if (sink != null && controller != null) {
+      sink.value = controller.value.position;
+    }
+  }
+
+  /// A server that exposes a single HLS URL hides its renditions in the
+  /// master playlist; without this the picker offers one unlabelled source.
+  Future<void> _loadQualityVariants() async {
+    final url = widget.streams.first.url;
+    if (widget.streams.length > 1 || !url.contains('.m3u8')) return;
+    try {
+      final response = await _client.get(
+        Uri.parse(url),
+        headers: widget.headers,
+      );
+      if (!mounted || response.statusCode != 200) return;
+      final variants = parseHlsVariants(response.body, Uri.parse(url));
+      if (variants.isEmpty || !mounted) return;
+      setState(() => _variants = variants);
+    } catch (_) {
+      // Keep the server's own URL as the only option.
     }
   }
 
   Future<void> _pickQuality() async {
+    final options = _qualityOptions;
     final index = await showModalBottomSheet<int>(
       context: context,
       useRootNavigator: true,
@@ -244,9 +370,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           shrinkWrap: true,
           children: [
             const ListTile(title: Text('Kualitas')),
-            for (var i = 0; i < widget.streams.length; i++)
+            for (var i = 0; i < options.length; i++)
               ListTile(
-                title: Text(widget.streams[i].label),
+                title: Text(options[i].label),
                 selected: _selectedStream == i,
                 onTap: () => Navigator.pop(context, i),
               ),
@@ -254,60 +380,25 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         ),
       ),
     );
-    final player = _player;
-    if (index == null ||
-        !mounted ||
-        index == _selectedStream ||
-        player == null) {
-      return;
-    }
-    setState(() {
-      _selectedStream = index;
-      _failed = false;
-    });
-    await player.open(Media(_stream.url, httpHeaders: widget.headers));
-    _session?.openedUrl = _stream.url;
-    await _applySubtitle();
+    if (index == null || !mounted || index == _selectedStream) return;
+    // Switching rendition is not a rewatch: resume where the user was.
+    final position = _controller?.value.position ?? Duration.zero;
+    setState(() => _selectedStream = index);
+    await _open(_stream.url, startAt: position);
   }
 
-  /// libass renders ASS/SSA tracks itself and ignores the Flutter subtitle
-  /// style, so the size setting is forwarded as mpv's `sub-scale` multiplier
-  /// (16 px is the reference size). Without it, ASS subtitles stay small no
-  /// matter what the slider says.
-  Future<void> _applySubtitleScale() async {
-    final player = _player;
-    if (player == null) return;
-    final px = widget.subtitlePxOverride ?? subtitlePx.value;
-    final scale = px / defaultSubtitlePx;
-    try {
-      final platform = player.platform;
-      if (platform == null) return;
-      // `setProperty` only exists on the native player.
-      await (platform as dynamic).setProperty(
-        'sub-scale',
-        scale.toStringAsFixed(2),
-      );
-    } catch (_) {
-      // Non-native platforms simply keep their default scale.
-    }
-  }
-
+  /// The Flutter caption layer parses SRT only, so ASS arrives flattened and
+  /// every track is fetched here (providers reject bare requests).
   Future<void> _applySubtitle() async {
-    final player = _player;
-    if (player == null) return;
-    await _applySubtitleScale();
+    final controller = _controller;
+    if (controller == null) return;
     final generation = ++_subtitleGeneration;
     final index = _selectedSubtitle;
     if (index == null || index < 0 || index >= widget.subtitles.length) {
-      await player.setSubtitleTrack(SubtitleTrack.no());
+      await controller.setClosedCaptionFile(null);
       return;
     }
-    // A fresh session (server switch) sometimes drops a track added right
-    // after `open`; mpv is settled by the time this runs, so one attach is
-    // enough.
     try {
-      // Subtitle CDNs reject bare requests; media_kit's URI track cannot send
-      // the provider's Origin/Referer, so fetch the VTT ourselves.
       final response = await _client.get(
         Uri.parse(widget.subtitles[index].url),
         headers: {
@@ -320,18 +411,26 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         },
       );
       if (generation != _subtitleGeneration || !mounted) return;
-      // Drop the previous track first: media_kit adds external tracks with
-      // `sub-add`, so switching repeatedly would stack tracks (and any
-      // auto-selected embedded track) on top of each other.
-      await player.setSubtitleTrack(SubtitleTrack.no());
-      if (response.statusCode == 200 && response.body.trim().isNotEmpty) {
-        await player.setSubtitleTrack(
-          SubtitleTrack.data(normalizeSubtitle(response.body)),
-        );
+      final body = response.body.trim();
+      if (response.statusCode != 200 || body.isEmpty) {
+        await controller.setClosedCaptionFile(null);
+        return;
       }
+      final text = normalizeSubtitle(body);
+      if (text.isEmpty) {
+        await controller.setClosedCaptionFile(null);
+        return;
+      }
+      await controller.setClosedCaptionFile(
+        Future.value(
+          text.trimLeft().startsWith('WEBVTT')
+              ? WebVTTCaptionFile(text)
+              : SubRipCaptionFile(text),
+        ),
+      );
     } catch (_) {
       if (!mounted || generation != _subtitleGeneration) return;
-      await player.setSubtitleTrack(SubtitleTrack.no());
+      await controller.setClosedCaptionFile(null);
     }
   }
 
@@ -364,6 +463,80 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     await _applySubtitle();
   }
 
+  void _togglePlay() {
+    final controller = _controller;
+    if (controller == null) return;
+    if (controller.value.isPlaying) {
+      unawaited(controller.pause());
+    } else {
+      unawaited(controller.play());
+      _scheduleHide();
+    }
+  }
+
+  void _seekBy(int seconds) {
+    final controller = _controller;
+    if (controller == null) return;
+    final duration = controller.value.duration;
+    var target = controller.value.position + Duration(seconds: seconds);
+    if (target < Duration.zero) target = Duration.zero;
+    if (duration > Duration.zero && target > duration) target = duration;
+    unawaited(controller.seekTo(target));
+  }
+
+  Future<void> _seekTo(double milliseconds) async {
+    await _controller?.seekTo(Duration(milliseconds: milliseconds.round()));
+    if (mounted) setState(() => _drag = null);
+    _scheduleHide();
+  }
+
+  void _toggleControls() {
+    setState(() => _controlsVisible = !_controlsVisible);
+    if (_controlsVisible) _scheduleHide();
+  }
+
+  /// Hides the controls after a pause in interaction, like a native player.
+  void _scheduleHide() {
+    _hideTimer?.cancel();
+    final controller = _controller;
+    if (!widget.showControls ||
+        controller == null ||
+        !controller.value.isPlaying) {
+      return;
+    }
+    _hideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _controlsVisible = false);
+    });
+  }
+
+  Future<void> _toggleFullscreen() async {
+    if (_fullscreen) {
+      Navigator.of(context).maybePop();
+      return;
+    }
+    setState(() => _fullscreen = true);
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    await SystemChrome.setPreferredOrientations(const [
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => Scaffold(
+          backgroundColor: Colors.black,
+          body: Center(
+            child: AspectRatio(aspectRatio: 16 / 9, child: _surface()),
+          ),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    setState(() => _fullscreen = false);
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+  }
+
   Widget _subtitleButton() {
     if (_subtitleOrder.isEmpty) return const SizedBox.shrink();
     return IconButton(
@@ -385,106 +558,210 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     );
   }
 
+  /// Captions are rendered here, not by the plugin, so the app's font, size
+  /// and outline settings still apply.
+  Widget _caption(VideoPlayerValue value) {
+    final text = value.caption.text;
+    if (text.isEmpty) return const SizedBox.shrink();
+    final px = widget.subtitlePxOverride ?? subtitlePx.value;
+    final gap = 32.0 + math.max(0, px - defaultSubtitlePx) * 1.5;
+    return IgnorePointer(
+      child: Align(
+        alignment: Alignment.bottomCenter,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+            16,
+            0,
+            16,
+            widget.showControls && _controlsVisible ? gap + 56 : gap,
+          ),
+          child: Text(
+            text,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontFamily: 'Comic Neue',
+              fontFamilyFallback: const ['Noto Sans', 'Noto Sans Symbols 2'],
+              fontSize: px,
+              fontWeight: FontWeight.w700,
+              height: 1.25,
+              color: const Color(0xFFFFFFFF),
+              shadows: _subtitleShadows,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _controls(VideoPlayerController controller, VideoPlayerValue value) {
+    final duration = value.duration.inMilliseconds.toDouble();
+    final position = (_drag ?? value.position.inMilliseconds.toDouble()).clamp(
+      0.0,
+      duration > 0 ? duration : 1.0,
+    );
+    return LayoutBuilder(
+      builder: (context, box) {
+        var tapX = 0.0;
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _toggleControls,
+          onDoubleTapDown: (details) => tapX = details.localPosition.dx,
+          onDoubleTap: () => _seekBy(tapX < box.maxWidth / 2 ? -10 : 10),
+          child: AnimatedOpacity(
+            opacity: _controlsVisible ? 1 : 0,
+            duration: const Duration(milliseconds: 150),
+            child: IgnorePointer(
+              ignoring: !_controlsVisible,
+              child: ColoredBox(
+                color: const Color(0x44000000),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Positioned(
+                      top: 0,
+                      right: 0,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [_qualityButton(), _subtitleButton()],
+                      ),
+                    ),
+                    Center(
+                      child: IconButton(
+                        onPressed: _togglePlay,
+                        iconSize: 48,
+                        color: Colors.white,
+                        icon: Icon(
+                          value.isPlaying ? Icons.pause : Icons.play_arrow,
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: ColoredBox(
+                        color: Colors.black54,
+                        child: Row(
+                          children: [
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              onPressed: _togglePlay,
+                              color: Colors.white,
+                              icon: Icon(
+                                value.isPlaying
+                                    ? Icons.pause
+                                    : Icons.play_arrow,
+                              ),
+                            ),
+                            Text(
+                              '${_formatDuration(Duration(milliseconds: position.round()))}'
+                              ' / ${_formatDuration(value.duration)}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                              ),
+                            ),
+                            Expanded(
+                              child: Slider(
+                                value: position,
+                                max: duration > 0 ? duration : 1,
+                                onChanged: (x) => setState(() => _drag = x),
+                                onChangeEnd: _seekTo,
+                              ),
+                            ),
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              onPressed: _toggleFullscreen,
+                              tooltip: 'Layar penuh',
+                              color: Colors.white,
+                              icon: Icon(
+                                _fullscreen
+                                    ? Icons.fullscreen_exit
+                                    : Icons.fullscreen,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _surface() {
+    final controller = _controller!;
+    return AnimatedBuilder(
+      animation: subtitlePx,
+      builder: (context, _) => ValueListenableBuilder<VideoPlayerValue>(
+        valueListenable: controller,
+        builder: (context, value, _) {
+          final ratio = value.aspectRatio > 0 ? value.aspectRatio : 16 / 9;
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              const ColoredBox(color: Colors.black),
+              Center(
+                child: AspectRatio(
+                  aspectRatio: ratio,
+                  child: VideoPlayer(controller),
+                ),
+              ),
+              if (value.isBuffering)
+                const Center(child: CircularProgressIndicator()),
+              Positioned.fill(child: _caption(value)),
+              if (widget.showControls) _controls(controller, value),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   @override
   void dispose() {
-    _errorSubscription?.cancel();
-    _errorSubscription = null;
-    _positionSubscription?.cancel();
-    _positionSubscription = null;
-    _player = null;
-    _videoController = null;
+    _hideTimer?.cancel();
+    _hideTimer = null;
+    _positionSource?.removeListener(_pushPosition);
+    _positionSource = null;
+    _controller = null;
     final session = _session;
     _session = null;
-    subtitlePx.removeListener(_applySubtitleScale);
     if (_ownsSession && session != null) unawaited(session.dispose());
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final controller = _videoController;
+    final controller = _controller;
     if (controller == null || _failed) {
       return AspectRatio(
         aspectRatio: 16 / 9,
-        child: Center(
-          child: Text(
-            'Video gagal dimuat',
-            style: TextStyle(color: Theme.of(context).colorScheme.error),
+        child: ColoredBox(
+          color: Colors.black,
+          child: Center(
+            child: _failed
+                ? Text(
+                    'Video gagal dimuat',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  )
+                : const CircularProgressIndicator(),
           ),
         ),
       );
     }
     return AspectRatio(
       aspectRatio: 16 / 9,
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final width = constraints.maxWidth <= 0
-              ? 360.0
-              : constraints.maxWidth;
-          return AnimatedBuilder(
-            animation: subtitlePx,
-            builder: (context, _) {
-              final px = widget.subtitlePxOverride ?? subtitlePx.value;
-              // Keep the gap below the subtitle proportional to its size so a
-              // bigger line is lifted instead of sitting lower on the video.
-              final bottomGap =
-                  32.0 + math.max(0, px - defaultSubtitlePx) * 1.5;
-              final video = Video(
-                controller: controller,
-                fit: BoxFit.contain,
-                // PiP hides controls entirely; passing null would be ignored by
-                // media_kit's copyWith (null means "keep existing controls"),
-                // and the adaptive bottom bar overflows the 176x99 card.
-                controls: widget.showControls
-                    ? AdaptiveVideoControls
-                    : (_) => const SizedBox.shrink(),
-                subtitleViewConfiguration: SubtitleViewConfiguration(
-                  // Slightly higher than media_kit's default bottom padding.
-                  padding: EdgeInsets.fromLTRB(16, 0, 16, bottomGap),
-                  // media_kit multiplies the size by the player box scale
-                  // (≈ width / 1920); divide it back out so the settings value
-                  // is the on-screen px size.
-                  style: TextStyle(
-                    fontFamily: 'Comic Neue',
-                    fontFamilyFallback: const [
-                      'Noto Sans',
-                      'Noto Sans Symbols 2',
-                    ],
-                    fontSize: px * 1920 / width,
-                    fontWeight: FontWeight.w700,
-                    height: 1.25,
-                    color: const Color(0xFFFFFFFF),
-                    backgroundColor: const Color(0x00000000),
-                    shadows: _subtitleShadows,
-                  ),
-                ),
-              );
-              if (!widget.showControls) return video;
-              return MaterialVideoControlsTheme(
-                normal: kDefaultMaterialVideoControlsThemeData.copyWith(
-                  topButtonBar: [_qualityButton(), _subtitleButton()],
-                  primaryButtonBar: _primaryButtonBar,
-                  seekGesture: true,
-                  seekOnDoubleTap: true,
-                ),
-                // Built-in fullscreen defaults bring the safe-area padding,
-                // seek bar position and double-tap ±10s gestures; only the
-                // buttons change.
-                fullscreen: kDefaultMaterialVideoControlsThemeDataFullscreen
-                    .copyWith(
-                      topButtonBar: [_qualityButton(), _subtitleButton()],
-                      seekBarMargin: const EdgeInsets.only(
-                        left: 16,
-                        right: 16,
-                        bottom: 28,
-                      ),
-                    ),
-                child: video,
-              );
-            },
-          );
-        },
-      ),
+      // The fullscreen route hosts the same controller; leaving a second
+      // VideoPlayer on it would share one texture between two views.
+      child: _fullscreen ? const ColoredBox(color: Colors.black) : _surface(),
     );
   }
 }

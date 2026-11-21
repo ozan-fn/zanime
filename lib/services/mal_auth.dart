@@ -3,7 +3,6 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'anilist_auth.dart';
@@ -476,22 +475,23 @@ Future<Map<String, dynamic>?> _malGetUri(Uri uri) async {
   return jsonDecode(response.body) as Map<String, dynamic>;
 }
 
-Future<http.Response?> _malSend(
+Future<ApiResponse?> _malSend(
   String method,
   Uri uri, {
   Map<String, String>? body,
 }) async {
   final token = await malAccessToken();
   if (token == null) return null;
-  final request = http.Request(method, uri)
-    ..headers['authorization'] = 'Bearer $token'
-    ..headers['X-MAL-CLIENT-ID'] = malClientId;
-  if (body != null) {
-    request.headers['content-type'] = 'application/x-www-form-urlencoded';
-    request.body = Uri(queryParameters: body).query;
-  }
-  final streamed = await sharedHttpClient.send(request);
-  final response = await http.Response.fromStream(streamed);
+  final response = await sharedHttpClient.send(
+    method,
+    uri,
+    headers: {
+      'authorization': 'Bearer $token',
+      'X-MAL-CLIENT-ID': malClientId,
+      if (body != null) 'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: body,
+  );
   if (response.statusCode == 401) await signOutMal();
   return response;
 }

@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:test1/services/subtitle_format.dart';
 
 void main() {
-  test('ASS/SSA payloads pass through so libass keeps their positioning', () {
+  test('ASS/SSA payloads are flattened to SubRip cues', () {
     const ass = '''
 [Script Info]
 Title: Test
@@ -11,12 +11,16 @@ Title: Test
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 Dialogue: 0,0:00:01.23,0:00:03.45,Top,,0,0,0,,{\\an8}Top line
 Dialogue: 0,0:00:04.00,0:00:06.50,Default,,0,0,0,,Bottom line\\NSecond line
+Dialogue: 0,0:00:07.00,0:00:08.00,Default,,0,0,0,,{\\p1}m 0 0 l 100 0
 ''';
 
     final result = normalizeSubtitle(ass);
 
-    expect(result, ass);
-    expect(result, contains('{\\an8}'));
+    expect(result, contains('00:00:01,230 --> 00:00:03,450\nTop line'));
+    expect(result, contains('Bottom line\nSecond line'));
+    expect(result, contains('00:00:04,000 --> 00:00:06,500'));
+    expect(result, isNot(contains('{\\an8}')), reason: 'override tags gone');
+    expect(result, isNot(contains('l 100 0')), reason: 'drawings dropped');
   });
 
   test('WebVTT and SRT pass through untouched', () {

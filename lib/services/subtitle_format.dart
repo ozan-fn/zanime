@@ -1,16 +1,45 @@
-/// Subtitle payload normalisation.
+/// Subtitle payload normalisation into a format the Flutter caption layer
+/// parses (SRT). video_player has no libass, so ASS/SSA are flattened here:
+/// override tags such as `{\an8}` are dropped, which means a top-positioned
+/// sign renders at the bottom like a regular line.
 ///
-/// ASS/SSA are handed to libmpv as-is: libass renders them natively, which is
-/// what preserves `\an` top/bottom positioning and styling. Flattening them to
-/// WebVTT made every line render at the bottom (looked like duplicate lines).
-///
-/// VTT/SRT go through the Flutter subtitle layer; providers often ship the
-/// same line twice, so identical overlapping cues and repeated lines are
-/// collapsed there.
+/// Providers often ship the same line twice, so identical overlapping cues and
+/// repeated lines are collapsed.
 String normalizeSubtitle(String content) {
   final text = content.startsWith('\uFEFF') ? content.substring(1) : content;
-  if (text.contains('[Events]')) return text;
+  if (text.contains('[Events]')) return _assToSrt(text);
   return _dropEmptyCues(text);
+}
+
+/// Flattens ASS `Dialogue:` lines into numbered SubRip cues.
+String _assToSrt(String ass) {
+  final cues = <String>[];
+  for (final line in ass.split(RegExp(r'\r?\n'))) {
+    if (!line.startsWith('Dialogue:')) continue;
+    // Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+    final fields = line.substring('Dialogue:'.length).split(',');
+    if (fields.length < 10) continue;
+    // Vector drawings flatten to junk (`m 0 0 l ...`), not text.
+    if (RegExp(r'\{[^}]*\\p\d').hasMatch(fields[9])) continue;
+    final start = _timeMs(fields[1]);
+    final end = _timeMs(fields[2]);
+    if (start == null || end == null || end <= start) continue;
+    final body = _plainText(fields.skip(9).join(','));
+    if (body.isEmpty) continue;
+    cues.add(
+      '${cues.length + 1}\n${_srtTime(start)} --> ${_srtTime(end)}\n$body',
+    );
+  }
+  return cues.isEmpty ? '' : _dropEmptyCues(cues.join('\n\n'));
+}
+
+String _srtTime(int milliseconds) {
+  String pad(int value) => value.toString().padLeft(2, '0');
+  final hours = milliseconds ~/ 3600000;
+  final minutes = milliseconds ~/ 60000 % 60;
+  final seconds = milliseconds ~/ 1000 % 60;
+  return '${pad(hours)}:${pad(minutes)}:${pad(seconds)},'
+      '${(milliseconds % 1000).toString().padLeft(3, '0')}';
 }
 
 class _Cue {

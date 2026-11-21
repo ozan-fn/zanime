@@ -306,6 +306,7 @@ class WatchServer {
     required this.provider,
     required this.streams,
     required this.headers,
+    this.fallbacks = const [],
   });
 
   factory WatchServer.fromJson(Map<String, dynamic> json) {
@@ -330,6 +331,10 @@ class WatchServer {
   /// Alternative qualities of the same server, best first.
   final List<WatchStream> streams;
   final Map<String, String> headers;
+
+  /// Mirror hosts of the same episode, tried in order when the primary stream
+  /// fails. Never shown in the picker.
+  final List<String> fallbacks;
 
   String get url => streams.first.url;
 }

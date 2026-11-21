@@ -144,7 +144,7 @@ class _WatchScreenState extends State<WatchScreen> {
       data = await _fetchEpisode(1);
     }
     _data = data;
-    _session ??= PlaybackSession.create();
+    _session ??= PlaybackSession();
     _syncStatus(data);
     return data;
   }
@@ -209,7 +209,7 @@ class _WatchScreenState extends State<WatchScreen> {
     setState(() {
       _provider = value;
       _lastProvider = value;
-      _replaceSession(PlaybackSession.create());
+      _replaceSession(PlaybackSession());
     });
   }
 
@@ -457,6 +457,7 @@ class _WatchScreenState extends State<WatchScreen> {
       session: _session,
       streams: server.streams,
       headers: server.headers,
+      fallbacks: server.fallbacks,
       // Sokuja mirrors are self-contained mp4s without track metadata.
       subtitles: server.provider == sokujaProvider ? const [] : data.subtitles,
       subtitleHeaders: server.headers,
@@ -890,10 +891,11 @@ class _WatchScreenState extends State<WatchScreen> {
     // Pause before the transition: the old page is still mounted while the
     // new route animates, so both players would otherwise play at once.
     final session = _session;
-    if (session != null) unawaited(session.player.pause());
-    // Replace instead of push. Stacking watch pages keeps one libmpv player
-    // and one video controller alive per page: overlapping audio and a steady
-    // memory leak. Replacing disposes the current page and its session.
+    final controller = session?.controller;
+    if (controller != null) unawaited(controller.pause());
+    // Replace instead of push. Stacking watch pages keeps one video controller
+    // alive per page: overlapping audio and a steady memory leak. Replacing
+    // disposes the current page and its session.
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(builder: (_) => WatchScreen(animeId: id)),
     );

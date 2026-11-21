@@ -1,5 +1,4 @@
 import 'package:material_ui/material_ui.dart';
-import 'package:media_kit/media_kit.dart';
 
 import 'screens/home/home_shell.dart';
 import 'services/app_settings.dart';
@@ -19,7 +18,6 @@ const _shape3 = RoundedRectangleBorder(
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  MediaKit.ensureInitialized();
   loadSubtitleStyle();
   runApp(const MyApp());
 }

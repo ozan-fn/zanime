@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 
 import 'http_client.dart';
@@ -47,7 +46,7 @@ Future<AppRelease> fetchLatestRelease() async {
     },
   );
   if (response.statusCode != 200) {
-    throw http.ClientException('GitHub HTTP ${response.statusCode}');
+    throw ApiException('GitHub HTTP ${response.statusCode}');
   }
   final json = jsonDecode(response.body) as Map<String, dynamic>;
   final tag = json['tag_name'] as String? ?? '';
