@@ -10,6 +10,7 @@ import '../../services/app_settings.dart';
 import '../../services/http_client.dart';
 import '../../services/playback_session.dart';
 import '../../services/subtitle_format.dart';
+import '../../services/translate.dart';
 
 final _client = sharedHttpClient;
 
@@ -196,6 +197,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   /// Mirrors not tried yet; a dead first host should not end playback.
   final List<String> _fallbacks = [];
+
+  /// Machine-translated Indonesian track (SRT), used when the provider ships
+  /// no Indonesian subtitle.
+  String? _translatedSrt;
+  bool _translating = false;
+  int _translateDone = 0;
+  int _translateTotal = 0;
 
   /// Indexes both lists: the server's streams first, then [_variants].
   List<WatchStream> get _qualityOptions =>
@@ -387,36 +395,58 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     await _open(_stream.url, startAt: position);
   }
 
-  /// The Flutter caption layer parses SRT only, so ASS arrives flattened and
-  /// every track is fetched here (providers reject bare requests).
+  bool get _hasIndonesian => widget.subtitles.any(_isIndonesian);
+
+  /// English is the usual translation source; otherwise the first track the
+  /// picker would show.
+  WatchSubtitle? _translationSource() {
+    for (final subtitle in widget.subtitles) {
+      if (_isEnglish(subtitle)) return subtitle;
+    }
+    final order = _subtitleOrder;
+    return order.isEmpty ? null : widget.subtitles[order.first];
+  }
+
+  /// Subtitle CDNs reject bare requests; media players cannot send the
+  /// provider's Origin/Referer, so every track is fetched here.
+  Future<String?> _fetchSubtitle(WatchSubtitle subtitle) async {
+    final response = await _client.get(
+      Uri.parse(subtitle.url),
+      headers: {
+        'accept': '*/*',
+        'referer': 'https://miruro.cx/',
+        ...?widget.subtitleHeaders,
+        // Per-track headers win: a sun subtitle needs sun's Origin/Referer
+        // even when the playing stream comes from another provider.
+        ...subtitle.headers,
+      },
+    );
+    if (response.statusCode != 200) return null;
+    final body = response.body.trim();
+    return body.isEmpty ? null : body;
+  }
+
+  /// The Flutter caption layer parses SRT only, so ASS arrives flattened.
   Future<void> _applySubtitle() async {
     final controller = _controller;
     if (controller == null) return;
     final generation = ++_subtitleGeneration;
+    final translated = _translatedSrt;
+    if (translated != null) {
+      await controller.setClosedCaptionFile(
+        Future.value(SubRipCaptionFile(translated)),
+      );
+      return;
+    }
     final index = _selectedSubtitle;
     if (index == null || index < 0 || index >= widget.subtitles.length) {
       await controller.setClosedCaptionFile(null);
       return;
     }
     try {
-      final response = await _client.get(
-        Uri.parse(widget.subtitles[index].url),
-        headers: {
-          'accept': '*/*',
-          'referer': 'https://miruro.cx/',
-          ...?widget.subtitleHeaders,
-          // Per-track headers win: a sun subtitle needs sun's Origin/Referer
-          // even when the playing stream comes from another provider.
-          ...widget.subtitles[index].headers,
-        },
-      );
+      final body = await _fetchSubtitle(widget.subtitles[index]);
       if (generation != _subtitleGeneration || !mounted) return;
-      final body = response.body.trim();
-      if (response.statusCode != 200 || body.isEmpty) {
-        await controller.setClosedCaptionFile(null);
-        return;
-      }
-      final text = normalizeSubtitle(body);
+      final text = body == null ? '' : normalizeSubtitle(body);
       if (text.isEmpty) {
         await controller.setClosedCaptionFile(null);
         return;
@@ -434,7 +464,52 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     }
   }
 
+  /// Translates the provider's track to Indonesian when the server ships none.
+  Future<void> _translateSubtitle() async {
+    if (_translating) return;
+    final source = _translationSource();
+    if (source == null) return;
+    setState(() {
+      _translating = true;
+      _translateDone = 0;
+      _translateTotal = 0;
+      _translatedSrt = null;
+      _selectedSubtitle = null;
+    });
+    // A track picked while translating wins over the finished translation.
+    final generation = ++_subtitleGeneration;
+    try {
+      final body = await _fetchSubtitle(source);
+      if (body == null) throw const FormatException('subtitle kosong');
+      final srt = await translateSubtitle(
+        body,
+        onProgress: (done, total) {
+          if (!mounted) return;
+          setState(() {
+            _translateDone = done;
+            _translateTotal = total;
+          });
+        },
+      );
+      if (!mounted || generation != _subtitleGeneration) return;
+      if (srt.trim().isEmpty) throw const FormatException('tidak ada cue');
+      setState(() => _translatedSrt = srt);
+      await _applySubtitle();
+    } catch (e) {
+      debugPrint('translate failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Gagal menerjemahkan subtitle')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _translating = false);
+    }
+  }
+
   Future<void> _pickSubtitle() async {
+    // -2 means "translate to Indonesian" (no such track from the provider).
+    final canTranslate = widget.subtitles.isNotEmpty && !_hasIndonesian;
     final index = await showModalBottomSheet<int>(
       context: context,
       useRootNavigator: true,
@@ -445,9 +520,19 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
             const ListTile(title: Text('Subtitle')),
             ListTile(
               title: const Text('Off'),
-              selected: _selectedSubtitle == null,
+              selected: _selectedSubtitle == null && _translatedSrt == null,
               onTap: () => Navigator.pop(context, -1),
             ),
+            if (canTranslate)
+              ListTile(
+                title: const Text('Indonesia (need translate)'),
+                selected: _translatedSrt != null,
+                enabled: !_translating,
+                subtitle: _translating
+                    ? Text('Menerjemahkan $_translateDone/$_translateTotal')
+                    : null,
+                onTap: () => Navigator.pop(context, -2),
+              ),
             for (final i in _subtitleOrder)
               ListTile(
                 title: Text(widget.subtitles[i].label),
@@ -459,7 +544,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       ),
     );
     if (index == null || !mounted) return;
-    setState(() => _selectedSubtitle = index < 0 ? null : index);
+    if (index == -2) {
+      await _translateSubtitle();
+      return;
+    }
+    setState(() {
+      _selectedSubtitle = index < 0 ? null : index;
+      _translatedSrt = null;
+    });
     await _applySubtitle();
   }
 
@@ -544,7 +636,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       tooltip: 'Subtitle',
       icon: Icon(
         Icons.subtitles_outlined,
-        color: _selectedSubtitle == null ? Colors.white54 : Colors.white,
+        color: _selectedSubtitle == null && _translatedSrt == null
+            ? Colors.white54
+            : Colors.white,
       ),
     );
   }
@@ -739,8 +833,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   @override
   Widget build(BuildContext context) {
     final controller = _controller;
+    final Widget box;
     if (controller == null || _failed) {
-      return AspectRatio(
+      box = AspectRatio(
         aspectRatio: 16 / 9,
         child: ColoredBox(
           color: Colors.black,
@@ -756,12 +851,40 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           ),
         ),
       );
+    } else {
+      box = AspectRatio(
+        aspectRatio: 16 / 9,
+        // The fullscreen route hosts the same controller; leaving a second
+        // VideoPlayer on it would share one texture between two views.
+        child: _fullscreen ? const ColoredBox(color: Colors.black) : _surface(),
+      );
     }
-    return AspectRatio(
-      aspectRatio: 16 / 9,
-      // The fullscreen route hosts the same controller; leaving a second
-      // VideoPlayer on it would share one texture between two views.
-      child: _fullscreen ? const ColoredBox(color: Colors.black) : _surface(),
+    if (!_translating || !widget.showControls) return box;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        box,
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          child: Row(
+            children: [
+              Expanded(
+                child: LinearProgressIndicator(
+                  value: _translateTotal > 0
+                      ? _translateDone / _translateTotal
+                      : null,
+                  minHeight: 3,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Menerjemahkan $_translateDone/$_translateTotal',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

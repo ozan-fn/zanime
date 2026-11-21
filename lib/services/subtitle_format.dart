@@ -27,13 +27,14 @@ String _assToSrt(String ass) {
     final body = _plainText(fields.skip(9).join(','));
     if (body.isEmpty) continue;
     cues.add(
-      '${cues.length + 1}\n${_srtTime(start)} --> ${_srtTime(end)}\n$body',
+      '${cues.length + 1}\n${srtTimestamp(start)} --> ${srtTimestamp(end)}\n$body',
     );
   }
   return cues.isEmpty ? '' : _dropEmptyCues(cues.join('\n\n'));
 }
 
-String _srtTime(int milliseconds) {
+/// `HH:MM:SS,mmm`, the timestamp format SubRip parsers require.
+String srtTimestamp(int milliseconds) {
   String pad(int value) => value.toString().padLeft(2, '0');
   final hours = milliseconds ~/ 3600000;
   final minutes = milliseconds ~/ 60000 % 60;
