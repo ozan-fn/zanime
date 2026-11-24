@@ -395,8 +395,6 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     await _open(_stream.url, startAt: position);
   }
 
-  bool get _hasIndonesian => widget.subtitles.any(_isIndonesian);
-
   /// English is the usual translation source; otherwise the first track the
   /// picker would show.
   WatchSubtitle? _translationSource() {
@@ -507,9 +505,28 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     }
   }
 
+  /// Tracks that are reachable and carry real cues, checked in parallel.
+  Future<List<int>> _validSubtitleOrder() async {
+    final order = _subtitleOrder;
+    final results = await Future.wait([
+      for (final i in order)
+        () async {
+          try {
+            final body = await _fetchSubtitle(widget.subtitles[i]);
+            return body == null || normalizeSubtitle(body).isEmpty ? null : i;
+          } catch (_) {
+            return null;
+          }
+        }(),
+    ]);
+    return [for (final r in results) if (r != null) r];
+  }
+
   Future<void> _pickSubtitle() async {
     // -2 means "translate to Indonesian" (no such track from the provider).
-    final canTranslate = widget.subtitles.isNotEmpty && !_hasIndonesian;
+    final canTranslate = widget.subtitles.isNotEmpty;
+    final order = await _validSubtitleOrder();
+    if (!mounted) return;
     final index = await showModalBottomSheet<int>(
       context: context,
       useRootNavigator: true,
@@ -533,7 +550,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                     : null,
                 onTap: () => Navigator.pop(context, -2),
               ),
-            for (final i in _subtitleOrder)
+            for (final i in order)
               ListTile(
                 title: Text(widget.subtitles[i].label),
                 selected: _selectedSubtitle == i,
